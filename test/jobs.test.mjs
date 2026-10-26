@@ -1,0 +1,152 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { chunkText } from "../src/shared/chunk.mjs";
+import { createJob, ctxOf, isFinished } from "../src/jobs/model.mjs";
+import { hashOf, planParts } from "../src/jobs/delivery.mjs";
+import { isLeaseAlive, readProcStartTicks } from "../src/jobs/lease.mjs";
+import { nextAction } from "../src/jobs/next-action.mjs";
+
+const nowIso = () => "2026-10-23T00:00:00.000Z";
+const inbound = {
+  key: "th-x",
+  session: "fs-th-x",
+  dedupeId: "om_1",
+  text: "hi",
+  chatId: "oc_1",
+  messageId: "om_1",
+  threadId: "om_root",
+  rootText: "root",
+  authorId: "ou_me",
+};
+
+function job(overrides = {}) {
+  return { ...createJob({ meta: {} }, inbound, nowIso), ...overrides };
+}
+
+test("createJob never reuses an id that already exists in state", () => {
+  const state = { meta: {}, jobs: { "job-7": { id: "job-7" } } };
+  const job = createJob(state, inbound, nowIso);
+  assert.equal(job.id, "job-8");
+  assert.equal(state.meta.jobSeq, 8);
+});
+
+test("createJob allocates a monotonic sequence and serializable inbound", () => {
+  const state = { meta: {} };
+  const first = createJob(state, inbound, nowIso);
+  const second = createJob(state, inbound, nowIso);
+  assert.equal(first.id, "job-1");
+  assert.equal(second.id, "job-2");
+  assert.equal(first.status, "queued");
+  assert.deepEqual(first.parts, []);
+  assert.equal(first.answer, null);
+  assert.deepEqual(JSON.parse(JSON.stringify(first.inbound)), first.inbound);
+});
+
+test("TC-18 nextAction settles every status", () => {
+  const opts = { now: 1_000, leaseTtlMs: 100, chunkLimit: 10, canEdit: false, readStartTicks: () => "9" };
+
+  assert.deepEqual(nextAction(job({ status: "queued" }), opts), { type: "rerun" });
+
+  const aliveLease = { pid: 42, startTicks: "9", heartbeatAt: 950 };
+  assert.deepEqual(nextAction(job({ status: "running", lease: aliveLease }), opts), { type: "reap-then-interrupt", pid: 42 });
+
+  const deadLease = { pid: 42, startTicks: "9", heartbeatAt: 800 };
+  assert.deepEqual(nextAction(job({ status: "running", lease: deadLease }), opts), { type: "interrupt" });
+
+  const wrongTicks = { pid: 42, startTicks: "8", heartbeatAt: 950 };
+  assert.deepEqual(nextAction(job({ status: "running", lease: wrongTicks }), opts), { type: "interrupt" });
+
+  assert.deepEqual(nextAction(job({ status: "running", lease: null }), opts), { type: "interrupt" });
+
+  const resend = nextAction(job({ status: "answered", answer: "abcdefghijkl" }), opts);
+  assert.equal(resend.type, "resend");
+  assert.deepEqual(resend.parts, [
+    { i: 0, text: "abcdefghij", action: "send" },
+    { i: 1, text: "kl", action: "send" },
+  ]);
+
+  for (const status of ["done", "interrupted", "failed", "cancelled"]) {
+    assert.deepEqual(nextAction(job({ status }), opts), { type: "finish" });
+  }
+});
+
+test("TC-18 a lease dies when its heartbeat exceeds the ttl", () => {
+  const lease = { pid: 42, startTicks: "9", heartbeatAt: 1_000 };
+  assert.equal(isLeaseAlive(lease, 1_040, 100, () => "9"), true);
+  assert.equal(isLeaseAlive(lease, 1_140, 100, () => "9"), false);
+  assert.equal(isLeaseAlive({ ...lease, pid: null }, 1_040, 100, () => "9"), false);
+  assert.equal(isLeaseAlive(lease, 1_040, 100, () => null), false);
+});
+
+test("readProcStartTicks survives a comm containing spaces and parens", () => {
+  const ticks = readProcStartTicks(process.pid);
+  assert.match(String(ticks), /^\d+$/);
+});
+
+test("TC-19 planParts resends only what is missing", () => {
+  const answer = "abcdefghij" + "klmnopqrst";
+  assert.equal(chunkText(answer, 10).length, 2);
+
+  const fresh = planParts({ answer, parts: [], chunkLimit: 10, canEdit: true });
+  assert.deepEqual(fresh.map((part) => part.action), ["send", "send"]);
+
+  const allSent = planParts({
+    answer,
+    parts: [
+      { i: 0, messageId: "m0", hash: hashOf("abcdefghij") },
+      { i: 1, messageId: "m1", hash: hashOf("klmnopqrst") },
+    ],
+    chunkLimit: 10,
+    canEdit: true,
+  });
+  assert.deepEqual(allSent.map((part) => part.action), ["skip", "skip"]);
+
+  const partial = planParts({
+    answer,
+    parts: [{ i: 0, messageId: "m0", hash: hashOf("abcdefghij") }],
+    chunkLimit: 10,
+    canEdit: true,
+  });
+  assert.deepEqual(partial, [
+    { i: 0, action: "skip" },
+    { i: 1, text: "klmnopqrst", action: "send" },
+  ]);
+
+  const changed = planParts({
+    answer,
+    parts: [{ i: 0, messageId: "m0", hash: "stale" }],
+    chunkLimit: 10,
+    canEdit: true,
+  });
+  assert.deepEqual(changed[0], { i: 0, text: "abcdefghij", action: "edit", messageId: "m0" });
+
+  const noEdit = planParts({
+    answer,
+    parts: [{ i: 0, messageId: "m0", hash: "stale" }],
+    chunkLimit: 10,
+    canEdit: false,
+  });
+  assert.deepEqual(noEdit[0], { i: 0, action: "skip" });
+
+  assert.deepEqual(planParts({ answer: null, parts: [], chunkLimit: 10 }), []);
+});
+
+test("ctxOf carries every field the adapter needs and stays serializable", () => {
+  const base = job({ status: "answered", answer: "done text" });
+  const ctx = ctxOf(base);
+  assert.equal(ctx.jobId, "job-1");
+  assert.deepEqual(JSON.parse(JSON.stringify(ctx)), ctx);
+
+  const sent = { ...base, parts: [{ i: 0, messageId: "m-out", hash: "h", sentAt: "t" }] };
+  assert.equal(ctxOf(sent).replyTo, "m-out");
+  assert.equal(ctxOf({ ...sent, inbound: { ...sent.inbound, replyTo: "explicit" } }).replyTo, "explicit");
+});
+
+test("createJob keeps attachments and defaults to an empty list", () => {
+  const state = { meta: {} };
+  const attachments = [{ kind: "image", path: "/tmp/a.jpg" }];
+  const withFiles = createJob(state, { ...inbound, attachments }, nowIso);
+  assert.deepEqual(withFiles.inbound.attachments, attachments);
+  const without = createJob(state, inbound, nowIso);
+  assert.deepEqual(without.inbound.attachments, []);
+});

@@ -1,0 +1,20 @@
+{
+  "name": "agent-relay",
+  "version": "0.1.0",
+  "description": "Multi-platform IM relay daemon for coding agents: sessions, queueing, stall detection, replyable notices, chunked replies.",
+  "type": "module",
+  "bin": {
+    "agent-relay": "./src/cli.mjs"
+  },
+  "engines": {
+    "bun": ">=1.1"
+  },
+  "scripts": {
+    "test": "bun test",
+    "start": "bun src/cli.mjs serve"
+  },
+  "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.76.0"
+  },
+  "license": "MIT"
+}

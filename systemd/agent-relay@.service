@@ -1,0 +1,15 @@
+[Unit]
+Description=agent-relay@%i — %i conversations routed to agent sessions
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+Restart=always
+RestartSec=5
+TimeoutStopSec=10
+Environment=AGENT_RELAY_PLATFORM=%i
+Environment=PATH=%h/.local/bin:%h/.bun/bin:%h/.volta/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+ExecStart=%h/.bun/bin/bun %h/code/agent-relay/src/cli.mjs serve %i
+
+[Install]
+WantedBy=default.target

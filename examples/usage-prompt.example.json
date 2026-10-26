@@ -1,0 +1,8 @@
+{
+  "instructions": "Decide what the user's current turn is about. For short commands and pronouns like \"that bug\" or \"the same pattern\", infer the referent from the conversation start message and the agent's answer. The answer only shows what the agent did; a greeting is not work even when the answer mentions work names.",
+  "criteria": {
+    "work": "The turn points at an asset, repository, system or business object of your team or project, including work carried over from earlier turns.",
+    "non_work": "The turn is unrelated to work: media, small talk, greetings, personal device or network troubleshooting.",
+    "unknown": "The start message, earlier turns and the current turn do not reveal whether it belongs to work or not."
+  }
+}
