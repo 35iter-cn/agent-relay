@@ -15,46 +15,48 @@ user message ──▶ platform adapter ──▶ relay core ──▶ agent ses
 
 ## Replyable notices
 
-Anything the relay posts on its own initiative is a **notice**:
+Anything the relay posts on its own initiative is a **notice**, and every notice
+has the same two fields:
 
-- `intake-candidates` — the intake loop found new tasks
-- `job-stall` — a running job stopped making progress
-- `hours-report` — the agent-hours loop wrote a time report
-- `boot` — the machine (re)booted and the agent is ready
-- `plain` — free-form `notify` text (kept for compatibility)
+- `text` — what the users sees in the chat (the stall alert, the intake
+  broadcast, the hours report, the boot line)
+- `prompt` — optional instructions injected into the session that opens when the
+  user replies to that notice: what to do, which job key it belongs to, which
+  command to run
 
-A notice has a kind, a payload and a set of actions. The relay records it in the
-platform state file together with the message id it was posted as. When the user
-replies to that message, the adapter reports the parent message id, the relay
-resolves it back to the notice, and opens a session scoped to it
-(`notice-ntc-12`). The worker then gets the kind's prompt template and a
-structured action command instead of guessing which job the text refers to:
+A notice has no kind, no actions and no refs. The relay records it in the
+platform state file together with the message id it was posted as; when the user
+replies, the adapter reports the parent message id, the relay resolves it back to
+the notice and opens a session scoped to it (`notice-ntc-12`). The fixed
+`prompts/notice.md` template then renders just `text`, `prompt` and the platform
+reply rules.
 
-```
-agent-relay action <platform> <notice-id> cancel           # kill the stuck run, book the time
-agent-relay action <platform> <notice-id> restart "补充要求"  # kill, book, then restart the same session
-```
+That means:
 
-Adding a kind is one file in `src/notices/kinds/`: `id`, `render(payload)`,
-optional `actions` (name → help text), optional `instructions` prompt fragment.
-`src/notices/registry.mjs` is the only place kinds are registered.
+- adding a new notification type is a change in the sender, not in this repo:
+  `agent-relay notice emit --platform feishu --text "$(…)" --prompt-file …`
+- the policy for acting on a notice lives in that `prompt`; the relay itself only
+  knows `agent-relay stall <platform> cancel|restart <key>`, and that entry
+  point validates its own arguments
+- the notice body is data, not instructions — `notice.md` says so, because the
+  text can carry third-party content (issue titles, chat excerpts)
 
-Notices are pruned after 7 days; the mapping survives relay restarts because it
-lives in the platform state file.
+The stall alert is the one notice the relay raises by itself; it builds both
+fields in `src/runtime/stall-notice.mjs`.
 
 ## Structure
 
 ```
 src/
-├── cli.mjs                 entry: serve | notice | notify | action | stall
+├── cli.mjs                 entry: serve | notice | notify | stall
 ├── config.mjs              paths, env files, state/command locations
 ├── shared/                 chunking, json, time, logging, retention, prompts, env
 ├── state/                  state schema + atomic store
 ├── jobs/                   job model, leases, delivery plan, worker signals, next action
-├── runtime/                core loop, prompts, usage recorder
-├── notices/                registry, kinds, notice service (emit / match / prune)
+├── runtime/                core loop, prompts, stall notice, usage recorder
+├── notices/                notice service (emit / match / prune)
 ├── ledger/                 agent-hours heartbeat + salvage (read/write the ledger)
-├── prompts/                prompt templates (thread, notice, kinds' fragments)
+├── prompts/                prompt templates (thread, notice, stall fragments)
 └── platforms/              feishu | slack | telegram adapters + shared helpers
 ```
 

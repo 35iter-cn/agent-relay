@@ -9,7 +9,7 @@ import { emptyState } from "../src/state/schema.mjs";
 import { renderPrompt } from "../src/shared/prompt.mjs";
 import { pruneOldFiles } from "../src/shared/retention.mjs";
 import { readJson, writeJsonAtomic } from "../src/shared/json.mjs";
-import { jobStallNotice } from "../src/notices/kinds/job-stall.mjs";
+import { stallNoticePrompt, stallNoticeText } from "../src/runtime/stall-notice.mjs";
 import { hashOf } from "../src/jobs/delivery.mjs";
 
 function controlledChild() {
@@ -45,7 +45,7 @@ function harness({ spawn, replies = [], adapterOverrides = {}, state = emptyStat
   const promptsDir = join(dir, "prompts");
   mkdirSync(promptsDir, { recursive: true });
   writeFileSync(join(promptsDir, "thread.md"), "conversation={{conversation}} user={{user_message}} root={{root_section}} platform={{platform}} surface={{surface}} rules={{reply_rules}} chunk={{chunk_limit}} candidate={{candidate_rules}} actions={{stall_actions}}");
-  writeFileSync(join(promptsDir, "notice.md"), "NOTICE id={{notice_id}} kind={{notice_kind}} user={{user_message}} root={{root_section}} actions={{notice_actions}} instructions={{notice_instructions}}");
+  writeFileSync(join(promptsDir, "notice.md"), "NOTICE id={{notice_id}} prompt={{notice_prompt}} user={{user_message}} root={{root_section}}");
   writeFileSync(join(promptsDir, "stall-instructions.md"), "STALL-INSTRUCTIONS");
   writeFileSync(join(promptsDir, "stall-actions.md"), "ACTIONS platform={{platform}} key=<key>");
   if (candidateRules) writeFileSync(join(promptsDir, "candidate-rules.md"), candidateRules);
@@ -808,7 +808,9 @@ test("TC-BOOT a new boot id posts one boot notice and records it", async () => {
   assert.equal(replies.filter((item) => item.key === "notice").length, 1);
   assert.match(replies[0].text, /系统已启动/);
   assert.equal(core.state.meta.bootNotice.bootId, "b1");
-  assert.equal(core.state.notices[core.state.meta.bootNotice.noticeId].kind, "boot");
+  const boot = core.state.notices[core.state.meta.bootNotice.noticeId];
+  assert.match(boot.text, /系统已启动/);
+  assert.equal(boot.prompt, "");
 });
 
 test("TC-BOOT a platform that opts out never announces, a machine without a boot id stays silent", async () => {
@@ -822,13 +824,13 @@ test("TC-BOOT a platform that opts out never announces, a machine without a boot
 });
 
 test("TC-ST1 stall notice names the session, key, pid and restart prompt", () => {
-  const text = jobStallNotice.render({
+  const text = stallNoticeText({
     key: "th-abc",
     session: "fs-th-abc",
     pid: 4242,
     silenceMs: 12 * 60_000,
     local: "2026-10-26 15:20:12",
-  }, { platform: "feishu" });
+  });
   assert.match(text, /12 分钟没有进展/);
   assert.match(text, /fs-th-abc/);
   assert.match(text, /key：th-abc/);
@@ -915,13 +917,10 @@ test("TC-ST4 replying to a stall notice opens a notice-scoped conversation", asy
   const state = emptyState();
   state.notices["ntc-1"] = {
     id: "ntc-1",
-    kind: "job-stall",
     platform: "fake",
     messageId: "m-notice",
-    refs: { key: "th-abc", session: "fs-th-abc", pid: 4242 },
-    payload: {},
-    actions: ["cancel", "restart"],
     text: "⏸ 任务疑似卡住：12 分钟没有进展\n会话：fs-th-abc\nkey：th-abc",
+    prompt: stallNoticePrompt({ key: "th-abc", platform: "fake", instructions: "STALL-INSTRUCTIONS" }),
     sentAt: new Date().toISOString(),
   };
   const { core } = harness({
@@ -937,33 +936,12 @@ test("TC-ST4 replying to a stall notice opens a notice-scoped conversation", asy
   await core.handle(inbound({ text: "杀掉", dedupeId: "m-reply", replyIds: ["m-notice"] }));
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.match(prompts[0], /NOTICE id=ntc-1/);
-  assert.match(prompts[0], /kind=job-stall/);
   assert.match(prompts[0], /STALL-INSTRUCTIONS/);
   assert.match(prompts[0], /杀掉/);
   assert.match(prompts[0], /任务疑似卡住/);
-  assert.match(prompts[0], /agent-relay action fake ntc-1 cancel/);
+  assert.match(prompts[0], /key/);
   const job = Object.values(core.state.jobs).find((item) => item.noticeId === "ntc-1");
   assert.equal(job.key, "notice-ntc-1");
-});
-
-test("TC-ST4b an unregistered stall notice falls back to the notice template with the key entry point", async () => {
-  const prompts = [];
-  const { core } = harness({
-    spawn: () => fakeChild({ stdout: "ok" }),
-    adapterOverrides: {
-      buildWorker: ({ prompt }) => {
-        prompts.push(prompt);
-        return { bin: process.execPath, args: ["-e", "0"] };
-      },
-    },
-  });
-  const rootText = "⏸ 任务疑似卡住：12 分钟没有进展\n会话：fs-th-abc\nkey：th-abc";
-  await core.handle(inbound({ text: "杀掉", rootText }));
-  await new Promise((resolve) => setTimeout(resolve, 30));
-  assert.match(prompts[0], /NOTICE id=\(未登记\)/);
-  assert.match(prompts[0], /STALL-INSTRUCTIONS/);
-  assert.match(prompts[0], /agent-relay stall fake cancel\|restart <key>/);
-  assert.doesNotMatch(prompts[0], /candidate=/);
 });
 
 test("TC-ST5 an ordinary first message still uses the thread template", async () => {

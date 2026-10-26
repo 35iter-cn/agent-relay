@@ -1,24 +1,17 @@
 import { isoAt } from "../shared/time.mjs";
-import { registry } from "./registry.mjs";
 
 export const NOTICE_TTL_MS = 7 * 86_400_000;
 export const MAX_NOTICES = 500;
+export const MAX_PROMPT_BYTES = 8 * 1024;
 
-export function actionsText(kind, notice, { cli = "agent-relay" } = {}) {
-  const entries = Object.entries(kind.actions ?? {});
-  if (!entries.length) return "";
-  return entries
-    .map(([name, spec]) => `- ${spec.help} → \`${cli} action ${notice.platform} ${notice.id} ${name}${spec.args ? ` ${spec.args}` : ""}\``)
-    .join("\n");
-}
-
-export function noticePromptValues(notice, kind, { cli = "agent-relay" } = {}) {
-  return {
-    notice_id: notice.id,
-    notice_kind: notice.kind,
-    notice_actions: actionsText(kind, notice, { cli }) || "- 这条通知没有结构化动作，按正文回答即可。",
-    notice_refs: JSON.stringify(notice.refs ?? {}, null, 2),
-  };
+export function truncatePrompt(prompt, limit = MAX_PROMPT_BYTES) {
+  const text = String(prompt ?? "");
+  if (Buffer.byteLength(text) <= limit) return { prompt: text, truncated: false };
+  let length = text.length;
+  while (length > 0 && Buffer.byteLength(text.slice(0, length)) > limit) {
+    length = Math.floor(length * 0.9);
+  }
+  return { prompt: text.slice(0, length), truncated: true };
 }
 
 export function matchNotice(notices, platform, replyIds = []) {
@@ -45,7 +38,7 @@ export function pruneNotices(notices, nowMs = Date.now(), ttlMs = NOTICE_TTL_MS,
   return stale.length + Math.max(0, rest.length - max);
 }
 
-export function createNoticeService({ state, save, adapter, now = () => Date.now(), kinds = registry, log = () => {} }) {
+export function createNoticeService({ state, save, adapter, now = () => Date.now(), log = () => {} }) {
   state.notices = state.notices ?? {};
   state.meta = state.meta ?? {};
 
@@ -55,26 +48,25 @@ export function createNoticeService({ state, save, adapter, now = () => Date.now
     return send.call(adapter, text);
   }
 
-  async function emit(kindId, payload = {}, { refs = {}, scope = null } = {}) {
-    const kind = kinds.get(kindId);
-    const text = kind.render(payload, { platform: adapter.name, scope });
-    const sent = await post(text);
+  async function emit({ text, prompt = "" } = {}) {
+    const body = String(text ?? "").trim();
+    if (!body) throw new Error("notice needs text");
+    const kept = truncatePrompt(prompt);
+    if (kept.truncated) log("warn", "notice-prompt", `truncated to ${MAX_PROMPT_BYTES} bytes`);
+    const sent = await post(body);
     const seq = Number(state.meta.noticeSeq ?? 0) + 1;
     state.meta.noticeSeq = seq;
     const notice = {
       id: `ntc-${seq}`,
-      kind: kind.id,
       platform: adapter.name,
+      text: body,
+      prompt: kept.prompt,
       messageId: sent?.messageId ? String(sent.messageId) : null,
-      refs,
-      payload,
-      actions: Object.keys(kind.actions ?? {}),
-      text,
       sentAt: isoAt(now()),
     };
     state.notices[notice.id] = notice;
     save();
-    log("info", "notice", notice.id, notice.kind, notice.messageId ?? "-");
+    log("info", "notice", notice.id, notice.messageId ?? "-", `${body.length} chars`);
     return notice;
   }
 
@@ -96,5 +88,5 @@ export function createNoticeService({ state, save, adapter, now = () => Date.now
     return dropped;
   }
 
-  return { emit, get, match, list, prune, kinds };
+  return { emit, get, match, list, prune };
 }

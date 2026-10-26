@@ -17,7 +17,7 @@ import { readBeat } from "../ledger/heartbeat.mjs";
 import { salvageStalledRun } from "../ledger/salvage.mjs";
 import { createStateStore } from "../state/store.mjs";
 import { createNoticeService } from "../notices/service.mjs";
-import { registry } from "../notices/registry.mjs";
+import { RESTART_PROMPT, stallNoticePrompt, stallNoticeText } from "./stall-notice.mjs";
 import { createPrompts } from "./prompts.mjs";
 
 const HEARTBEAT_MS = 15_000;
@@ -28,7 +28,6 @@ const RETENTION_MS = 72 * 3_600_000;
 const SEEN_RETENTION_MS = 72 * 3_600_000;
 const MAX_SEEN = 5000;
 const COMMAND_TTL_MS = 10 * 60_000;
-const RESTART_PROMPT = "上一轮似乎卡住了，继续，不要犯相同错误";
 const INTERRUPT_NOTICE = "上一轮处理被中断（进程重启）。回复「继续」接着做，或 /重跑 从头再来。";
 const ACTION_KINDS = { cancel: true, restart: true };
 
@@ -46,7 +45,7 @@ export function createCore({ adapter, config, deps = {} }) {
   const state = store.state;
   const save = store.save;
   const notices = deps.notices ?? createNoticeService({ state, save, adapter, now, log });
-  const prompts = deps.prompts ?? createPrompts({ dir: config.promptsDir, userDir: config.userPromptsDir, log, cli: config.cli, kinds: notices.kinds });
+  const prompts = deps.prompts ?? createPrompts({ dir: config.promptsDir, userDir: config.userPromptsDir, log, cli: config.cli });
   const children = new Map();
   const notes = new Map();
   const runtimeInbounds = new Map();
@@ -120,7 +119,7 @@ export function createCore({ adapter, config, deps = {} }) {
     if (beat?.at) job.stallBeatAt = beat.at;
     save();
     appendLog({ event: "stall", job: job.id, key: job.key, session: job.session, silenceMs, reason: job.stallReason, tool: job.stallTool, callIds: tool?.callIds ?? [], runningMs: job.stallRunningMs, pid: job.lease?.pid ?? null });
-    const payload = {
+    const fields = {
       key: job.key,
       session: job.session,
       pid: job.lease?.pid ?? null,
@@ -130,8 +129,16 @@ export function createCore({ adapter, config, deps = {} }) {
       tool,
     };
     try {
-      const notice = await notices.emit("job-stall", payload, { refs: { jobId: job.id, key: job.key, session: job.session, pid: job.lease?.pid ?? null } });
-      job.stallNoticeId = notice.id;
+      const notice = await notices.emit({
+        text: stallNoticeText(fields),
+        prompt: stallNoticePrompt({
+          key: job.key,
+          platform: adapter.name,
+          cli: config.cli,
+          instructions: prompts.read("stall-instructions.md").trim(),
+          actions: prompts.stallActions(adapter.name),
+        }),
+      });
       save();
       return notice;
     } catch (error) {
@@ -206,17 +213,9 @@ export function createCore({ adapter, config, deps = {} }) {
     return true;
   }
 
-  async function applyAction({ action, noticeId, key, text } = {}) {
-    if (!action) return false;
-    const notice = noticeId ? notices.get(noticeId) : null;
-    const targetKey = notice?.refs?.key ?? key;
-    if (!targetKey) return false;
-    if (notice && !(notice.actions ?? []).includes(action)) {
-      appendLog({ event: "action", action, notice: notice.id, note: "unsupported" });
-      return false;
-    }
-    if (!notice && !ACTION_KINDS[action]) return false;
-    return finishStalled({ key: targetKey, action, text });
+  async function applyAction({ action, key, text } = {}) {
+    if (!action || !key || !ACTION_KINDS[action]) return false;
+    return finishStalled({ key, action, text });
   }
 
   async function drainCommands() {
@@ -241,8 +240,7 @@ export function createCore({ adapter, config, deps = {} }) {
       if (!Number.isFinite(writtenAt) || now() - writtenAt > COMMAND_TTL_MS) continue;
       try {
         if (command.op === "emit") {
-          if (!registry.has(command.noticeKind ?? "")) continue;
-          await notices.emit(command.noticeKind, command.payload ?? {}, { refs: command.refs ?? {} });
+          await notices.emit({ text: command.text, prompt: command.prompt ?? "" });
         } else {
           await applyAction(command);
         }
@@ -283,13 +281,9 @@ export function createCore({ adapter, config, deps = {} }) {
     const base = { platform: adapter.name, adapter, inbound, root };
     if (job.noticeId) {
       const notice = notices.get(job.noticeId);
-      if (notice) return prompts.noticeReply({ ...base, notice, kind: notices.kinds.get(notice.kind) });
+      if (notice) return prompts.noticeReply({ ...base, notice });
     }
-    const variant = prompts.variant(root);
-    if (notices.kinds.has(variant) && variant !== "plain") {
-      return prompts.noticeReply({ ...base, notice: null, kind: notices.kinds.get(variant) });
-    }
-    if (variant === "candidate" || typeof jev?.judgeChoice !== "function") return prompts.conversation(base);
+    if (prompts.variant(root) === "candidate" || typeof jev?.judgeChoice !== "function") return prompts.conversation(base);
     return jev.judgeChoice({
       id: "prompt-variant",
       state: root,
@@ -640,7 +634,7 @@ export function createCore({ adapter, config, deps = {} }) {
     if (!shouldAnnounceBoot(state.meta.bootNotice?.bootId, bootId)) return false;
     const at = new Date(now());
     try {
-      const notice = await notices.emit("boot", { text: bootNoticeText(at, localStamp) });
+      const notice = await notices.emit({ text: bootNoticeText(at, localStamp) });
       state.meta.bootNotice = { bootId, at: at.toISOString(), noticeId: notice.id };
       save();
       log("info", "boot-notice", bootId, notice.id);

@@ -8,8 +8,6 @@ import { createLog } from "./shared/log.mjs";
 import { createCore } from "./runtime/core.mjs";
 import { createUsage } from "./runtime/usage.mjs";
 import { createJev } from "./judgment/jev.mjs";
-import { createNoticeService } from "./notices/service.mjs";
-import { registry } from "./notices/registry.mjs";
 import { definePlatform, isPlatform, PLATFORMS } from "./platforms/contract.mjs";
 
 export const ACTION_NAMES = new Set(["cancel", "restart"]);
@@ -21,11 +19,9 @@ export function usage(stream = process.stderr) {
     [
       "usage:",
       "  agent-relay serve <feishu|slack|telegram>",
-      "  agent-relay notice emit <kind> --platform <p> [--text <text>] [--payload <json>] [--refs <json>]",
+      "  agent-relay notice emit --platform <p> (--text <text> | --text-file <path>) [--prompt <text> | --prompt-file <path>]",
       "  agent-relay notify <platform> <text>",
-      "  agent-relay action <platform> <notice-id> <cancel|restart> [text]",
       "  agent-relay stall <platform> <cancel|restart> <key> [text]",
-      `kinds: ${registry.all().map((kind) => kind.id).join(", ")}`,
     ].join("\n") + "\n",
   );
   process.exit(2);
@@ -63,21 +59,19 @@ export async function sendCommand(config, platform, command, { waitMs = COMMAND_
   return { delivered: !existsSync(file), file };
 }
 
-function payloadOf(flags) {
-  if (typeof flags["payload-file"] === "string") return JSON.parse(readFileSync(flags["payload-file"], "utf8"));
-  if (typeof flags.payload === "string") return JSON.parse(flags.payload);
-  return { text: typeof flags.text === "string" ? flags.text : "" };
+export function textFlag(flags, name) {
+  const file = flags[`${name}-file`];
+  if (typeof file === "string") return readFileSync(file, "utf8").trim();
+  return typeof flags[name] === "string" ? flags[name].trim() : "";
 }
 
-export async function emitNotice(config, platform, kindId, payload, refs = {}, log = createLog()) {
-  const sent = await sendCommand(config, platform, { op: "emit", noticeKind: kindId, payload, refs }).catch((error) => {
+export async function emitNotice(config, platform, text, prompt = "", log = createLog()) {
+  const sent = await sendCommand(config, platform, { op: "emit", text, prompt }).catch((error) => {
     log("warn", "notice-command", String(error?.message ?? error));
     return { delivered: false };
   });
   if (sent.delivered) return { delivered: true };
   const adapter = await loadPlatform(platform, config, log);
-  const kind = registry.get(kindId);
-  const text = kind.render(payload, { platform });
   const posted = await (adapter.postNotice ?? adapter.notify).call(adapter, text);
   return { delivered: false, messageId: posted?.messageId ?? null };
 }
@@ -118,13 +112,12 @@ export async function main(argv = process.argv.slice(2)) {
   if (mode === "notice") {
     const [verb, ...args] = rest;
     if (verb !== "emit") usage();
-    const { flags, rest: words } = parseFlags(args);
-    const kindId = words[0];
+    const { flags } = parseFlags(args);
     const platform = flags.platform;
-    if (!kindId || !registry.has(kindId) || !isPlatform(platform)) usage();
-    const refs = typeof flags.refs === "string" ? JSON.parse(flags.refs) : {};
-    const payload = payloadOf(flags);
-    const result = await emitNotice(config, platform, kindId, payload, refs, log);
+    const text = textFlag(flags, "text");
+    const prompt = textFlag(flags, "prompt");
+    if (!isPlatform(platform) || !text) usage();
+    const result = await emitNotice(config, platform, text, prompt, log);
     process.stdout.write(`${result.delivered ? "delivered" : `sent ${result.messageId ? 1 : 0}`}\n`);
     return;
   }
@@ -133,14 +126,7 @@ export async function main(argv = process.argv.slice(2)) {
     if (!isPlatform(platform)) usage();
     const text = words.join(" ").trim();
     if (!text) usage();
-    await emitNotice(config, platform, "plain", { text }, {}, log);
-    return;
-  }
-  if (mode === "action") {
-    const [platform, noticeId, action, ...words] = rest;
-    if (!isPlatform(platform) || !noticeId || !ACTION_NAMES.has(action)) usage();
-    const result = await sendCommand(config, platform, { op: "action", noticeId, action, text: words.join(" ").trim() });
-    process.stdout.write(`${result.delivered ? "delivered" : "pending"}\n`);
+    await emitNotice(config, platform, text, "", log);
     return;
   }
   if (mode === "stall") {

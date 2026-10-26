@@ -1,6 +1,5 @@
-- 「杀掉」→ `agent-relay action {{platform}} <notice-id> cancel`（notice-id 在通知正文的「通知编号」里）。
-- 「继续」或「继续 <补充要求>」→ `agent-relay action {{platform}} <notice-id> restart "<补充要求>"`，没有补充就省略最后一个参数。
-- 没有通知编号、只有 key 时走兼容入口：`agent-relay stall {{platform}} cancel|restart <key>`。
+- 「杀掉」→ `agent-relay stall {{platform}} cancel <key>`（只终止，按已用时间入账）。
+- 「继续」或「继续 <补充要求>」→ `agent-relay stall {{platform}} restart <key> "<补充要求>"`，没有补充就省略最后一个参数。
 - `<key>` 是 job 的 key：卡住通知正文里有；不在通知里时从 `~/.config/agent-relay/relay-<platform>.json` 的 `jobs` 里取 `status` 仍在跑的那条，不要猜。
 - `cancel` 只终止。`restart` 自带终止：先让卡住的那个进程收尾，再用原 session 派新 job，prompt 是「上一轮似乎卡住了，继续，不要犯相同错误」加用户的补充，答案回到原会话。
 - 终止阶段两条命令一样：插件用最后一次心跳写闭合账目，卡住的那段不计入；进程不响应时由 relay 兜底补同一行再 SIGKILL。

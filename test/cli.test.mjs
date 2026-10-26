@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ACTION_NAMES, parseFlags, sendCommand } from "../src/cli.mjs";
+import { ACTION_NAMES, parseFlags, sendCommand, textFlag } from "../src/cli.mjs";
 import { readEnvFile } from "../src/config.mjs";
 
 test("readEnv parses KEY=value lines and ignores comments", () => {
@@ -40,4 +40,13 @@ test("sendCommand reports delivered only after the daemon consumed the file", as
   const pending = await sendCommand(config, "slack", { op: "action" }, { waitMs: 0 });
   assert.equal(pending.delivered, false);
   assert.ok(readdirSync(join(dir, "slack")).length === 1);
+});
+
+test("textFlag reads a file before an inline value and trims both", () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-text-"));
+  const file = join(dir, "prompt.md");
+  writeFileSync(file, "  文件里的 prompt  \n");
+  assert.equal(textFlag({ "prompt-file": file }, "prompt"), "文件里的 prompt");
+  assert.equal(textFlag({ prompt: "  行内  " }, "prompt"), "行内");
+  assert.equal(textFlag({}, "prompt"), "");
 });

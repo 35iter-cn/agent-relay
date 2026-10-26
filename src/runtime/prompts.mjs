@@ -1,10 +1,8 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { renderPrompt } from "../shared/prompt.mjs";
-import { actionsText } from "../notices/service.mjs";
 
 export const CANDIDATE_LINE = /^[ \t]*\[\d{8}-\d{4}-\d+\][ \t]+\S/m;
-export const STALL_LINE = /^[ \t]*⏸[ \t]*任务疑似卡住/m;
 
 export function rootSectionText(root, message) {
   const value = String(root ?? "").trim();
@@ -13,19 +11,12 @@ export function rootSectionText(root, message) {
   return `\n本会话的起点（不是你这条）：\n${value}`;
 }
 
-export function promptVariant(root, kinds = null) {
-  const text = String(root ?? "");
-  if (CANDIDATE_LINE.test(text)) return "candidate";
-  if (kinds) {
-    for (const kind of kinds.all()) {
-      if (kind.marker && text.trimStart().startsWith(kind.marker)) return kind.id;
-    }
-  }
-  if (STALL_LINE.test(text)) return "job-stall";
+export function promptVariant(root) {
+  if (CANDIDATE_LINE.test(String(root ?? ""))) return "candidate";
   return "task";
 }
 
-export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agent-relay", kinds = null }) {
+export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agent-relay" }) {
   const cache = new Map();
 
   function read(name) {
@@ -63,7 +54,7 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
   }
 
   function conversation({ platform, adapter, inbound, root, variant = null }) {
-    const resolved = variant ?? promptVariant(root, kinds);
+    const resolved = variant ?? promptVariant(root);
     const candidateRules = resolved === "candidate" ? read("candidate-rules.md").trim() : "";
     return renderPrompt(read("thread.md"), {
       ...baseValues({ platform, adapter, inbound, root }),
@@ -71,23 +62,17 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
     });
   }
 
-  function noticeReply({ platform, adapter, inbound, root, notice, kind }) {
-    const instructions = kind.instructions ? read(kind.instructions).trim() : "";
+  function noticeReply({ platform, adapter, inbound, root, notice }) {
     const values = {
       ...baseValues({ platform, adapter, inbound, root }),
-      notice_id: notice?.id ?? "(未登记)",
-      notice_kind: notice?.kind ?? kind.id,
-      notice_instructions: instructions ? `\n${instructions}` : "",
-      notice_actions: notice
-        ? actionsText(kind, notice, { cli })
-        : `- 这条通知没有登记编号：用 \`${cli} stall ${platform} cancel|restart <key>\`（key 在通知正文里）`,
-      notice_refs: JSON.stringify(notice?.refs ?? {}, null, 2),
+      notice_id: notice.id,
+      notice_prompt: String(notice.prompt ?? "").trim() || "没有额外说明，按用户本轮消息处理。",
     };
-    return renderPrompt(read(kind.prompt ?? "notice.md"), values);
+    return renderPrompt(read("notice.md"), values);
   }
 
   function variant(root) {
-    return promptVariant(root, kinds);
+    return promptVariant(root);
   }
 
   return { read, conversation, noticeReply, stallActions, variant };
