@@ -10,9 +10,29 @@ const TARGET = process.env.AGENT_RELAY_CONFIG_DIR ?? join(HOME, ".config/agent-r
 const ENV_FILES = ["feishu.env", "slack-app.env", "telegram.env", "jev.env", "webhook.url", ".slack-xoxc.tmp", "usage-prompt.json"];
 const PLATFORMS = ["feishu", "slack", "telegram"];
 
+export const INFLIGHT = new Set(["running", "queued", "answered"]);
+
+export function dropInflight(state) {
+  let dropped = 0;
+  for (const [id, job] of Object.entries(state.jobs ?? {})) {
+    if (!INFLIGHT.has(job?.status)) continue;
+    delete state.jobs[id];
+    dropped += 1;
+  }
+  state.inbox = (state.inbox ?? []).filter((id) => state.jobs[id]);
+  for (const [dedupeId, value] of Object.entries(state.seen ?? {})) {
+    if (value !== "legacy" && !state.jobs[value]) state.seen[dedupeId] = "legacy";
+  }
+  for (const entry of Object.values(state.convs ?? {})) {
+    if (entry?.activeJob && !state.jobs[entry.activeJob]) entry.activeJob = null;
+  }
+  return dropped;
+}
+
 function main(argv) {
   const dryRun = argv.includes("--dry-run");
   const force = argv.includes("--force");
+  const dropInflightJobs = argv.includes("--drop-inflight");
   mkdirSync(TARGET, { recursive: true, mode: 0o700 });
   chmodSync(TARGET, 0o700);
   const done = [];
@@ -41,8 +61,9 @@ function main(argv) {
       continue;
     }
     const state = upgradeState(JSON.parse(readFileSync(from, "utf8")));
+    const dropped = dropInflightJobs ? dropInflight(state) : 0;
     if (!dryRun) writeJsonAtomic(to, state);
-    done.push(`upgrade relay-${platform}.json (schema v${state.meta.schemaVersion}, jobs=${Object.keys(state.jobs).length})`);
+    done.push(`upgrade relay-${platform}.json (schema v${state.meta.schemaVersion}, jobs=${Object.keys(state.jobs).length}${dropped ? `, dropped ${dropped} in-flight` : ""})`);
   }
 
   const promptsSource = join(SOURCE, "prompts");
