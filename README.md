@@ -111,6 +111,10 @@ CLI commands write a JSON file into `relay-<platform>.cmd/` and wait up to 20s f
 the daemon to consume it: `delivered` means the daemon handled it, `pending` means
 the daemon is not running.
 
+`serve` takes `serve-<platform>.pid` in the config directory and refuses to start
+when another live process holds it, so two instances can never overwrite each
+other's state. A stale pid file is reclaimed automatically.
+
 ## Privacy and retention
 
 Everything identifying lives in `~/.config/agent-relay/`, never in the sources:

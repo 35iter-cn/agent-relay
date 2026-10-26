@@ -6,6 +6,7 @@ import { ensurePrivateDir } from "./shared/fs.mjs";
 import { readJson } from "./shared/json.mjs";
 import { createLog } from "./shared/log.mjs";
 import { createCore } from "./runtime/core.mjs";
+import { acquireInstanceLock } from "./runtime/instance-lock.mjs";
 import { createUsage } from "./runtime/usage.mjs";
 import { createJev } from "./judgment/jev.mjs";
 import { definePlatform, isPlatform, PLATFORMS } from "./platforms/contract.mjs";
@@ -79,6 +80,19 @@ export async function emitNotice(config, platform, text, prompt = "", log = crea
 async function serve(platform, config, log) {
   ensurePrivateDir(config.configDir);
   ensurePrivateDir(config.logDir);
+  const lock = acquireInstanceLock({ dir: config.configDir, platform });
+  if (!lock) {
+    log("error", "serve-lock", `another instance already serves ${platform} (${config.configDir})`);
+    process.exit(1);
+  }
+  const release = () => lock.release();
+  process.on("exit", release);
+  for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"]) {
+    process.on(signal, () => {
+      release();
+      process.exit(0);
+    });
+  }
   const adapter = await loadPlatform(platform, config, log);
   const jev = createJev({ env: { ...process.env, ...config.readEnv(config.envFile("jev.env")) }, log });
   const usagePrompt = readJson(config.usagePromptFile, null);
