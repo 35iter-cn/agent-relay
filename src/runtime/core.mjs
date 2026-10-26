@@ -300,8 +300,17 @@ export function createCore({ adapter, config, deps = {} }) {
     const full = !hasSession(entry.session);
     if (!full) return spawnWorker(job, entry, inbound, inbound.text, false);
     const built = buildPrompt(job, entry);
-    if (typeof built?.then === "function") return built.then((prompt) => spawnWorker(job, entry, inbound, prompt, true));
-    return spawnWorker(job, entry, inbound, built, true);
+    const run = (prompt) => {
+      if (String(prompt ?? "").trim()) return spawnWorker(job, entry, inbound, prompt, true);
+      appendLog({ event: "empty-prompt", job: job.id, key: inbound.key });
+      job.status = "failed";
+      job.error = "empty-prompt";
+      job.updatedAt = isoNow();
+      save();
+      return adapter.reply(ctxOf(job), `prompt 模板为空，本轮没有启动：检查 ${config.promptsDir} 下的 thread.md / notice.md。`).catch((error) => log("error", "empty-prompt", String(error?.message ?? error)));
+    };
+    if (typeof built?.then === "function") return built.then(run);
+    return run(built);
   }
 
   function spawnWorker(job, entry, inbound, prompt, full) {

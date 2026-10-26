@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { log as defaultLog } from "./shared/log.mjs";
 
-const PKG_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
+const SRC_DIR = dirname(fileURLToPath(import.meta.url));
 
 export function readEnvFile(file) {
   const out = {};
@@ -31,7 +31,7 @@ export function createConfig({ env = process.env } = {}) {
     configDir,
     logDir: join(configDir, "logs"),
     sessionsDir: env.AGENT_RELAY_SESSIONS_DIR ?? sessionsDirFor(cwd, home),
-    promptsDir: join(PKG_ROOT, "prompts"),
+    promptsDir: join(SRC_DIR, "prompts"),
     userPromptsDir: join(configDir, "prompts"),
     usagePromptFile: join(configDir, "usage-prompt.json"),
     uploadsDir: join(configDir, "uploads"),

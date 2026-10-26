@@ -112,6 +112,18 @@ test("TC-1 first turn injects the rendered prompt template", async () => {
   assert.doesNotMatch(captured[0].prompt, /\{\{/);
 });
 
+test("TC-2b an empty first-turn prompt fails the job instead of spawning a blind worker", async () => {
+  let spawned = 0;
+  const built = harness({ spawn: () => (spawned += 1, fakeChild({ stdout: "ok" })) });
+  writeFileSync(join(built.dir, "prompts", "thread.md"), "");
+  await built.core.handle(inbound({ text: "第一条" }));
+  await tick();
+  assert.equal(spawned, 0);
+  assert.match(built.replies.map((item) => item.text).join("\n"), /prompt 模板为空/);
+  assert.equal(Object.values(built.core.state.jobs)[0].status, "failed");
+  assert.equal(Object.values(built.core.state.jobs)[0].error, "empty-prompt");
+});
+
 test("TC-2 a message with an existing session sends only the raw text", async () => {
   const captured = [];
   const { core } = harness({
