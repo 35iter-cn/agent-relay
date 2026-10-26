@@ -386,6 +386,10 @@ export function createPlatform({ config, log: baseLog, createClient = defaultCli
     async start({ onMessage, onReady, core }) {
       coreRef = core;
       state = core.state;
+      if (!allowedUser) {
+        log("error", "missing-credential", config.envFile("feishu.env"), "AGENT_RELAY_ALLOWED_USER");
+        process.exit(1);
+      }
       await ensureRuntime();
       pruneUploads(config.uploadsDir);
       const lark = await loadSdk();

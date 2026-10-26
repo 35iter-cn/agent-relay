@@ -1,7 +1,7 @@
 import test from "node:test";
 import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
-import { stripMentions, sessionFor, acceptsEvent, heartbeatVerdict, refreshDelayMs, alertAllowed, pruneThreads, decideProgressMode, createRuntime } from "../src/platforms/slack.mjs";
+import { stripMentions, sessionFor, acceptsEvent, heartbeatVerdict, refreshDelayMs, alertAllowed, pruneThreads, decideProgressMode, createRuntime, createPlatform } from "../src/platforms/slack.mjs";
 
 const TEST_SCOPE = { channel: "CTEST", allowedUser: "UTEST", botUser: "UBOT" };
 
@@ -264,4 +264,33 @@ test("decideProgressMode maps slack errors onto the degradation ladder", () => {
   assert.equal(decideProgressMode("not_allowed_token_type"), "placeholder");
   assert.equal(decideProgressMode("invalid_auth"), "placeholder");
   assert.equal(decideProgressMode("ratelimited"), "none");
+});
+
+test("slack refuses to start without a channel or an allowed user", async () => {
+  const exits = [];
+  const logs = [];
+  const originalExit = process.exit;
+  process.exit = (code) => {
+    exits.push(code);
+    throw new Error(`exit ${code}`);
+  };
+  try {
+    const base = { SLACK_APP_TOKEN: "xapp", SLACK_BOT_TOKEN: "xoxb", AGENT_RELAY_SLACK_CHANNEL: "CTEST" };
+    const missingUser = createPlatform({
+      config: { readEnv: () => base, envFile: (name) => `/tmp/${name}`, home: "/tmp", configDir: "/tmp" },
+      log: (...parts) => logs.push(parts.map(String).join(" ")),
+    });
+    await assert.rejects(() => missingUser.start({ onMessage: async () => {}, core: { state: { convs: {} }, save: () => {} } }), /exit 1/);
+
+    const missingChannel = createPlatform({
+      config: { readEnv: () => ({ SLACK_APP_TOKEN: "xapp", SLACK_BOT_TOKEN: "xoxb", AGENT_RELAY_ALLOWED_USER: "UTEST" }), envFile: (name) => `/tmp/${name}`, home: "/tmp", configDir: "/tmp" },
+      log: (...parts) => logs.push(parts.map(String).join(" ")),
+    });
+    await assert.rejects(() => missingChannel.start({ onMessage: async () => {}, core: { state: { convs: {} }, save: () => {} } }), /exit 1/);
+  } finally {
+    process.exit = originalExit;
+  }
+  assert.deepEqual(exits, [1, 1]);
+  assert.ok(logs.some((line) => line.includes("AGENT_RELAY_SLACK_CHANNEL")));
+  assert.ok(logs.some((line) => line.includes("AGENT_RELAY_ALLOWED_USER")));
 });

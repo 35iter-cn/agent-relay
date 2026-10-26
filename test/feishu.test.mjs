@@ -233,6 +233,29 @@ test("TC-N2 missing credentials log one line and exit instead of a TypeError", a
   assert.deepEqual(exits, [1]);
 });
 
+test("TC-N5 a missing allowed user refuses to start instead of accepting everyone", async () => {
+  const exits = [];
+  const logs = [];
+  const originalExit = process.exit;
+  process.exit = (code) => {
+    exits.push(code);
+    throw new Error(`exit ${code}`);
+  };
+  try {
+    const adapter = createPlatform({
+      config: adapterConfig({ env: { FEISHU_APP_ID: "cli_test", FEISHU_APP_SECRET: "secret", FEISHU_CHAT_ID: "oc_1" } }),
+      log: (...parts) => logs.push(parts.map(String).join(" ")),
+      createClient: async () => fakeClient().client,
+      loadSdk: async () => ({ default: {} }),
+    });
+    await assert.rejects(() => adapter.start({ onMessage: async () => {}, core: { state: { convs: {} }, save: () => {} } }), /exit 1/);
+  } finally {
+    process.exit = originalExit;
+  }
+  assert.deepEqual(exits, [1]);
+  assert.ok(logs.some((line) => line.includes("AGENT_RELAY_ALLOWED_USER")));
+});
+
 test("TC-N4 a platform error surfaces the code instead of being swallowed", async () => {
   const { client } = fakeClient({ create: { code: 99991672, msg: "no scope" } });
   const adapter = createPlatform({

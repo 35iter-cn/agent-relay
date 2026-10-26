@@ -389,6 +389,10 @@ export function createPlatform({ config, log: baseLog }) {
         log("error", "missing-credential", config.envFile("slack-app.env"), "SLACK_APP_TOKEN");
         process.exit(1);
       }
+      if (!channel || !allowedUser) {
+        log("error", "missing-credential", config.envFile("slack-app.env"), !channel ? "AGENT_RELAY_SLACK_CHANNEL" : "AGENT_RELAY_ALLOWED_USER");
+        process.exit(1);
+      }
       try {
         cookies = readCookies();
       } catch (error) {
