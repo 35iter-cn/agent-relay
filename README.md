@@ -110,7 +110,9 @@ logs/<platform>/<day>.jsonl
 Environment knobs use the `AGENT_RELAY_` prefix (the legacy `RELAY_` prefix is
 still read): `AGENT_RELAY_STALL_MS`, `AGENT_RELAY_TOOL_STALL_MS`,
 `AGENT_RELAY_TIMEOUT_MS`, `AGENT_RELAY_MAX_WORKERS`, `AGENT_RELAY_QUEUE_DEPTH`,
-`AGENT_RELAY_WORKER`, `AGENT_RELAY_ALLOWED_USER`.
+`AGENT_RELAY_WORKER`, `AGENT_RELAY_ALLOWED_USER`. With nothing set, one turn
+times out after 2 hours, `MAX_WORKERS` is 5 and `QUEUE_DEPTH` is 3 — the source
+defaults are the production values, so no systemd drop-in is involved.
 
 CLI commands write a JSON file into `relay-<platform>.cmd/` and wait up to 20s for
 the daemon to consume it: `delivered` means the daemon handled it, `pending` means
