@@ -2,67 +2,40 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   stripMentions,
-  channelKey,
   sessionFor,
-  channelPostIdFor,
-  resolveCommentKey,
-  learnMirror,
-  mirrorFor,
+  topicKey,
+  isGeneralTopic,
   nextOffset,
   escapeHtml,
   toTelegramHtml,
   pickTypingTarget,
   alertAllowed,
-  waitForMirror,
   pollUpdates,
 } from "../src/platforms/telegram.mjs";
 
-test("channel posts map to ch<id> sessions", () => {
-  assert.equal(channelKey(21), "ch21");
-  assert.equal(sessionFor("ch21"), "tg-ch21");
+test("a topic is the conversation, the session follows from its id", () => {
+  assert.equal(topicKey(21), "t21");
+  assert.equal(sessionFor(topicKey(21)), "tg-t21");
+  assert.equal(topicKey(0), null);
+  assert.equal(topicKey(null), null);
 });
 
-test("TC-12 a mirror is learned from the comment reply_to_message", () => {
-  const comment = { message_id: 300, message_thread_id: 99, reply_to_message: { is_automatic_forward: true, forward_from_message_id: 21 } };
-  assert.deepEqual(learnMirror(comment), { postId: 21, mirrorId: 99 });
-  assert.equal(channelPostIdFor(comment), 21);
-  assert.equal(learnMirror({ message_id: 5, text: "闲聊" }), null);
+test("only the general topic counts as general", () => {
+  assert.equal(isGeneralTopic(undefined), true);
+  assert.equal(isGeneralTopic(null), true);
+  assert.equal(isGeneralTopic(1), true);
+  assert.equal(isGeneralTopic("1"), true);
+  assert.equal(isGeneralTopic(12), false);
+  assert.equal(isGeneralTopic("12"), false);
 });
 
-test("TC-12 comments resolve to a session through the mirror map", () => {
-  const channelPosts = { "21": { mirrorId: 99 }, "22": { mirrorId: 100 } };
-  assert.equal(resolveCommentKey(99, channelPosts), "ch21");
-  assert.equal(resolveCommentKey("100", channelPosts), "ch22");
-  assert.equal(resolveCommentKey(101, channelPosts), null);
-  assert.equal(resolveCommentKey(null, channelPosts), null);
-  assert.equal(mirrorFor(channelPosts, 22), 100);
-  assert.equal(mirrorFor({}, 22), null);
-});
-
-test("TC-12 waiting for a mirror returns as soon as it appears", async () => {
-  let polls = 0;
-  const mirror = await waitForMirror({
-    read: () => (++polls >= 3 ? 77 : null),
-    timeoutMs: 5_000,
-    stepMs: 1,
-    sleep: async () => {},
-  });
-  assert.equal(mirror, 77);
-  assert.equal(polls, 3);
-});
-
-test("TC-12 waiting for a mirror gives up at the deadline", async () => {
-  let clock = 0;
-  const mirror = await waitForMirror({
-    read: () => null,
-    timeoutMs: 1_000,
-    stepMs: 250,
-    now: () => clock,
-    sleep: async (ms) => {
-      clock += ms;
-    },
-  });
-  assert.equal(mirror, null);
+test("a second message inside the same general cooldown stays silent", () => {
+  const alerts = {};
+  const started = 1_000_000;
+  assert.equal(alertAllowed(alerts, "general", started), true);
+  alerts.general = new Date(started).toISOString();
+  assert.equal(alertAllowed(alerts, "general", started + 60_000), false);
+  assert.equal(alertAllowed(alerts, "general", started + 31 * 60_000), true);
 });
 
 test("TC-14 fetch failures leave the cursor untouched", async () => {
@@ -84,14 +57,17 @@ test("TC-14 a successful round advances the cursor to the highest update id", as
   const saved = [];
   const handled = [];
   const result = await pollUpdates({
-    api: async () => [{ update_id: 5, message: { message_id: 1 } }, { update_id: 9, channel_post: { message_id: 2 } }],
+    api: async (method, params) => {
+      assert.deepEqual(params.allowed_updates, ["message"]);
+      return [{ update_id: 5, message: { message_id: 1 } }, { update_id: 9, message: { message_id: 2 } }];
+    },
     cursor: 5,
-    handle: async (payload, kind) => handled.push(kind),
+    handle: async (payload) => handled.push(payload.message_id),
     save: (cursor) => saved.push(cursor),
   });
   assert.equal(result.cursor, 10);
   assert.equal(result.count, 2);
-  assert.deepEqual(handled, ["message", "channel_post"]);
+  assert.deepEqual(handled, [1, 2]);
   assert.deepEqual(saved, [6, 10]);
 });
 

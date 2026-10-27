@@ -76,7 +76,12 @@ Design rules:
 | --- | --- | --- |
 | feishu | Lark WS long connection | `parent_id` / `root_id` |
 | slack | Socket Mode | `thread_ts` |
-| telegram | long polling | `reply_to_message.message_id` / topic id |
+| telegram | long polling | `message_thread_id` — a forum topic *is* the conversation |
+
+On telegram the group's main area carries only notices (boot lines, stall
+alerts, intake broadcasts); a conversation lives in a forum topic, so one topic
+is one session and every message inside it continues that session. A group
+message outside any topic gets a single hint, not a run.
 
 Adapter contract (`src/platforms/contract.mjs`): `name`, `start`, `reply`,
 `sessionFor` are required; `postNotice`, `edit`, `onProgress`, `onProgressDone`,
