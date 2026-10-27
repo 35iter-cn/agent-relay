@@ -9,8 +9,8 @@ const TYPING_REFRESH_MS = relayEnv("TYPING_MS", 4_000);
 const WAIT_TIMEOUT_MS = relayEnv("WAIT_MS", 90 * 60_000);
 const ALERT_COOLDOWN_MS = relayEnv("ALERT_COOLDOWN_MS", 30 * 60_000);
 const CHUNK_LIMIT = 4096;
-const TOPIC_RETENTION_MS = 30 * 86_400_000;
-const GENERAL_HINT = "这个群的主界面只发通知。要开对话请新建一个话题（topic），在话题里发消息；追问就留在同一个话题里。";
+const MESSAGE_INDEX_RETENTION_MS = 30 * 86_400_000;
+const MESSAGE_INDEX_MAX = 5_000;
 
 export const replyRules = "- 可以写 `**粗体**`、行内代码与 ``` 代码围栏（会转成 Telegram 的 HTML），不要用 Markdown 表格。";
 
@@ -18,12 +18,17 @@ export function sessionFor(key) {
   return `tg-${key}`;
 }
 
-export function topicKey(threadId) {
-  return threadId ? `t${threadId}` : null;
+export function groupKey(messageId) {
+  return messageId ? `g${messageId}` : null;
 }
 
-export function isGeneralTopic(threadId) {
-  return !threadId || String(threadId) === "1";
+export function resolveGroupKey(message, index = {}) {
+  const parent = message?.reply_to_message?.message_id;
+  if (parent) {
+    const known = index[String(parent)];
+    return known ? known.key : groupKey(parent);
+  }
+  return groupKey(message?.message_id);
 }
 
 export function nextOffset(updates) {
@@ -130,10 +135,6 @@ export function createPlatform({ config, log: baseLog }) {
     }
   }
 
-  function topicOf(key) {
-    const match = /^t(\d+)$/.exec(String(key ?? ""));
-    return match ? Number(match[1]) : null;
-  }
 
   function syncTyping() {
     const targets = [...typing.keys];
@@ -151,8 +152,6 @@ export function createPlatform({ config, log: baseLog }) {
       typing.busy = true;
       typing.cursor += 1;
       const payload = { chat_id: String(chatId), action: "typing" };
-      const topic = topicOf(key);
-      if (topic) payload.message_thread_id = topic;
       try {
         await client("sendChatAction", payload);
       } catch (error) {
@@ -194,10 +193,21 @@ export function createPlatform({ config, log: baseLog }) {
       }
       client = apiFactory(token);
       state.meta = state.meta ?? {};
-      state.meta.topics = state.meta.topics ?? {};
+      state.meta.msgKeys = state.meta.msgKeys ?? {};
+
+      const rememberMsg = (messageId, key) => {
+        if (!messageId || !key) return;
+        state.meta.msgKeys[String(messageId)] = { key, at: new Date().toISOString() };
+        const ids = Object.keys(state.meta.msgKeys);
+        if (ids.length > MESSAGE_INDEX_MAX) {
+          ids.sort((a, b) => String(state.meta.msgKeys[a].at).localeCompare(String(state.meta.msgKeys[b].at)));
+          for (const id of ids.slice(0, ids.length - MESSAGE_INDEX_MAX)) delete state.meta.msgKeys[id];
+        }
+        core.save();
+      };
 
       const dispatch = async (key, message, text) => {
-        const threadId = message.message_thread_id ?? null;
+        rememberMsg(message.message_id, key);
         const inbound = {
           key,
           session: sessionFor(key),
@@ -205,16 +215,11 @@ export function createPlatform({ config, log: baseLog }) {
           authorId: String(message.from?.id ?? allowedUser),
           text,
           chatId,
-          threadId,
-          rootText: state.meta.topics[String(threadId)]?.rootText ?? text,
+          threadId: null,
+          rootText: state.convs?.[key]?.rootText ?? text,
           replyTo: message.message_id,
-          replyIds: [message.reply_to_message?.message_id, threadId].filter(Boolean),
+          replyIds: [message.reply_to_message?.message_id, message.message_id].filter(Boolean),
         };
-        if (threadId !== null) {
-          const entry = state.convs[key] ?? { session: inbound.session, rootText: text, lastMsgTs: null };
-          entry.topic = threadId;
-          state.convs[key] = entry;
-        }
         typing.keys.add(key);
         syncTyping();
         try {
@@ -227,34 +232,15 @@ export function createPlatform({ config, log: baseLog }) {
         }
       };
 
-      const rememberTopic = (threadId, text) => {
-        const slot = state.meta.topics[String(threadId)];
-        if (!slot) {
-          state.meta.topics[String(threadId)] = { rootText: text, at: new Date().toISOString() };
-          core.save();
-        }
-      };
-
-      const hintGeneral = async (message) => {
-        const now = Date.now();
-        if (!alertAllowed(state.alerts, "general", now)) return log("ignore", "general-hint-cooled", message.message_id);
-        state.alerts.general = new Date(now).toISOString();
-        core.save();
-        log("ignore", "general", message.message_id);
-        await sendText({ chatId, topic: null, replyTo: message.message_id }, GENERAL_HINT).catch((error) => log("warn", "general-hint", String(error)));
-      };
-
       const handleMessage = async (message) => {
         if (String(message.chat?.id) !== String(chatId)) return log("ignore", "chat", message.chat?.id);
         if (message.from?.is_bot) return log("ignore", "bot", message.from?.id);
         if (String(message.from?.id) !== String(allowedUser)) return log("ignore", "author", message.from?.id);
         const text = stripMentions(message.text ?? "", message.entities);
         if (!text) return log("ignore", "empty", message.message_id);
-        const threadId = message.message_thread_id ?? null;
-        const replyIds = [message.reply_to_message?.message_id, threadId].filter(Boolean);
-        if (isGeneralTopic(threadId) && !core.notices.match(replyIds)) return hintGeneral(message);
-        if (!isGeneralTopic(threadId)) rememberTopic(threadId, text);
-        await dispatch(topicKey(threadId) ?? "general", message, text);
+        const key = resolveGroupKey(message, state.meta.msgKeys);
+        if (!key) return log("ignore", "no-key", message.message_id);
+        await dispatch(key, message, text);
       };
 
       if (state.cursor === null || state.cursor === undefined) {
@@ -311,7 +297,11 @@ export function createPlatform({ config, log: baseLog }) {
 
     async reply(ctx, text) {
       client = client ?? apiFactory(token);
-      const sent = await sendText({ chatId, topic: topicOf(ctx.key), replyTo: ctx.replyTo ?? null }, text);
+      const sent = await sendText({ chatId, topic: null, replyTo: ctx.replyTo ?? null }, text);
+      if (sent?.message_id && ctx.key) {
+        state.meta.msgKeys[String(sent.message_id)] = { key: ctx.key, at: new Date().toISOString() };
+        coreRef?.save();
+      }
       return sent?.message_id ? { messageId: String(sent.message_id) } : null;
     },
 
@@ -343,10 +333,10 @@ export function createPlatform({ config, log: baseLog }) {
       const dropped = Object.keys(state.convs ?? {}).length - Object.keys(convs).length;
       state.convs = convs;
       let topics = 0;
-      for (const [id, slot] of Object.entries(state.meta?.topics ?? {})) {
+      for (const [id, slot] of Object.entries(state.meta?.msgKeys ?? {})) {
         const at = Date.parse(slot?.at ?? "");
-        if (!Number.isFinite(at) || now - at > TOPIC_RETENTION_MS) {
-          delete state.meta.topics[id];
+        if (!Number.isFinite(at) || now - at > MESSAGE_INDEX_RETENTION_MS) {
+          delete state.meta.msgKeys[id];
           topics += 1;
         }
       }

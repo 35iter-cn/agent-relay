@@ -3,8 +3,8 @@ import assert from "node:assert/strict";
 import {
   stripMentions,
   sessionFor,
-  topicKey,
-  isGeneralTopic,
+  groupKey,
+  resolveGroupKey,
   nextOffset,
   escapeHtml,
   toTelegramHtml,
@@ -13,29 +13,19 @@ import {
   pollUpdates,
 } from "../src/platforms/telegram.mjs";
 
-test("a topic is the conversation, the session follows from its id", () => {
-  assert.equal(topicKey(21), "t21");
-  assert.equal(sessionFor(topicKey(21)), "tg-t21");
-  assert.equal(topicKey(0), null);
-  assert.equal(topicKey(null), null);
+test("a root message opens a conversation and its session follows from the key", () => {
+  assert.equal(groupKey(21), "g21");
+  assert.equal(sessionFor(groupKey(21)), "tg-g21");
+  assert.equal(groupKey(0), null);
+  assert.equal(groupKey(null), null);
 });
 
-test("only the general topic counts as general", () => {
-  assert.equal(isGeneralTopic(undefined), true);
-  assert.equal(isGeneralTopic(null), true);
-  assert.equal(isGeneralTopic(1), true);
-  assert.equal(isGeneralTopic("1"), true);
-  assert.equal(isGeneralTopic(12), false);
-  assert.equal(isGeneralTopic("12"), false);
-});
-
-test("a second message inside the same general cooldown stays silent", () => {
-  const alerts = {};
-  const started = 1_000_000;
-  assert.equal(alertAllowed(alerts, "general", started), true);
-  alerts.general = new Date(started).toISOString();
-  assert.equal(alertAllowed(alerts, "general", started + 60_000), false);
-  assert.equal(alertAllowed(alerts, "general", started + 31 * 60_000), true);
+test("a reply joins the conversation of the message it answers", () => {
+  const index = { "21": { key: "g21" }, "31": { key: "g21" } };
+  assert.equal(resolveGroupKey({ message_id: 30, reply_to_message: { message_id: 21 } }, index), "g21");
+  assert.equal(resolveGroupKey({ message_id: 40, reply_to_message: { message_id: 31 } }, index), "g21");
+  assert.equal(resolveGroupKey({ message_id: 50 }, index), "g50");
+  assert.equal(resolveGroupKey({ message_id: 60, reply_to_message: { message_id: 999 } }, index), "g999");
 });
 
 test("TC-14 fetch failures leave the cursor untouched", async () => {

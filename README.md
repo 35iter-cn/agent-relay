@@ -77,12 +77,12 @@ Design rules:
 | --- | --- | --- |
 | feishu | Lark WS long connection | `parent_id` / `root_id` |
 | slack | Socket Mode | `thread_ts` |
-| telegram | long polling | `message_thread_id` — a forum topic *is* the conversation |
+| telegram | long polling | `reply_to_message.message_id` — a reply joins the conversation it answers |
 
-On telegram the group's main area carries only notices (boot lines, stall
-alerts, intake broadcasts); a conversation lives in a forum topic, so one topic
-is one session and every message inside it continues that session. A group
-message outside any topic gets a single hint, not a run.
+On telegram the group is a plain chat: every message from the allowed user is a
+turn, a plain message opens a conversation keyed by its own id, and replying to
+any message in that chain continues it — the relay answers with a reply, so the
+thread stays visible as quoting rather than as a separate topic.
 
 Adapter contract (`src/platforms/contract.mjs`): `name`, `start`, `reply`,
 `sessionFor` are required; `postNotice`, `edit`, `onProgress`, `onProgressDone`,
