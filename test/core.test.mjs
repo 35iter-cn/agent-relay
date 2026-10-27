@@ -44,7 +44,7 @@ function harness({ spawn, replies = [], adapterOverrides = {}, state = emptyStat
   for (const name of sessions) writeFileSync(join(sessionsDir, `2026-01-01T00-00-00_${name}.jsonl`), "{}\n");
   const promptsDir = join(dir, "prompts");
   mkdirSync(promptsDir, { recursive: true });
-  writeFileSync(join(promptsDir, "thread.md"), "conversation={{conversation}} user={{user_message}} root={{root_section}} platform={{platform}} surface={{surface}} rules={{reply_rules}} chunk={{chunk_limit}} candidate={{candidate_rules}} actions={{stall_actions}}");
+  writeFileSync(join(promptsDir, "thread.md"), "conversation={{conversation}} user={{user_message}} root={{root_section}} platform={{platform}} surface={{surface}} rules={{reply_rules}} chunk={{chunk_limit}} candidate={{candidate_rules}} section={{stall_section}} actions={{stall_actions}}");
   writeFileSync(join(promptsDir, "notice.md"), "NOTICE id={{notice_id}} prompt={{notice_prompt}} user={{user_message}} root={{root_section}}");
   writeFileSync(join(promptsDir, "stall-instructions.md"), "STALL-INSTRUCTIONS");
   writeFileSync(join(promptsDir, "stall-actions.md"), "ACTIONS platform={{platform}} key=<key>");
@@ -1118,4 +1118,33 @@ test("TC-ST13 a restarted job starts with empty stall fields", async () => {
   assert.equal(restarted.stallNotifiedAt, undefined);
   assert.equal(restarted.stallReason, undefined);
   assert.equal(restarted.stallRunningMs, undefined);
+});
+
+test("TC-42 the stall section carries only the skeleton when no job is running", async () => {
+  const captured = [];
+  const { core } = harness({
+    adapterOverrides: { buildWorker: ({ prompt, full }) => (captured.push({ prompt, full }), { bin: "/bin/true", args: [] }) },
+  });
+  await core.handle(inbound({ text: "第一条" }));
+  await tick();
+  assert.match(captured[0].prompt, /## 处置卡住的 job/);
+  assert.match(captured[0].prompt, /agent-relay stall fake cancel\|restart <key>/);
+  assert.doesNotMatch(captured[0].prompt, /个 job 在跑/);
+});
+
+test("TC-43 a running job is listed with its id and elapsed minutes", async () => {
+  const captured = [];
+  const pending = controlledChild();
+  const { core } = harness({
+    spawn: () => pending,
+    adapterOverrides: { buildWorker: ({ prompt, full }) => (captured.push({ prompt, full }), { bin: "/bin/true", args: [] }) },
+  });
+  await core.handle(inbound({ key: "th-a", session: "fs-th-a", text: "第一条" }));
+  await tick();
+  await core.handle(inbound({ key: "th-b", session: "fs-th-b", dedupeId: "m2", text: "第二条" }));
+  await tick();
+  assert.doesNotMatch(captured[0].prompt, /个 job 在跑/);
+  assert.match(captured[1].prompt, /现在有 1 个 job 在跑：/);
+  assert.match(captured[1].prompt, /- job-1，已跑 \d+ 分钟/);
+  assert.doesNotMatch(captured[1].prompt, /job-2/);
 });

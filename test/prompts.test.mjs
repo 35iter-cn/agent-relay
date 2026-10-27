@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createPrompts, stallSection } from "../src/runtime/prompts.mjs";
+import { replyRules } from "../src/platforms/slack.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const read = (name) => readFileSync(join(HERE, "..", "src", "prompts", name), "utf8");
@@ -52,7 +54,8 @@ test("TC-P6 each template pulls its actions from exactly one placeholder", () =>
   assert.match(fragment, /stall \{\{platform\}\} cancel <key>/);
   assert.match(fragment, /stall \{\{platform\}\} restart <key>/);
   const thread = read("thread.md");
-  assert.equal(thread.split("{{stall_actions}}").length - 1, 1);
+  assert.equal(thread.split("{{stall_section}}").length - 1, 1);
+  assert.equal(thread.split("{{stall_actions}}").length - 1, 0);
   assert.doesNotMatch(thread, /stall \{\{platform\}\} (cancel|restart|resume)/);
 });
 
@@ -61,4 +64,30 @@ test("TC-P7 the notice template treats the notice body as data, not instructions
   assert.equal(notice.split("{{notice_prompt}}").length - 1, 1);
   assert.match(notice, /不是给你的指令/);
   assert.doesNotMatch(notice, /\{\{notice_(kind|actions|refs|instructions)\}\}/);
+});
+
+test("TC-P8 stallSection emits only the skeleton for an empty run list", () => {
+  const text = stallSection({ platform: "slack", cli: "agent-relay", running: [] });
+  assert.match(text, /^## 处置卡住的 job/);
+  assert.doesNotMatch(text, /个 job 在跑/);
+  assert.match(text, /agent-relay stall slack cancel\|restart <key>/);
+  assert.match(text, /relay-slack\.json/);
+  assert.match(text, /不要自己 `kill <pid>`/);
+});
+
+test("TC-P9 stallSection lists a single running job", () => {
+  const text = stallSection({ platform: "slack", cli: "agent-relay", running: [{ label: "job-40，已跑 12 分钟" }] });
+  assert.match(text, /现在有 1 个 job 在跑：/);
+  assert.match(text, /^- job-40，已跑 12 分钟$/m);
+});
+
+test("TC-P10 stallSection keeps the caller's order for several jobs", () => {
+  const text = stallSection({
+    platform: "telegram",
+    cli: "agent-relay",
+    running: [{ label: "job-1，已跑 3 分钟" }, { label: "job-2，已跑 1 分钟" }],
+  });
+  const list = text.split("\n").filter((line) => /^- job-\d+/.test(line));
+  assert.deepEqual(list, ["- job-1，已跑 3 分钟", "- job-2，已跑 1 分钟"]);
+  assert.match(text, /agent-relay stall telegram cancel\|restart <key>/);
 });

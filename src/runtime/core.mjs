@@ -275,10 +275,28 @@ export function createCore({ adapter, config, deps = {} }) {
     return inbound;
   }
 
+  function runningJobs() {
+    const at = now();
+    return [...children.keys()]
+      .map((key) => {
+        const activeId = state.convs[key]?.activeJob;
+        const job = activeId ? state.jobs[activeId] : null;
+        if (!job) return null;
+        const leaseStartedAt = job.lease?.startedAt;
+        const created = Date.parse(job.createdAt ?? "");
+        const started = Number.isFinite(leaseStartedAt) ? leaseStartedAt : created;
+        const from = Number.isFinite(started) ? started : at;
+        return { started: from, label: `${job.id}，已跑 ${Math.max(0, Math.round((at - from) / 60_000))} 分钟` };
+      })
+      .filter(Boolean)
+      .sort((a, b) => a.started - b.started)
+      .map((item) => ({ label: item.label }));
+  }
+
   function buildPrompt(job, entry) {
     const inbound = runtimeInbound(job);
     const root = entry.rootText || inbound.text;
-    const base = { platform: adapter.name, adapter, inbound, root };
+    const base = { platform: adapter.name, adapter, inbound, root, running: runningJobs() };
     if (job.noticeId) {
       const notice = notices.get(job.noticeId);
       if (notice) return prompts.noticeReply({ ...base, notice });
