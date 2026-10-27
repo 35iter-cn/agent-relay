@@ -48,7 +48,7 @@ snapshot() {
 
 if [[ -z "${RELAY_UPGRADE_DETACHED:-}" ]] && grep -Eq "agent-relay@|relay@" /proc/self/cgroup 2>/dev/null; then
   unit="relay-upgrade-$platform"
-  self="$script_dir/$(basename "$0")"
+  self="$script_dir/$(basename "$(readlink -f "$0")")"
   if systemctl --user is-active --quiet "$unit"; then
     echo "relay-upgrade: $unit is already waiting (journalctl --user -u $unit)" >&2
     exit 4
