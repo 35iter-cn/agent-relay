@@ -115,6 +115,32 @@ the daemon is not running.
 when another live process holds it, so two instances can never overwrite each
 other's state. A stale pid file is reclaimed automatically.
 
+## Upgrade
+
+Restart a running instance without killing the job that is doing the restart:
+
+```bash
+git -C ~/code/agent-relay pull --ff-only
+bun scripts/install.mjs
+agent-relay-upgrade telegram
+```
+
+`scripts/relay-upgrade.sh` (linked as `agent-relay-upgrade`) does four things:
+
+1. when it runs inside the relay service's own cgroup, it re-executes itself
+   under `systemd-run --user --unit relay-upgrade-<platform>` so the restart
+   cannot kill the caller half-way;
+2. waits until no job in `relay-<platform>.json` is `queued`, `running` or
+   `answered` — `RELAY_UPGRADE_WAIT` seconds, `0` (the default) meaning no limit;
+   on timeout it exits 3 and leaves the relay untouched;
+3. restarts `agent-relay@<platform>` and, 10 seconds later, requires both
+   `is-active` and a changed `MainPID`;
+4. posts a notice with the outcome, on failure together with the last 30 journal
+   lines on stderr.
+
+It stays bash on purpose: the cgroup probe reads `/proc/self/cgroup` and the
+restart uses `systemd-run`, both native to a shell.
+
 ## Privacy and retention
 
 Everything identifying lives in `~/.config/agent-relay/`, never in the sources:

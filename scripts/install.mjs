@@ -27,6 +27,13 @@ function main(argv) {
   symlinkSync(cli, BIN);
   process.stdout.write(`linked ${BIN} -> ${cli}\n`);
 
+  const upgrade = join(ROOT, "scripts/relay-upgrade.sh");
+  const upgradeBin = join(BIN_DIR, "agent-relay-upgrade");
+  chmodSync(upgrade, 0o755);
+  if (exists(upgradeBin)) unlinkSync(upgradeBin);
+  symlinkSync(upgrade, upgradeBin);
+  process.stdout.write(`linked ${upgradeBin} -> ${upgrade}\n`);
+
   if (!withSystemd) {
     process.stdout.write(`systemd unit left untouched; rerun with --systemd to link ${join(UNIT_DIR, "agent-relay@.service")}\n`);
     return;
