@@ -337,6 +337,7 @@ export function createPlatform({ config, log: baseLog }) {
     },
 
     prune: () => {
+      if (!state) return { convs: 0, topics: 0 };
       const now = Date.now();
       const convs = pruneConversations(state.convs, now);
       const dropped = Object.keys(state.convs ?? {}).length - Object.keys(convs).length;
