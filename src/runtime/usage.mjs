@@ -1,12 +1,10 @@
 import { appendFileSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
+import { localDay } from "../shared/time.mjs";
 
 const ANSWER_HEAD_CHARS = 200;
 const MAGIC_ANSWER_CHARS = 400;
 const MAGIC_CONTEXT_CHARS = 1_500;
-
-const LOCAL_DAY = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", year: "numeric", month: "2-digit", day: "2-digit" });
-const localDay = (ms) => LOCAL_DAY.format(new Date(ms));
 
 export function usagePromptOf(source) {
   if (!source || typeof source !== "object") return null;

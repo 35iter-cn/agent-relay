@@ -390,24 +390,46 @@ test("TC-23 every delivered chunk is committed to parts with its hash", async ()
   assert.equal(delivered[2].replyTo, "m-2");
 });
 
-test("TC-23 a reply failure stops delivery and keeps the job answered for a later resend", async () => {
+test("TC-23 a transient reply failure is retried and the run still completes", async () => {
   let calls = 0;
   const { core } = harness({
     spawn: () => fakeChild({ stdout: "a".repeat(45) }),
+    deps: { deliveryRetryMs: 0 },
     adapterOverrides: {
       reply: async () => {
         calls += 1;
         if (calls === 2) throw new Error("platform down");
-        return { messageId: "m-1" };
+        return { messageId: `m-${calls}` };
       },
     },
   });
   await core.handle(inbound());
   await tick();
   const job = core.state.jobs[core.state.seen.m1];
-  assert.equal(job.status, "answered");
-  assert.equal(job.parts.length, 1);
-  assert.ok(job.answer);
+  assert.equal(job.status, "done");
+  assert.equal(job.parts.length, 3, "the retry resumes from the first unsent chunk");
+  assert.equal(job.parts.map((part) => part.i).join(","), "0,1,2");
+});
+
+test("TC-23 a permanent reply failure ends the job as failed instead of leaving it answered", async () => {
+  const { core } = harness({
+    spawn: () => fakeChild({ stdout: "a".repeat(45) }),
+    deps: { deliveryRetryMs: 0 },
+    adapterOverrides: {
+      reply: async () => {
+        throw new Error("platform down");
+      },
+    },
+  });
+  await core.handle(inbound());
+  await tick();
+  const job = core.state.jobs[core.state.seen.m1];
+  assert.equal(job.status, "failed");
+  assert.equal(job.error, "reply-failed");
+  assert.ok(job.answer, "the answer stays for diagnosis");
+  assert.equal(job.deliveryAttempts, 3);
+  assert.equal(await core.handle(inbound({ dedupeId: "m2", text: "还在吗" })), "accepted");
+  assert.ok(core.state.jobs[core.state.seen.m2], "the failed job does not swallow new work");
 });
 
 test("TC-23 an adapter without edit never tries to patch", async () => {
@@ -659,6 +681,55 @@ test("TC-26 stop words cancel the running turn and answer honestly when idle", a
   const idle = harness();
   assert.equal(await idle.core.handle(inbound({ dedupeId: "c", text: "/stop" })), "accepted");
   assert.match(idle.replies[0].text, /没有在跑的任务/);
+});
+
+test("TC-26b stop also drops the turn that is still queued in the same conversation", async () => {
+  const spawned = [];
+  const { core } = harness({
+    maxWorkers: 1,
+    adapterOverrides: { maxWorkers: 1 },
+    spawn: () => {
+      const child = controlledChild();
+      spawned.push(child);
+      return child;
+    },
+  });
+  await core.handle(inbound({ dedupeId: "a" }));
+  await core.handle(inbound({ dedupeId: "b", text: "第二个问题" }));
+  const queuedId = core.state.seen.b;
+  assert.equal(core.state.jobs[queuedId].status, "queued");
+  assert.equal(await core.handle(inbound({ dedupeId: "c", text: "停" })), "accepted");
+  assert.equal(core.state.jobs[queuedId].status, "cancelled");
+  assert.equal(core.state.jobs[queuedId].error, "stopped");
+  assert.deepEqual(core.state.inbox, []);
+  spawned[0].finish(0);
+  await tick();
+  assert.equal(spawned.length, 1, "the cancelled queued turn never starts");
+});
+
+test("TC-ST14 a stall action with nothing running replies instead of staying silent", async () => {
+  const state = jobState({ status: "done", lease: null });
+  state.convs["th-abc"].activeJob = null;
+  const { core, replies, dir } = harness({ state });
+  assert.equal(await core.applyAction({ action: "cancel", key: "th-abc", text: "" }), false);
+  assert.equal(replies.length, 1);
+  assert.match(replies[0].text, /没有在跑的任务/);
+  assert.match(replies[0].text, /完成/);
+  const logDir = join(dir, "logs", "fake");
+  const events = readdirSync(logDir).flatMap((name) => readFileSync(join(logDir, name), "utf8").trim().split("\n")).map((line) => JSON.parse(line));
+  assert.ok(events.some((event) => event.event === "action" && event.note === "not-running"));
+});
+
+test("TC-ST15 a stall cancel drops a queued turn and says so", async () => {
+  const state = jobState({ status: "done", lease: null });
+  state.convs["th-abc"].activeJob = null;
+  state.jobs["job-2"] = { ...state.jobs["job-1"], id: "job-2", status: "queued", lease: null, updatedAt: "2026-10-23T00:01:00.000Z" };
+  state.inbox = ["job-2"];
+  const { core, replies } = harness({ state });
+  assert.equal(await core.applyAction({ action: "cancel", key: "th-abc", text: "" }), true);
+  assert.equal(core.state.jobs["job-2"].status, "cancelled");
+  assert.deepEqual(core.state.inbox, []);
+  assert.match(replies[0].text, /已取消排队中的 1 个任务/);
 });
 
 test("TC-26 command words are matched against already-stripped text", async () => {

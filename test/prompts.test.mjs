@@ -91,8 +91,8 @@ test("TC-P10 stallSection keeps the caller's order for several jobs", () => {
   assert.deepEqual(list, ["- job-1，已跑 3 分钟", "- job-2，已跑 1 分钟"]);
   assert.match(text, /agent-relay stall telegram cancel\|restart <key>/);
 });
-function builtinPrompts() {
-  return createPrompts({ dir: join(HERE, "..", "src", "prompts") });
+function builtinPrompts(configDir) {
+  return createPrompts({ dir: join(HERE, "..", "src", "prompts"), configDir });
 }
 
 function slackAdapter() {
@@ -123,4 +123,35 @@ test("TC-P12 the notice template never renders the stall section", () => {
   assert.match(text, /STALL-BODY/);
   assert.doesNotMatch(text, /处置卡住的 job/);
   assert.doesNotMatch(text, /\{\{/);
+});
+
+test("TC-P13 the config directory in the prompt follows AGENT_RELAY_CONFIG_DIR instead of a hard-coded path", () => {
+  const prompts = builtinPrompts("/srv/relay-config");
+  const thread = prompts.conversation({
+    platform: "feishu",
+    adapter: slackAdapter(),
+    inbound: { key: "th-1", chatId: "oc_1", text: "看一下" },
+    root: "",
+  });
+  const notice = prompts.noticeReply({
+    platform: "feishu",
+    adapter: slackAdapter(),
+    inbound: { key: "ntc-1", chatId: "oc_1", text: "杀掉" },
+    root: "",
+    notice: { id: "ntc-1", prompt: "" },
+  });
+  const actions = prompts.stallActions("feishu");
+  for (const text of [thread, notice, actions]) {
+    assert.doesNotMatch(text, /~\/\.config\/agent-relay/);
+    assert.doesNotMatch(text, /\{\{/);
+  }
+  assert.match(thread, /\/srv\/relay-config\/relay-feishu\.json/);
+  assert.match(notice, /\/srv\/relay-config\/relay-feishu\.json/);
+  assert.match(actions, /\/srv\/relay-config\/relay-feishu\.cmd/);
+});
+
+test("TC-P14 without an override the prompt falls back to the documented default path", () => {
+  const actions = builtinPrompts().stallActions("slack");
+  assert.match(actions, /~\/\.config\/agent-relay\/relay-slack\.json/);
+  assert.doesNotMatch(actions, /\{\{/);
 });

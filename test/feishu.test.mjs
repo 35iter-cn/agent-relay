@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { conversationKey, sessionFor, textOf, textOfMessage, bodyOf, msgTypeOf, attachmentsOf, uploadDirFor, pruneUploads, withTimeout, stripMentions, isAcceptedSender, toCard, decideProgressMode, createRuntime, createPlatform } from "../src/platforms/feishu.mjs";
+import { conversationKey, sessionFor, textOf, textOfMessage, bodyOf, msgTypeOf, attachmentsOf, uploadDirFor, pruneUploads, withTimeout, stripMentions, isAcceptedSender, isAcceptedChat, shouldAlertLiveness, toCard, decideProgressMode, createRuntime, createPlatform } from "../src/platforms/feishu.mjs";
 import { bootNoticeText, readBootId, shouldAnnounceBoot } from "../src/shared/boot.mjs";
 import { localStamp } from "../src/shared/time.mjs";
 
@@ -120,6 +120,46 @@ test("TC-16 a failed patch falls back to a normal reply instead of losing the an
   await runtime.reply({ ...inbound, progress }, "最终回答");
   const replies = calls.filter(([name]) => name === "reply").map(([, args]) => args.data.content);
   assert.ok(replies.some((content) => content.includes("最终回答")));
+});
+
+test("TC-16c a second chunk never overwrites the card that carries the first one", async () => {
+  const { client, calls } = fakeClient({ reaction: { code: 99991672, msg: "no scope" } });
+  const runtime = createRuntime({ client, log: () => {}, chatId: "oc_1" });
+  const progress = await runtime.onProgress(inbound);
+  assert.equal(progress.pending, true);
+  const first = await runtime.reply({ ...inbound, progress }, "第一段");
+  const second = await runtime.reply({ ...inbound, progress }, "第二段");
+  assert.equal(first.messageId, second.messageId, "both chunks attach to the same card thread");
+  assert.equal(calls.filter(([name]) => name === "patch").length, 1, "only the first chunk patches the placeholder");
+  assert.equal(calls.filter(([name]) => name === "reply").length, 2, "the placeholder plus one new message");
+  const replies = calls.filter(([name]) => name === "reply").map(([, args]) => JSON.parse(args.data.content).body.elements[0].content);
+  assert.deepEqual(replies, ["⏳ 处理中…", "第二段"]);
+});
+
+test("TC-16d a patched placeholder keeps accepting later chunks as new messages", async () => {
+  const { client, calls } = fakeClient({ reaction: { code: 99991672, msg: "no scope" } });
+  const runtime = createRuntime({ client, log: () => {}, chatId: "oc_1" });
+  const progress = await runtime.onProgress(inbound);
+  await runtime.reply({ ...inbound, progress }, "第一段");
+  await runtime.reply({ ...inbound, progress }, "第二段");
+  await runtime.reply({ ...inbound, progress }, "第三段");
+  assert.equal(calls.filter(([name]) => name === "patch").length, 1);
+  assert.equal(calls.filter(([name]) => name === "reply").length, 3);
+});
+
+test("only the configured chat is accepted", () => {
+  assert.equal(isAcceptedChat("oc_1", "oc_1"), true);
+  assert.equal(isAcceptedChat("oc_other", "oc_1"), false);
+  assert.equal(isAcceptedChat(undefined, "oc_1"), false);
+  assert.equal(isAcceptedChat("oc_1", null), false, "an unset chat id never accepts anything");
+});
+
+test("liveness only alerts after repeated misses or a terminal websocket state", () => {
+  assert.equal(shouldAlertLiveness({ state: "connected" }, 9, 3), false);
+  assert.equal(shouldAlertLiveness({ state: "reconnecting" }, 1, 3), false);
+  assert.equal(shouldAlertLiveness({ state: "reconnecting" }, 3, 3), true);
+  assert.equal(shouldAlertLiveness({ state: "failed" }, 1, 3), true);
+  assert.equal(shouldAlertLiveness(null, 5, 3), false, "an sdk without status support stays quiet");
 });
 
 test("TC-9 a failed card reply degrades to plain text with the same body", async () => {

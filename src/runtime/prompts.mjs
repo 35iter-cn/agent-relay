@@ -16,7 +16,7 @@ export function promptVariant(root) {
   return "task";
 }
 
-export function stallSection({ platform, cli, running = [] }) {
+export function stallSection({ platform, cli, configDir = "~/.config/agent-relay", running = [] }) {
   const list = running.length
     ? [`现在有 ${running.length} 个 job 在跑：`, ...running.map((item) => `- ${item.label}`), ""]
     : [];
@@ -25,12 +25,12 @@ export function stallSection({ platform, cli, running = [] }) {
     "",
     ...list,
     `- 终止或重启某一轮：\`${cli} stall ${platform} cancel|restart <key>\`（restart 可再跟一句补充要求）。`,
-    `- key 不在消息里时，从 \`~/.config/agent-relay/relay-${platform}.json\` 的 \`jobs\` 里找 \`status\` 仍在跑的那条，不要猜。`,
+    `- key 不在消息里时，从 \`${configDir}/relay-${platform}.json\` 的 \`jobs\` 里找 \`status\` 仍在跑的那条，不要猜。`,
     "- 不要自己 `kill <pid>`，也不要手改账本；relay 回「没有在跑的任务」就是已经结束。",
   ].join("\n");
 }
 
-export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agent-relay" }) {
+export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agent-relay", configDir = "~/.config/agent-relay" }) {
   const cache = new Map();
 
   function read(name) {
@@ -49,13 +49,14 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
   }
 
   function stallActions(platform) {
-    return renderPrompt(read("stall-actions.md").trim(), { platform, cli });
+    return renderPrompt(read("stall-actions.md").trim(), { platform, cli, config_dir: configDir });
   }
 
   function baseValues({ platform, adapter, inbound, root, running = [] }) {
     return {
       platform,
       cli,
+      config_dir: configDir,
       surface: adapter.surface ?? "本会话",
       conversation: inbound.key,
       chat_id: inbound.chatId ?? "",
@@ -64,7 +65,7 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
       reply_rules: adapter.replyRules ?? "",
       chunk_limit: adapter.chunkLimit,
       stall_actions: stallActions(platform),
-      stall_section: stallSection({ platform, cli, running }),
+      stall_section: stallSection({ platform, cli, configDir, running }),
     };
   }
 

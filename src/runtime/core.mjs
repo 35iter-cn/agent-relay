@@ -27,7 +27,10 @@ const MAX_SEEN = 5000;
 const COMMAND_TTL_MS = 10 * 60_000;
 const INTERRUPT_NOTICE = "⏸ 这一轮被 relay 重启打断：还在跑的进程已终止，会话与已完成的改动都保留，被打断那轮没发出来的输出不补发。直接回复这条消息就会接着之前的会话继续。";
 const ACTION_KINDS = { cancel: true, restart: true };
+const STATUS_TEXT = { done: "完成", failed: "失败", cancelled: "取消", interrupted: "被打断", queued: "排队" };
 const REAP_POLL_MS = 50;
+const MAX_DELIVERY_ATTEMPTS = 3;
+const DELIVERY_RETRY_MS = 1_500;
 
 export function createCore({ adapter, config, deps = {} }) {
   const now = deps.now ?? (() => Date.now());
@@ -48,11 +51,12 @@ export function createCore({ adapter, config, deps = {} }) {
   const jev = deps.jev ?? null;
   const usage = deps.usage ?? null;
   const stallGraceMs = deps.stallGraceMs ?? 5_000;
+  const deliveryRetryMs = deps.deliveryRetryMs ?? DELIVERY_RETRY_MS;
   const store = deps.store ?? createStateStore({ file: config.stateFile(adapter.name), log });
   const state = store.state;
   const save = store.save;
   const notices = deps.notices ?? createNoticeService({ state, save, adapter, now, log });
-  const prompts = deps.prompts ?? createPrompts({ dir: config.promptsDir, userDir: config.userPromptsDir, log, cli: config.cli });
+  const prompts = deps.prompts ?? createPrompts({ dir: config.promptsDir, userDir: config.userPromptsDir, log, cli: config.cli, configDir: config.configDir });
   const children = new Map();
   const notes = new Map();
   const runtimeInbounds = new Map();
@@ -154,24 +158,73 @@ export function createCore({ adapter, config, deps = {} }) {
       .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))[0] ?? null;
   }
 
-  async function finishStalled({ key, action, text }) {
-    const activeId = state.convs[key]?.activeJob;
-    const job = activeId ? state.jobs[activeId] : null;
-    if (!job || !children.has(key)) {
-      appendLog({ event: "action", action, key, job: null, note: "not-running" });
+  async function replyToJob(job, text) {
+    if (!job) return false;
+    try {
+      await adapter.reply(ctxOf(job), text);
+      return true;
+    } catch (error) {
+      log("error", "action-reply", String(error?.message ?? error));
       return false;
     }
-    const notifiedAt = Date.parse(job.stallNotifiedAt ?? "");
-    const at = Number.isFinite(notifiedAt) ? notifiedAt : now();
-    const startedAt = job.lease?.startedAt ?? Date.parse(job.createdAt);
-    const minutes = Math.max(0, Math.round((at - startedAt) / 60_000));
-    const outcome = await terminate(key, `已终止：这一轮卡住了。工时按最后一次进展截止，计入 ${minutes} 分钟（到 ${localStamp(at)}）。`);
-    job.stallCancelled = true;
-    job.updatedAt = isoNow();
-    save();
-    appendLog({ event: "action", action, key, job: job.id, outcome });
-    if (action !== "restart") return true;
+  }
+
+  function dropQueued(key) {
+    const dropped = [];
+    for (const [id, job] of Object.entries(state.jobs)) {
+      if (!job || job.key !== key || job.status !== "queued") continue;
+      job.status = "cancelled";
+      job.error = "stopped";
+      job.updatedAt = isoNow();
+      dropped.push(id);
+    }
+    if (dropped.length) state.inbox = state.inbox.filter((id) => !dropped.includes(id));
+    if (dropped.length) save();
+    return dropped;
+  }
+
+  function notRunningText(action, job) {
+    const status = STATUS_TEXT[job?.status] ?? "结束";
+    const verb = action === "cancel" ? "取消" : "重启";
+    return `当前没有在跑的任务：最近一条 job（${job.id}）已经${status}，不需要${verb}。`;
+  }
+
+  async function finishStalled({ key, action, text }) {
+    const activeId = state.convs[key]?.activeJob;
+    const active = activeId ? state.jobs[activeId] : null;
+    const runningNow = Boolean(active) && children.has(key);
+    if (!runningNow) {
+      const dropped = dropQueued(key);
+      if (!dropped.length) {
+        const target = active ?? latestJobFor(key);
+        appendLog({ event: "action", action, key, job: target?.id ?? null, note: "not-running" });
+        if (target) await replyToJob(target, notRunningText(action, target));
+        return false;
+      }
+      appendLog({ event: "action", action, key, job: dropped.join(","), note: "dequeued" });
+      if (action !== "restart") {
+        await replyToJob(active ?? latestJobFor(key), `已取消排队中的 ${dropped.length} 个任务（还没开始跑）。`);
+        return true;
+      }
+    }
+    const job = runningNow ? active : null;
+    let outcome = "dequeued";
+    if (job) {
+      const notifiedAt = Date.parse(job.stallNotifiedAt ?? "");
+      const at = Number.isFinite(notifiedAt) ? notifiedAt : now();
+      const startedAt = job.lease?.startedAt ?? Date.parse(job.createdAt);
+      const minutes = Math.max(0, Math.round((at - startedAt) / 60_000));
+      outcome = await terminate(key, `已终止：这一轮卡住了。工时按最后一次进展截止，计入 ${minutes} 分钟（到 ${localStamp(at)}）。`);
+      job.stallCancelled = true;
+      job.updatedAt = isoNow();
+      save();
+      appendLog({ event: "action", action, key, job: job.id, outcome });
+      if (action !== "restart") return true;
+    } else {
+      appendLog({ event: "action", action, key, job: null, outcome });
+    }
     const base = latestJobFor(key) ?? job;
+    if (!base) return false;
     const prompt = [RESTART_PROMPT, String(text ?? "").trim()].filter(Boolean).join("\n\n");
     const inbound = {
       ...base.inbound,
@@ -188,7 +241,7 @@ export function createCore({ adapter, config, deps = {} }) {
     state.inbox.push(next.id);
     state.seen[inbound.dedupeId] = next.id;
     save();
-    appendLog({ event: "restart", job: next.id, from: job.id, key });
+    appendLog({ event: "restart", job: next.id, from: job?.id ?? null, key });
     drainInbox();
     return true;
   }
@@ -386,10 +439,9 @@ export function createCore({ adapter, config, deps = {} }) {
     });
   }
 
-  async function deliver(job) {
+  async function deliverParts(job) {
     const canEdit = typeof adapter.edit === "function";
     const plan = planParts({ answer: job.answer ?? "", parts: job.parts, chunkLimit: adapter.chunkLimit, canEdit });
-    let failed = false;
     for (const step of plan) {
       if (step.action === "skip") continue;
       try {
@@ -408,16 +460,34 @@ export function createCore({ adapter, config, deps = {} }) {
         save();
       } catch (error) {
         log("error", "reply", String(error?.message ?? error));
-        failed = true;
-        break;
+        return false;
       }
+    }
+    return true;
+  }
+
+  async function deliver(job) {
+    let failed = true;
+    for (let attempt = 1; attempt <= MAX_DELIVERY_ATTEMPTS; attempt += 1) {
+      failed = !(await deliverParts(job));
+      if (!failed) break;
+      job.deliveryAttempts = (job.deliveryAttempts ?? 0) + 1;
+      job.deliveryFailedAt = isoNow();
+      if (attempt < MAX_DELIVERY_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, deliveryRetryMs));
+    }
+    if (!failed) {
+      job.deliveryAttempts = 0;
+      job.deliveryFailedAt = undefined;
     }
     try {
       await adapter.onProgressDone?.(ctxOf(job));
     } catch (error) {
       log("warn", "progress-done", String(error?.message ?? error));
     }
-    if (!failed && job.status === "answered") {
+    if (failed && job.status === "answered") {
+      job.status = "failed";
+      job.error = "reply-failed";
+    } else if (!failed && job.status === "answered") {
       job.status = "done";
       job.answer = undefined;
     }
@@ -503,15 +573,17 @@ export function createCore({ adapter, config, deps = {} }) {
       job.lease = null;
       job.updatedAt = isoNow();
     }
+    const dropped = dropQueued(inbound.key);
     state.seen[inbound.dedupeId] = "legacy";
     save();
-    appendLog({ event: "stop", key: inbound.key, cancelled, job: job?.id ?? null });
-    if (!cancelled) {
-      try {
-        await adapter.reply(ctxFor(inbound, job), "当前没有在跑的任务。");
-      } catch (error) {
-        log("error", "stop-reply", String(error?.message ?? error));
-      }
+    appendLog({ event: "stop", key: inbound.key, cancelled, job: job?.id ?? null, dequeued: dropped });
+    if (cancelled) return "accepted";
+    let text = "当前没有在跑的任务。";
+    if (dropped.length) text = `已取消排队中的 ${dropped.length} 个任务（还没开始跑）。`;
+    try {
+      await adapter.reply(ctxFor(inbound, job), text);
+    } catch (error) {
+      log("error", "stop-reply", String(error?.message ?? error));
     }
     return "accepted";
   }

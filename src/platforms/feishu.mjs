@@ -62,6 +62,18 @@ export function isAcceptedSender(sender, allowedUser) {
   return { ok: true, openId };
 }
 
+export function isAcceptedChat(chat, expected) {
+  if (!expected) return false;
+  return String(chat ?? "") === String(expected);
+}
+
+export function shouldAlertLiveness(status, misses, threshold) {
+  if (!status) return false;
+  if (status.state === "connected") return false;
+  if (status.state === "failed") return true;
+  return misses >= threshold;
+}
+
 export function toCard(text, limit = CARD_LIMIT) {
   return {
     schema: "2.0",
@@ -105,7 +117,7 @@ export function createRuntime({ client, log, chatId, allowedUser = null, chunkLi
             log("warn", "progress-card", String(error));
             return null;
           });
-          if (cardId) return { mode: "card", messageId: cardId, reactionId: null };
+          if (cardId) return { mode: "card", messageId: cardId, reactionId: null, pending: true };
         }
         log("warn", "progress-unavailable", res.code, res.msg);
         return null;
@@ -129,10 +141,11 @@ export function createRuntime({ client, log, chatId, allowedUser = null, chunkLi
     async reply(ctx, text) {
       const entry = ctx.progress;
       const parts = chunkText(text, chunkLimit);
-      if (entry?.mode === "card" && entry.messageId && parts.length) {
+      if (entry?.mode === "card" && entry.messageId && entry.pending && parts.length) {
         try {
           const res = await client.im.v1.message.patch({ path: { message_id: entry.messageId }, data: { content: JSON.stringify(toCard(parts[0])) } });
           if (res?.code === 0 || res?.code === undefined) {
+            entry.pending = false;
             for (const part of parts.slice(1)) await replyOnce(ctx, part);
             return { messageId: entry.messageId, patched: true };
           }
@@ -140,6 +153,7 @@ export function createRuntime({ client, log, chatId, allowedUser = null, chunkLi
         } catch (error) {
           log("warn", "patch", String(error));
         }
+        entry.pending = false;
       }
       let last = null;
       for (const part of parts) last = (await replyOnce(ctx, part)) ?? last;
@@ -299,6 +313,9 @@ export function createPlatform({ config, log: baseLog, createClient = defaultCli
   const appSecret = env.FEISHU_APP_SECRET;
   const chatId = env.FEISHU_CHAT_ID;
   const allowedUser = relayEnv("ALLOWED_USER", null, env);
+  const livenessCheckMs = relayEnv("LIVENESS_CHECK_MS", 60_000);
+  const livenessMisses = relayEnv("LIVENESS_MISSES", 3);
+  const alertCooldownMs = relayEnv("ALERT_COOLDOWN_MS", 30 * 60_000);
   const log = baseLog;
   let state = null;
   let coreRef = null;
@@ -325,6 +342,20 @@ export function createPlatform({ config, log: baseLog, createClient = defaultCli
     },
   });
 
+  function alertOnce(kind, text) {
+    const now = Date.now();
+    const last = Date.parse(state?.alerts?.[kind] ?? "");
+    if (Number.isFinite(last) && now - last < alertCooldownMs) return log("info", "alert-suppressed", kind);
+    if (state) {
+      state.alerts[kind] = new Date(now).toISOString();
+      coreRef?.save();
+    }
+    log("warn", "alert", kind);
+    ensureRuntime()
+      .then((rt) => rt.notify(text))
+      .catch((error) => log("error", "alert", String(error?.message ?? error)));
+  }
+
   async function ensureRuntime() {
     if (runtime) return runtime;
     if (!appId || !appSecret) {
@@ -334,6 +365,25 @@ export function createPlatform({ config, log: baseLog, createClient = defaultCli
     client = await createClient({ appId, appSecret });
     runtime = createRuntime({ client, log, chatId, allowedUser });
     return runtime;
+  }
+
+  function watchLiveness(ws) {
+    let misses = 0;
+    const timer = setInterval(() => {
+      const status = typeof ws.getConnectionStatus === "function" ? ws.getConnectionStatus() : null;
+      if (!status) return;
+      if (status.state === "connected") {
+        if (misses) log("info", "liveness-recovered", `${misses} missed checks`);
+        misses = 0;
+        return;
+      }
+      misses += 1;
+      log("warn", "liveness", status.state, `misses=${misses}`, `reconnectAttempts=${status.reconnectAttempts ?? "-"}`);
+      if (!shouldAlertLiveness(status, misses, livenessMisses)) return;
+      alertOnce("ws", `🔴 agent-relay-feishu 的事件连接异常（${status.state}，连续 ${misses} 次检查未连接），可能收不到消息，需要人工看一下（journalctl --user -u agent-relay@feishu）`);
+    }, livenessCheckMs);
+    timer.unref?.();
+    return timer;
   }
 
   async function downloadAttachments(message) {
@@ -402,6 +452,10 @@ export function createPlatform({ config, log: baseLog, createClient = defaultCli
             log("ignore", verdict.why, message.message_id ?? "");
             return { code: 0 };
           }
+          if (!isAcceptedChat(message.chat_id, chatId)) {
+            log("ignore", "chat", message.chat_id ?? message.message_id ?? "");
+            return { code: 0 };
+          }
           const parsed = await downloadAttachments(message);
           const base = stripMentions(textOfMessage(message) ?? textOf(message), message.mentions);
           const notes = [];
@@ -448,6 +502,7 @@ export function createPlatform({ config, log: baseLog, createClient = defaultCli
 
       log("info", "start", `allowed=${allowedUser}`, `state=${config.stateFile("feishu")}`);
       setInterval(() => rootCache.prune(), 86_400_000).unref();
+      watchLiveness(ws);
 
       ws.start({ eventDispatcher: dispatcher });
       return new Promise(() => {});

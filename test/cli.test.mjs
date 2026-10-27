@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { ACTION_NAMES, parseFlags, sendCommand, textFlag } from "../src/cli.mjs";
@@ -40,6 +40,13 @@ test("sendCommand reports delivered only after the daemon consumed the file", as
   const pending = await sendCommand(config, "slack", { op: "action" }, { waitMs: 0 });
   assert.equal(pending.delivered, false);
   assert.ok(readdirSync(join(dir, "slack")).length === 1);
+});
+
+test("the command directory is private so other users cannot inject commands", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-cmd-mode-"));
+  const config = { commandDir: (platform) => join(dir, platform) };
+  await sendCommand(config, "feishu", { op: "action" }, { waitMs: 0 });
+  assert.equal(statSync(join(dir, "feishu")).mode & 0o777, 0o700);
 });
 
 test("textFlag reads a file before an inline value and trims both", () => {

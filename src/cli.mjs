@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createConfig } from "./config.mjs";
 import { ensurePrivateDir } from "./shared/fs.mjs";
@@ -51,8 +51,7 @@ export function parseFlags(args) {
 }
 
 export async function sendCommand(config, platform, command, { waitMs = COMMAND_WAIT_MS, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
-  const dir = config.commandDir(platform);
-  mkdirSync(dir, { recursive: true });
+  const dir = ensurePrivateDir(config.commandDir(platform));
   const file = join(dir, `${Date.now()}-${process.pid}.json`);
   writeFileSync(file, `${JSON.stringify({ ...command, at: new Date().toISOString() })}\n`, { encoding: "utf8", mode: 0o600 });
   const deadline = Date.now() + waitMs;

@@ -8,7 +8,7 @@ if [[ -z "$platform" ]]; then
 fi
 
 state="${AGENT_RELAY_CONFIG_DIR:-$HOME/.config/agent-relay}/relay-$platform.json"
-wait_seconds="${RELAY_UPGRADE_WAIT:-0}"
+wait_seconds="${RELAY_UPGRADE_WAIT:-1800}"
 heartbeat_seconds="${RELAY_UPGRADE_HEARTBEAT:-300}"
 script_dir="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 relay_root="$(dirname "$script_dir")"
@@ -29,21 +29,39 @@ notify() {
 }
 
 snapshot() {
-  node -e '
+  local bun_bin
+  bun_bin="$(command -v bun || true)"
+  if [[ -z "$bun_bin" ]]; then
+    echo "ERR"
+    return 0
+  fi
+  STATE_FILE="$state" "$bun_bin" -e '
     const fs = require("node:fs");
-    const active = new Set(["queued", "running", "answered"]);
-    let state = {};
+    const active = new Set(["queued", "running"]);
+    const file = process.env.STATE_FILE;
+    let raw = null;
     try {
-      state = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-    } catch {
-      process.stdout.write("0");
+      raw = fs.readFileSync(file, "utf8");
+    } catch (error) {
+      if (error && error.code === "ENOENT") {
+        process.stdout.write("0");
+        process.exit(0);
+      }
+      process.stdout.write("ERR");
       process.exit(0);
     }
-    const ids = Object.entries(state.jobs ?? {})
+    let state = null;
+    try {
+      state = JSON.parse(raw);
+    } catch {
+      process.stdout.write("ERR");
+      process.exit(0);
+    }
+    const ids = Object.entries(state?.jobs ?? {})
       .filter(([, job]) => active.has(job.status))
       .map(([id]) => id);
     process.stdout.write(ids.length === 0 ? "0" : `${ids.length} ${ids.join(",")}`);
-  ' "$state"
+  ' || echo "ERR"
 }
 
 if [[ -z "${RELAY_UPGRADE_DETACHED:-}" ]] && grep -Eq "agent-relay@|relay@" /proc/self/cgroup 2>/dev/null; then
@@ -70,7 +88,7 @@ if [[ -z "${RELAY_UPGRADE_DETACHED:-}" ]] && grep -Eq "agent-relay@|relay@" /pro
 fi
 
 if [[ "$wait_seconds" == "0" ]]; then
-  echo "relay-upgrade: $platform waiting for 0 in-flight jobs (state=$state, no time limit)"
+  echo "relay-upgrade: $platform waiting for 0 in-flight jobs (state=$state, no time limit — RELAY_UPGRADE_WAIT=0)"
 else
   echo "relay-upgrade: $platform waiting for 0 in-flight jobs (state=$state, give up after ${wait_seconds}s without restarting)"
 fi
@@ -80,7 +98,16 @@ last_line=""
 last_beat=$started
 
 while true; do
-  read -r pending ids <<< "$(snapshot)"
+  result="$(snapshot)"
+  if [[ "$result" == "ERR" ]]; then
+    echo "relay-upgrade: cannot read $state — NOT restarting, relay left untouched. Fix the state file or the bun install first." >&2
+    exit 5
+  fi
+  read -r pending ids <<< "$result"
+  if [[ -z "${pending:-}" ]]; then
+    echo "relay-upgrade: unexpected snapshot output ($result) — NOT restarting" >&2
+    exit 5
+  fi
   if [[ "$pending" == "0" ]]; then
     break
   fi
@@ -91,7 +118,7 @@ while true; do
     last_beat=$SECONDS
   fi
   if (( wait_seconds > 0 && SECONDS - started >= wait_seconds )); then
-    echo "relay-upgrade: still $pending job(s) in flight after ${wait_seconds}s — NOT restarting, relay left untouched. Check again later or raise RELAY_UPGRADE_WAIT." >&2
+    echo "relay-upgrade: still $pending job(s) in flight after ${wait_seconds}s — NOT restarting, relay left untouched. Check again later or raise RELAY_UPGRADE_WAIT (0 waits forever)." >&2
     exit 3
   fi
   sleep 10

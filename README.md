@@ -144,9 +144,11 @@ agent-relay-upgrade telegram
 1. when it runs inside the relay service's own cgroup, it re-executes itself
    under `systemd-run --user --unit relay-upgrade-<platform>` so the restart
    cannot kill the caller half-way;
-2. waits until no job in `relay-<platform>.json` is `queued`, `running` or
-   `answered` — `RELAY_UPGRADE_WAIT` seconds, `0` (the default) meaning no limit;
-   on timeout it exits 3 and leaves the relay untouched;
+2. waits until no job in `relay-<platform>.json` is `queued` or `running` —
+   `RELAY_UPGRADE_WAIT` seconds, default 1800, `0` meaning no limit; on timeout it
+   exits 3 and leaves the relay untouched. `answered` is deliberately not counted:
+   the worker is gone, and `recover()` resends the missing chunks after a restart.
+   An unreadable or unparsable state file exits 5 instead of restarting blind;
 3. restarts `agent-relay@<platform>` and, 10 seconds later, requires both
    `is-active` and a changed `MainPID`;
 4. posts a notice with the outcome, on failure together with the last 30 journal
