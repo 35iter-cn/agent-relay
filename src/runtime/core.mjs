@@ -13,8 +13,6 @@ import { DEFAULT_LEASE_TTL_MS, isLeaseAlive, readProcStartTicks } from "../jobs/
 import { hashOf, planParts } from "../jobs/delivery.mjs";
 import { declaredTimeoutMs, readSessionSignal, TOOL_GRACE_MS } from "../jobs/signals.mjs";
 import { nextAction } from "../jobs/next-action.mjs";
-import { readBeat } from "../ledger/heartbeat.mjs";
-import { salvageStalledRun } from "../ledger/salvage.mjs";
 import { createStateStore } from "../state/store.mjs";
 import { createNoticeService } from "../notices/service.mjs";
 import { RESTART_PROMPT, stallNoticePrompt, stallNoticeText } from "./stall-notice.mjs";
@@ -30,6 +28,7 @@ const MAX_SEEN = 5000;
 const COMMAND_TTL_MS = 10 * 60_000;
 const INTERRUPT_NOTICE = "上一轮处理被中断（进程重启）。回复「继续」接着做，或 /重跑 从头再来。";
 const ACTION_KINDS = { cancel: true, restart: true };
+const REAP_POLL_MS = 50;
 
 export function createCore({ adapter, config, deps = {} }) {
   const now = deps.now ?? (() => Date.now());
@@ -37,6 +36,15 @@ export function createCore({ adapter, config, deps = {} }) {
   const readStartTicks = deps.readStartTicks ?? readProcStartTicks;
   const readBootIdImpl = deps.readBootId ?? readBootId;
   const kill = deps.kill ?? ((target, signal) => process.kill(target, signal));
+  const probeAlive = deps.probeAlive ?? ((pid) => {
+    if (!pid) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return error?.code === "EPERM";
+    }
+  });
   const log = deps.log ?? createLog();
   const jev = deps.jev ?? null;
   const usage = deps.usage ?? null;
@@ -51,7 +59,6 @@ export function createCore({ adapter, config, deps = {} }) {
   const runtimeInbounds = new Map();
   const running = new Set();
   const logDir = join(config.logDir, adapter.name);
-  const ledgerDir = config.ledgerDir;
   const commandDir = config.commandDir(adapter.name);
   ensurePrivateDir(logDir);
   ensurePrivateDir(commandDir);
@@ -79,17 +86,14 @@ export function createCore({ adapter, config, deps = {} }) {
     }
   }
 
-  function legacyActivity(job, session) {
-    const beat = readBeat(session, { root: config.agentHoursDir });
-    const beatAt = Date.parse(beat?.at ?? "");
-    if (Number.isFinite(beatAt)) return { at: beatAt, beat };
+  function fallbackActivityAt(job, session) {
     const file = sessionFileFor(session);
     if (file) {
       try {
-        return { at: statSync(file).mtimeMs, beat: null };
+        return statSync(file).mtimeMs;
       } catch {}
     }
-    return { at: job.lease?.startedAt ?? Date.parse(job.createdAt), beat: null };
+    return job.lease?.startedAt ?? Date.parse(job.createdAt);
   }
 
   function progress(job, session) {
@@ -98,7 +102,7 @@ export function createCore({ adapter, config, deps = {} }) {
       if (signal.open && Number.isFinite(signal.open.startedAt)) return { kind: "tool", at: signal.open.startedAt, tool: signal.open };
       if (Number.isFinite(signal.lastEntryAt)) return { kind: "entry", at: signal.lastEntryAt, tool: null };
     }
-    return { kind: "fallback", at: legacyActivity(job, session).at, tool: null };
+    return { kind: "fallback", at: fallbackActivityAt(job, session), tool: null };
   }
 
   async function checkStall(job) {
@@ -115,8 +119,6 @@ export function createCore({ adapter, config, deps = {} }) {
     job.stallTool = tool?.name ?? null;
     job.stallRunningMs = kind === "tool" ? silenceMs : null;
     job.lastActivityAt = isoAt(at);
-    const beat = readBeat(job.session, { root: config.agentHoursDir });
-    if (beat?.at) job.stallBeatAt = beat.at;
     save();
     appendLog({ event: "stall", job: job.id, key: job.key, session: job.session, silenceMs, reason: job.stallReason, tool: job.stallTool, callIds: tool?.callIds ?? [], runningMs: job.stallRunningMs, pid: job.lease?.pid ?? null });
     const fields = {
@@ -147,22 +149,6 @@ export function createCore({ adapter, config, deps = {} }) {
     }
   }
 
-  function salvage(job, at) {
-    const { beat } = legacyActivity(job, job.session);
-    try {
-      return salvageStalledRun({
-        sessionId: job.session,
-        endedAtMs: at,
-        userText: beat?.userText ?? job.inbound?.text ?? "",
-        output: beat?.output ?? "",
-        dir: ledgerDir,
-      });
-    } catch (error) {
-      log("error", "salvage", String(error?.message ?? error));
-      return null;
-    }
-  }
-
   function latestJobFor(key) {
     return Object.values(state.jobs)
       .filter((job) => job.key === key)
@@ -180,16 +166,11 @@ export function createCore({ adapter, config, deps = {} }) {
     const at = Number.isFinite(notifiedAt) ? notifiedAt : now();
     const startedAt = job.lease?.startedAt ?? Date.parse(job.createdAt);
     const minutes = Math.max(0, Math.round((at - startedAt) / 60_000));
-    let salvaged = null;
-    const outcome = await terminate(key, `已终止：这一轮卡住了。工时按最后一次进展截止，计入 ${minutes} 分钟（到 ${localStamp(at)}）。`, {
-      onHardKill: () => {
-        salvaged = salvage(job, at);
-      },
-    });
+    const outcome = await terminate(key, `已终止：这一轮卡住了。工时按最后一次进展截止，计入 ${minutes} 分钟（到 ${localStamp(at)}）。`);
     job.stallCancelled = true;
     job.updatedAt = isoNow();
     save();
-    appendLog({ event: "action", action, key, job: job.id, outcome, salvagedMs: salvaged?.durationMs ?? null });
+    appendLog({ event: "action", action, key, job: job.id, outcome });
     if (action !== "restart") return true;
     const base = latestJobFor(key) ?? job;
     const prompt = [RESTART_PROMPT, String(text ?? "").trim()].filter(Boolean).join("\n\n");
@@ -366,9 +347,7 @@ export function createCore({ adapter, config, deps = {} }) {
       stallTimer.unref?.();
       const timer = setTimeout(() => {
         killed = true;
-        try {
-          process.kill(-child.pid, "SIGKILL");
-        } catch {}
+        terminate(inbound.key, "").catch((error) => log("warn", "timeout-stop", String(error?.message ?? error)));
       }, adapter.timeoutMs);
       const progressPromise = Promise.resolve(adapter.onProgress?.(ctxOf(job))).then((progress) => {
         if (!progress) return;
@@ -623,11 +602,7 @@ export function createCore({ adapter, config, deps = {} }) {
         continue;
       }
       if (action.type === "reap-then-interrupt") {
-        try {
-          kill(-action.pid, "SIGKILL");
-        } catch (error) {
-          log("warn", "reap", String(error?.message ?? error));
-        }
+        await reapWorker(action.pid);
         await interrupt(job);
         touched += 1;
         continue;
@@ -768,7 +743,23 @@ export function createCore({ adapter, config, deps = {} }) {
     return "accepted";
   }
 
-  function terminate(key, note, { graceMs = stallGraceMs, onHardKill } = {}) {
+  async function reapWorker(pid) {
+    if (!pid || !probeAlive(pid)) return "absent";
+    try {
+      kill(-pid, "SIGTERM");
+    } catch {
+      return "absent";
+    }
+    const deadline = Date.now() + stallGraceMs;
+    while (probeAlive(pid) && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, REAP_POLL_MS));
+    if (!probeAlive(pid)) return "soft";
+    try {
+      kill(-pid, "SIGKILL");
+    } catch {}
+    return "hard";
+  }
+
+  function terminate(key, note, { graceMs = stallGraceMs } = {}) {
     const child = children.get(key);
     if (!child) return Promise.resolve("absent");
     notes.set(key, note);
@@ -786,11 +777,6 @@ export function createCore({ adapter, config, deps = {} }) {
       }, 250);
       const timer = setTimeout(() => {
         if (!children.has(key)) return finish("soft");
-        try {
-          onHardKill?.();
-        } catch (error) {
-          log("error", "salvage", String(error?.message ?? error));
-        }
         try {
           kill(-child.pid, "SIGKILL");
         } catch {
@@ -813,16 +799,8 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   function cancel(key, note = "已按指令终止本轮") {
-    const child = children.get(key);
-    if (!child) return false;
-    notes.set(key, note);
-    try {
-      process.kill(-child.pid, "SIGKILL");
-    } catch {
-      try {
-        child.kill("SIGKILL");
-      } catch {}
-    }
+    if (!children.has(key)) return false;
+    terminate(key, note).catch((error) => log("warn", "cancel-stop", String(error?.message ?? error)));
     return true;
   }
 

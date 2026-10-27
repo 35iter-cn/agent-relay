@@ -24,7 +24,6 @@ export function createConfig({ env = process.env } = {}) {
   const home = env.HOME;
   const configDir = env.AGENT_RELAY_CONFIG_DIR ?? join(home, ".config/agent-relay");
   const cwd = env.AGENT_RELAY_WORKDIR ?? join(home, "code");
-  const agentHoursDir = env.AGENT_HOURS_DIR ?? join(home, ".config/agent-hours");
   return {
     home,
     cwd,
@@ -35,8 +34,6 @@ export function createConfig({ env = process.env } = {}) {
     userPromptsDir: join(configDir, "prompts"),
     usagePromptFile: join(configDir, "usage-prompt.json"),
     uploadsDir: join(configDir, "uploads"),
-    agentHoursDir,
-    ledgerDir: join(agentHoursDir, "ledger"),
     cli: env.AGENT_RELAY_CLI ?? "agent-relay",
     readEnv: (file) => readEnvFile(file),
     envFile: (name) => join(configDir, name),

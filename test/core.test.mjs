@@ -58,8 +58,6 @@ function harness({ spawn, replies = [], adapterOverrides = {}, state = emptyStat
     sessionsDir,
     promptsDir,
     uploadsDir: join(configDir, "uploads"),
-    agentHoursDir: join(dir, ".config/agent-hours"),
-    ledgerDir: join(dir, ".config/agent-hours/ledger"),
     cli: "agent-relay",
     readEnv: () => ({}),
     envFile: (name) => join(configDir, name),
@@ -473,18 +471,43 @@ test("TC-21 a restart reports an interrupted run instead of rerunning it", async
   assert.equal(replies.length, 1);
 });
 
-test("TC-22 a live orphan worker is killed before the run is reported", async () => {
+test("TC-22 a live orphan worker is stopped before the run is reported", async () => {
   const killed = [];
+  let alive = true;
   const state = jobState({ lease: { pid: 4242, startTicks: "777", startedAt: 0, heartbeatAt: Date.now() } });
   const { core, replies } = harness({
     state,
-    deps: { readStartTicks: () => "777", kill: (target, signal) => killed.push([target, signal]) },
+    deps: {
+      readStartTicks: () => "777",
+      kill: (target, signal) => {
+        killed.push([target, signal]);
+        if (signal === "SIGTERM") alive = false;
+      },
+      probeAlive: () => alive,
+      stallGraceMs: 200,
+    },
   });
   await core.recover();
-  assert.deepEqual(killed, [[-4242, "SIGKILL"]]);
+  assert.deepEqual(killed, [[-4242, "SIGTERM"]]);
   assert.equal(replies.length, 1);
   assert.equal(core.state.jobs["job-1"].status, "interrupted");
   assert.equal(core.state.jobs["job-1"].lease, null);
+});
+
+test("TC-22b an orphan that ignores SIGTERM is killed once the grace runs out", async () => {
+  const killed = [];
+  const state = jobState({ lease: { pid: 4242, startTicks: "777", startedAt: 0, heartbeatAt: Date.now() } });
+  const { core } = harness({
+    state,
+    deps: {
+      readStartTicks: () => "777",
+      kill: (target, signal) => killed.push([target, signal]),
+      probeAlive: () => true,
+      stallGraceMs: 20,
+    },
+  });
+  await core.recover();
+  assert.deepEqual(killed, [[-4242, "SIGTERM"], [-4242, "SIGKILL"]]);
 });
 
 test("TC-23 a restart resends only the missing chunks without spawning", async () => {
@@ -883,21 +906,20 @@ test("TC-ST2 a graceful terminate lets the plugin write the row and only posts t
   void first;
 });
 
-test("TC-ST2H a process that ignores SIGTERM is salvaged before SIGKILL", async () => {
-  const { core, dir } = harness({ deps: { stallGraceMs: 5 }, spawn: () => controlledChild() });
+test("TC-ST2H a process that ignores SIGTERM is killed after the grace period without a ledger row", async () => {
+  const killed = [];
+  const { core, dir } = harness({
+    deps: { stallGraceMs: 5, kill: (target, signal) => killed.push([target, signal]) },
+    spawn: () => controlledChild(),
+  });
   await core.handle(inbound());
-  const job = Object.values(core.state.jobs).find((item) => item.key === "th-abc");
-  const ledger = join(dir, ".config/agent-hours/ledger");
-  mkdirSync(ledger, { recursive: true });
-  const sessionId = "fs-th-abc";
-  const startedAt = new Date(job.lease.startedAt).toISOString();
-  writeFileSync(join(ledger, `${sessionId}.jsonl`), `${JSON.stringify({ v: 1, kind: "open", id: `${sessionId}:${startedAt}`, sessionId, sessionFile: "/tmp/x.jsonl", source: "relay", startedAt })}\n`);
   const cmdDir = join(dir, ".config/agent-relay/relay-fake.cmd");
   mkdirSync(cmdDir, { recursive: true });
   writeFileSync(join(cmdDir, "1-cancel.json"), JSON.stringify({ action: "cancel", key: "th-abc", at: new Date().toISOString() }));
   assert.equal(await core.drainCommands(), 1);
-  const rows = readFileSync(join(ledger, `${sessionId}.jsonl`), "utf8").trim().split("\n").map((line) => JSON.parse(line));
-  assert.equal(rows.filter((row) => row.salvaged).length, 1);
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.deepEqual(killed.map((entry) => entry[1]), ["SIGTERM", "SIGKILL"]);
+  assert.equal(existsSync(join(dir, ".config/agent-hours")), false);
 });
 
 test("TC-ST3 restart command kills the stuck run and dispatches the session again with the default prompt plus the extra text", async () => {
@@ -1047,13 +1069,10 @@ test("TC-ST7 a declared bash timeout defers the notice until timeout plus grace"
   assert.equal(replies.length, 1);
 });
 
-test("TC-ST8 a silent session notifies even when the heartbeat is fresh", async () => {
-  const { core, replies, dir, sessionsDir, clock, job } = await runningJob();
+test("TC-ST8 a silent session notifies from the session signal alone", async () => {
+  const { core, replies, sessionsDir, clock, job } = await runningJob();
   const finishedAt = clock.now - 11 * 60_000;
   writeSession(sessionsDir, "fs-th-abc", [sessionAssistant(finishedAt - 1000, [{ id: "c1" }]), sessionToolResult(finishedAt, "c1")]);
-  const beatDir = join(dir, ".config/agent-hours/heartbeat");
-  mkdirSync(beatDir, { recursive: true });
-  writeFileSync(join(beatDir, "fs-th-abc.json"), JSON.stringify({ at: isoAt(clock.now), userText: "hi", output: "" }));
   await core.checkStall(job);
   assert.equal(replies.length, 1);
   assert.equal(job.stallReason, "silent");
@@ -1089,21 +1108,16 @@ test("TC-ST11 parallel calls report only the unclosed ones", async () => {
   assert.equal(job.stallReason, "tool");
 });
 
-test("TC-ST12 cancelling a notified job books the run up to the notice time", async () => {
+test("TC-ST12 cancelling a notified job leaves no ledger row behind", async () => {
   const { core, dir, sessionsDir, clock, job } = await runningJob();
   writeSession(sessionsDir, "fs-th-abc", [sessionAssistant(clock.now - 30 * 60_000, [{ id: "c1" }])]);
   await core.checkStall(job);
-  const notifiedAt = Date.parse(job.stallNotifiedAt);
-  const ledger = join(dir, ".config/agent-hours/ledger");
-  mkdirSync(ledger, { recursive: true });
-  writeFileSync(join(ledger, "fs-th-abc.jsonl"), `${JSON.stringify({ v: 1, kind: "open", id: `fs-th-abc:${isoAt(job.lease.startedAt)}`, sessionId: "fs-th-abc", sessionFile: "/tmp/x.jsonl", source: "relay", startedAt: isoAt(job.lease.startedAt) })}\n`);
   const cmdDir = join(dir, ".config/agent-relay/relay-fake.cmd");
   mkdirSync(cmdDir, { recursive: true });
   writeFileSync(join(cmdDir, "1-cancel.json"), JSON.stringify({ action: "cancel", key: "th-abc", at: isoAt(clock.now) }));
   await core.drainCommands();
-  const rows = readFileSync(join(ledger, "fs-th-abc.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
-  const closed = rows.find((row) => row.salvaged);
-  assert.equal(closed.durationMs, notifiedAt - job.lease.startedAt);
+  assert.equal(job.stallCancelled, true);
+  assert.equal(existsSync(join(dir, ".config/agent-hours")), false);
 });
 
 test("TC-ST13 a restarted job starts with empty stall fields", async () => {
