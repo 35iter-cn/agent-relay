@@ -55,7 +55,6 @@ src/
 ├── jobs/                   job model, leases, delivery plan, worker signals, next action
 ├── runtime/                core loop, prompts, stall notice, usage recorder
 ├── notices/                notice service (emit / match / prune)
-├── ledger/                 agent-hours heartbeat + salvage (read/write the ledger)
 ├── prompts/                prompt templates (thread, notice, stall fragments)
 └── platforms/              feishu | slack | telegram adapters + shared helpers
 ```
@@ -69,6 +68,8 @@ Design rules:
   pruning) lives in `src/platforms/shared/`.
 - **User-initiated versus relay-initiated** is the split between `thread.md`
   (replies in a conversation) and `notice.md` (replies to a notice).
+- **The ledger is not relay's.** Relay decides which job runs when and how it
+  stops; the pi extension and the agent-hours service own every ledger row.
 
 ## Platforms
 
