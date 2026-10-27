@@ -91,3 +91,36 @@ test("TC-P10 stallSection keeps the caller's order for several jobs", () => {
   assert.deepEqual(list, ["- job-1，已跑 3 分钟", "- job-2，已跑 1 分钟"]);
   assert.match(text, /agent-relay stall telegram cancel\|restart <key>/);
 });
+function builtinPrompts() {
+  return createPrompts({ dir: join(HERE, "..", "src", "prompts") });
+}
+
+function slackAdapter() {
+  return { surface: "本 thread", replyRules, chunkLimit: 3500 };
+}
+
+test("TC-P11 the built-in first-turn prompt stays under 1300 characters with no running job", () => {
+  const text = builtinPrompts().conversation({
+    platform: "slack",
+    adapter: slackAdapter(),
+    inbound: { key: "th-1", chatId: "chat-1", text: "为什么 bot 给我发的消息，我这会收不到 slack 推送？可能是什么原因呢？" },
+    root: "",
+    running: [],
+  });
+  assert.ok(text.length <= 1300, `rendered ${text.length} characters`);
+  assert.match(text, /## 处置卡住的 job/);
+  assert.doesNotMatch(text, /\{\{/);
+});
+
+test("TC-P12 the notice template never renders the stall section", () => {
+  const text = builtinPrompts().noticeReply({
+    platform: "slack",
+    adapter: slackAdapter(),
+    inbound: { key: "ntc-1", chatId: "chat-1", text: "杀掉" },
+    root: "⏸ 任务疑似卡住：12 分钟没有进展",
+    notice: { id: "ntc-1", prompt: "STALL-BODY" },
+  });
+  assert.match(text, /STALL-BODY/);
+  assert.doesNotMatch(text, /处置卡住的 job/);
+  assert.doesNotMatch(text, /\{\{/);
+});
