@@ -461,8 +461,10 @@ test("TC-21 a restart reports an interrupted run instead of rerunning it", async
   assert.equal(await core.recover(), 1);
   assert.equal(spawned, 0, "an interrupted run is never rerun automatically");
   assert.equal(replies.length, 1);
-  assert.match(replies[0].text, /被中断/);
-  assert.match(replies[0].text, /\/重跑/);
+  assert.match(replies[0].text, /被 relay 重启打断/);
+  assert.match(replies[0].text, /已终止/);
+  assert.match(replies[0].text, /直接回复/);
+  assert.doesNotMatch(replies[0].text, /\/重跑/);
   const job = core.state.jobs["job-1"];
   assert.equal(job.status, "interrupted");
   assert.equal(job.noticeSent, true);

@@ -25,7 +25,7 @@ const RETENTION_MS = 72 * 3_600_000;
 const SEEN_RETENTION_MS = 72 * 3_600_000;
 const MAX_SEEN = 5000;
 const COMMAND_TTL_MS = 10 * 60_000;
-const INTERRUPT_NOTICE = "上一轮处理被中断（进程重启）。回复「继续」接着做，或 /重跑 从头再来。";
+const INTERRUPT_NOTICE = "⏸ 这一轮被 relay 重启打断：还在跑的进程已终止，会话与已完成的改动都保留，被打断那轮没发出来的输出不补发。直接回复这条消息就会接着之前的会话继续。";
 const ACTION_KINDS = { cancel: true, restart: true };
 const REAP_POLL_MS = 50;
 
