@@ -43,17 +43,18 @@ test("createJob allocates a monotonic sequence and serializable inbound", () => 
 });
 
 test("TC-18 nextAction settles every status", () => {
-  const opts = { now: 1_000, leaseTtlMs: 100, chunkLimit: 10, canEdit: false, readStartTicks: () => "9" };
+  const opts = { chunkLimit: 10, canEdit: false, readStartTicks: () => "9", probeAlive: () => false };
 
   assert.deepEqual(nextAction(job({ status: "queued" }), opts), { type: "rerun" });
 
-  const aliveLease = { pid: 42, startTicks: "9", heartbeatAt: 950 };
+  const aliveLease = { pid: 42, startTicks: "9" };
   assert.deepEqual(nextAction(job({ status: "running", lease: aliveLease }), opts), { type: "reap-then-interrupt", pid: 42 });
 
-  const deadLease = { pid: 42, startTicks: "9", heartbeatAt: 800 };
-  assert.deepEqual(nextAction(job({ status: "running", lease: deadLease }), opts), { type: "interrupt" });
+  const goneLease = { pid: 42, startTicks: "9" };
+  const goneOpts = { ...opts, probeAlive: () => false, readStartTicks: () => null };
+  assert.deepEqual(nextAction(job({ status: "running", lease: goneLease }), goneOpts), { type: "interrupt" });
 
-  const wrongTicks = { pid: 42, startTicks: "8", heartbeatAt: 950 };
+  const wrongTicks = { pid: 42, startTicks: "8" };
   assert.deepEqual(nextAction(job({ status: "running", lease: wrongTicks }), opts), { type: "interrupt" });
 
   assert.deepEqual(nextAction(job({ status: "running", lease: null }), opts), { type: "interrupt" });
@@ -70,12 +71,15 @@ test("TC-18 nextAction settles every status", () => {
   }
 });
 
-test("TC-18 a lease dies when its heartbeat exceeds the ttl", () => {
-  const lease = { pid: 42, startTicks: "9", heartbeatAt: 1_000 };
-  assert.equal(isLeaseAlive(lease, 1_040, 100, () => "9"), true);
-  assert.equal(isLeaseAlive(lease, 1_140, 100, () => "9"), false);
-  assert.equal(isLeaseAlive({ ...lease, pid: null }, 1_040, 100, () => "9"), false);
-  assert.equal(isLeaseAlive(lease, 1_040, 100, () => null), false);
+test("TC-18 a lease lives or dies on pid identity alone, never on elapsed time", () => {
+  const lease = { pid: 42, startTicks: "9" };
+  assert.equal(isLeaseAlive(lease, { readStartTicks: () => "9", probeAlive: () => true }), true);
+  assert.equal(isLeaseAlive(lease, { readStartTicks: () => "9", probeAlive: () => false }), true);
+  assert.equal(isLeaseAlive(lease, { readStartTicks: () => "8", probeAlive: () => true }), false);
+  assert.equal(isLeaseAlive(lease, { readStartTicks: () => null, probeAlive: () => true }), true);
+  assert.equal(isLeaseAlive(lease, { readStartTicks: () => null, probeAlive: () => false }), false);
+  assert.equal(isLeaseAlive({ ...lease, pid: null }, { readStartTicks: () => "9" }), false);
+  assert.equal(isLeaseAlive({ pid: 42, startTicks: null }, { readStartTicks: () => "9", probeAlive: () => true }), true);
 });
 
 test("readProcStartTicks survives a comm containing spaces and parens", () => {

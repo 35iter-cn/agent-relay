@@ -9,7 +9,7 @@ import { ensurePrivateDir } from "../shared/fs.mjs";
 import { pruneState } from "../state/prune.mjs";
 import { bootNoticeText, readBootId, shouldAnnounceBoot } from "../shared/boot.mjs";
 import { createJob, ctxOf, isFinished } from "../jobs/model.mjs";
-import { DEFAULT_LEASE_TTL_MS, isLeaseAlive, readProcStartTicks } from "../jobs/lease.mjs";
+import { readProcStartTicks } from "../jobs/lease.mjs";
 import { hashOf, planParts } from "../jobs/delivery.mjs";
 import { declaredTimeoutMs, readSessionSignal, TOOL_GRACE_MS } from "../jobs/signals.mjs";
 import { nextAction } from "../jobs/next-action.mjs";
@@ -18,7 +18,6 @@ import { createNoticeService } from "../notices/service.mjs";
 import { RESTART_PROMPT, stallNoticePrompt, stallNoticeText } from "./stall-notice.mjs";
 import { createPrompts } from "./prompts.mjs";
 
-const HEARTBEAT_MS = 15_000;
 const STALL_MS = relayEnv("STALL_MS", 10 * 60_000);
 const TOOL_STALL_MS = relayEnv("TOOL_STALL_MS", 10 * 60_000);
 const STALL_CHECK_MS = 60_000;
@@ -331,16 +330,10 @@ export function createCore({ adapter, config, deps = {} }) {
       let stderr = "";
       let killed = false;
       children.set(inbound.key, child);
-      job.lease = { pid: child.pid ?? null, startTicks: child.pid ? readStartTicks(child.pid) : null, startedAt: now(), heartbeatAt: now() };
+      job.lease = { pid: child.pid ?? null, startTicks: child.pid ? readStartTicks(child.pid) : null, startedAt: now() };
       job.startedAt = started;
       job.updatedAt = isoNow();
       save();
-      const heartbeat = setInterval(() => {
-        if (job.status !== "running" || !job.lease) return;
-        job.lease.heartbeatAt = now();
-        save();
-      }, HEARTBEAT_MS);
-      heartbeat.unref?.();
       const stallTimer = setInterval(() => {
         checkStall(job).catch((error) => log("warn", "stall", String(error?.message ?? error)));
       }, STALL_CHECK_MS);
@@ -361,7 +354,6 @@ export function createCore({ adapter, config, deps = {} }) {
       child.on("error", (error) => stderr += `${error}\n`);
       child.on("close", async (code) => {
         clearTimeout(timer);
-        clearInterval(heartbeat);
         clearInterval(stallTimer);
         children.delete(inbound.key);
         appendLog({ event: "done", job: job.id, key: inbound.key, session: entry.session, exit: code, killed, elapsedMs: now() - started });
@@ -439,7 +431,7 @@ export function createCore({ adapter, config, deps = {} }) {
     entry.activeJob = job.id;
     state.convs[job.key] = entry;
     job.status = "running";
-    job.lease = { pid: null, startTicks: null, startedAt: now(), heartbeatAt: now() };
+    job.lease = { pid: null, startTicks: null, startedAt: now() };
     job.updatedAt = isoNow();
     running.add(job.id);
     save();
@@ -586,16 +578,14 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   async function recover() {
-    const at = now();
     const canEdit = typeof adapter.edit === "function";
-    const leaseTtlMs = deps.leaseTtlMs ?? DEFAULT_LEASE_TTL_MS;
     let touched = 0;
     for (const job of Object.values(state.jobs)) {
       if (isFinished(job) || job.status === "interrupted") {
         if (state.inbox.includes(job.id)) state.inbox = state.inbox.filter((id) => id !== job.id);
         continue;
       }
-      const action = nextAction(job, { now: at, leaseTtlMs, canEdit, chunkLimit: adapter.chunkLimit, readStartTicks });
+      const action = nextAction(job, { canEdit, chunkLimit: adapter.chunkLimit, readStartTicks, probeAlive });
       if (action.type === "rerun") {
         if (!state.inbox.includes(job.id)) state.inbox.push(job.id);
         touched += 1;

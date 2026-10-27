@@ -449,14 +449,14 @@ function jobState({ status = "running", lease = null, parts = [], answer = null 
 
 test("TC-21 a restart reports an interrupted run instead of rerunning it", async () => {
   let spawned = 0;
-  const state = jobState({ lease: { pid: 999999, startTicks: "1", startedAt: 0, heartbeatAt: Date.now() } });
+  const state = jobState({ lease: { pid: 999999, startTicks: "1", startedAt: 0 } });
   const { core, replies } = harness({
     state,
     spawn: () => {
       spawned += 1;
       return fakeChild({ stdout: "x" });
     },
-    deps: { readStartTicks: () => null },
+    deps: { readStartTicks: () => null, probeAlive: () => false },
   });
   assert.equal(await core.recover(), 1);
   assert.equal(spawned, 0, "an interrupted run is never rerun automatically");
@@ -474,7 +474,7 @@ test("TC-21 a restart reports an interrupted run instead of rerunning it", async
 test("TC-22 a live orphan worker is stopped before the run is reported", async () => {
   const killed = [];
   let alive = true;
-  const state = jobState({ lease: { pid: 4242, startTicks: "777", startedAt: 0, heartbeatAt: Date.now() } });
+  const state = jobState({ lease: { pid: 4242, startTicks: "777", startedAt: 0 } });
   const { core, replies } = harness({
     state,
     deps: {
@@ -496,7 +496,7 @@ test("TC-22 a live orphan worker is stopped before the run is reported", async (
 
 test("TC-22b an orphan that ignores SIGTERM is killed once the grace runs out", async () => {
   const killed = [];
-  const state = jobState({ lease: { pid: 4242, startTicks: "777", startedAt: 0, heartbeatAt: Date.now() } });
+  const state = jobState({ lease: { pid: 4242, startTicks: "777", startedAt: 0 } });
   const { core } = harness({
     state,
     deps: {
@@ -508,6 +508,49 @@ test("TC-22b an orphan that ignores SIGTERM is killed once the grace runs out", 
   });
   await core.recover();
   assert.deepEqual(killed, [[-4242, "SIGTERM"], [-4242, "SIGKILL"]]);
+});
+
+test("TC-22c a lease stays alive no matter how long the relay was down", async () => {
+  const killed = [];
+  let alive = true;
+  const state = jobState({ lease: { pid: 4242, startTicks: "777", startedAt: 0 } });
+  const { core } = harness({
+    state,
+    deps: {
+      readStartTicks: () => "777",
+      kill: (target, signal) => {
+        killed.push([target, signal]);
+        if (signal === "SIGTERM") alive = false;
+      },
+      probeAlive: () => alive,
+      stallGraceMs: 20,
+    },
+  });
+  await core.recover();
+  assert.deepEqual(killed, [[-4242, "SIGTERM"]]);
+  assert.equal(core.state.jobs["job-1"].status, "interrupted");
+});
+
+test("TC-22d a state file written by the old heartbeat code is still readable", async () => {
+  const killed = [];
+  let alive = true;
+  const legacyLease = { pid: 4242, startTicks: "777", startedAt: 0, heartbeatAt: 1 };
+  const state = jobState({ lease: legacyLease });
+  const { core } = harness({
+    state,
+    deps: {
+      readStartTicks: () => "777",
+      kill: (target, signal) => {
+        killed.push([target, signal]);
+        if (signal === "SIGTERM") alive = false;
+      },
+      probeAlive: () => alive,
+      stallGraceMs: 20,
+    },
+  });
+  await core.recover();
+  assert.deepEqual(killed, [[-4242, "SIGTERM"]]);
+  assert.equal(core.state.jobs["job-1"].lease, null);
 });
 
 test("TC-23 a restart resends only the missing chunks without spawning", async () => {

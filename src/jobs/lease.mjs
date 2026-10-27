@@ -1,7 +1,5 @@
 import { readFileSync } from "node:fs";
 
-export const DEFAULT_LEASE_TTL_MS = 45_000;
-
 export function readProcStartTicks(pid) {
   try {
     const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
@@ -12,9 +10,19 @@ export function readProcStartTicks(pid) {
   }
 }
 
-export function isLeaseAlive(lease, now, ttlMs = DEFAULT_LEASE_TTL_MS, readStartTicks = readProcStartTicks) {
+export function pidExists(pid) {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === "EPERM";
+  }
+}
+
+export function isLeaseAlive(lease, { readStartTicks = readProcStartTicks, probeAlive = pidExists } = {}) {
   if (!lease?.pid) return false;
-  if (!Number.isFinite(lease.heartbeatAt) || now - lease.heartbeatAt > ttlMs) return false;
   const ticks = readStartTicks(lease.pid);
-  return ticks != null && ticks === lease.startTicks;
+  if (ticks == null || lease.startTicks == null) return probeAlive(lease.pid);
+  return ticks === lease.startTicks;
 }

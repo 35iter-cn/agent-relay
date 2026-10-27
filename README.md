@@ -70,6 +70,12 @@ Design rules:
   (replies in a conversation) and `notice.md` (replies to a notice).
 - **The ledger is not relay's.** Relay decides which job runs when and how it
   stops; the pi extension and the agent-hours service own every ledger row.
+- **A lease is identity, not a liveness pulse.** A worker's lease is `pid` plus
+  the process start ticks read once at spawn; nothing refreshes it on a timer,
+  and no elapsed time makes it expire. A job is alive only while that exact
+  process exists, which is what makes reap-after-crash work at any delay.
+  Platform-connection heartbeats (Slack `ping`/`pong`) are a different
+  mechanism and stay where they are.
 
 ## Platforms
 
