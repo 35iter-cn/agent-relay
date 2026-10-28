@@ -377,7 +377,6 @@ export function createCore({ adapter, config, deps = {} }) {
         cwd: config.cwd,
         detached: true,
         stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, PATH: `${join(config.home, ".volta/bin")}:${join(config.home, ".bun/bin")}:${process.env.PATH ?? ""}` },
       });
       let stdout = "";
       let stderr = "";
