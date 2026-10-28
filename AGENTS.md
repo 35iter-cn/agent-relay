@@ -11,42 +11,6 @@ is not repeated here.
   tenant or host names live in `~/.config/agent-relay/`.
 - **`bun test` green before a push.** `bun run e2e` green when the change touches
   stall handling, termination, or the usage recorder.
-- **The ledger is not ours.** Relay decides which job runs when and how it stops.
-  Agent-hours rows are written by the pi extension and the agent-hours service.
-
-## Workflow
-
-Branch by intent: `fix/<topic>`, `feat/<topic>`, `docs/<topic>`, `chore/<topic>`.
-
-Commit subjects are Conventional Commits, in English, scoped to the module:
-
-```
-fix(core): a stalled cancel bills to the last progress, not to the notice
-feat(usage): let a caller close the run at a cutoff instead of the clock
-refactor(jobs)!: a lease is pid identity, not a heartbeat
-```
-
-`!` marks a breaking change to the state schema, the CLI surface or the prompt
-contract. One commit per decision, not per file touched.
-
-A PR body carries four things: the problem, the change, the test evidence
-(`bun test` counts, `bun run e2e` result), and the deployment step. Squash-merge;
-the merge commit is the release record.
-
-## Code
-
-- **No comments.** Names and structure carry the intent; a comment usually means an
-  extraction is missing.
-- **Platform code holds no cross-call state.** Conversations arrive through `ctx`;
-  an adapter translates protocol and nothing else.
-- **The runtime never names a platform.** Differences live in
-  `src/platforms/<name>.mjs`, shared behaviour in `src/platforms/shared/`.
-- **Source defaults are production values.** A knob that needs a different value in
-  production becomes an `AGENT_RELAY_*` variable — not a code edit, not a systemd
-  drop-in.
-- **A test-only hook is an env variable with the production default.** Anything
-  added so a test can run faster or deterministically (for example
-  `AGENT_RELAY_STALL_CHECK_MS`) keeps the production value as its default.
 
 ## Tests
 
