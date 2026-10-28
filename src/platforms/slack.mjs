@@ -1,9 +1,11 @@
 #!/usr/bin/env bun
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chunkText } from "../shared/chunk.mjs";
 import { relayEnv } from "../shared/env.mjs";
+import { ensurePrivateDir } from "../shared/fs.mjs";
 import { createRootCache } from "./shared/root-cache.mjs";
+import { MAX_ATTACHMENTS, MAX_BYTES, extFor, uploadDirFor, pruneUploads } from "./shared/uploads.mjs";
 
 const PING_MS = relayEnv("PING_MS", 10_000);
 const SERVER_PING_TIMEOUT_MS = relayEnv("SERVER_PING_TIMEOUT_MS", 30_000);
@@ -15,6 +17,8 @@ const ALERT_COOLDOWN_MS = relayEnv("ALERT_COOLDOWN_MS", 30 * 60_000);
 const PASSING_SUBTYPES = ["thread_broadcast", "file_share"];
 const CHUNK_LIMIT = 3500;
 const THREAD_RETENTION_MS = 30 * 86_400_000;
+const DOWNLOAD_TIMEOUT_MS = 15_000;
+export const FILES_ALERT = "relay: Slack 附件下载失败，检查 WALL-E 是否有 files:read 且已 Reinstall";
 
 export const PROGRESS_EMOJI = "thinking_face";
 const PLACEHOLDER_TEXT = "⏳ 正在处理…";
@@ -117,8 +121,75 @@ export function acceptsEvent(event, { channel = null, allowedUser = null, botUse
   if (event.bot_id || event.user === botUser) return { ok: false, why: "bot" };
   if (event.user !== allowedUser) return { ok: false, why: "author" };
   if (event.subtype && !PASSING_SUBTYPES.includes(event.subtype)) return { ok: false, why: "subtype" };
-  if (!stripMentions(event.text)) return { ok: false, why: "empty-text" };
+  if (!stripMentions(event.text) && !event.files?.length) return { ok: false, why: "empty-text" };
   return { ok: true, thread: event.thread_ts ?? event.ts };
+}
+
+export function fileOf(file) {
+  return {
+    key: String(file?.id ?? ""),
+    url: file?.url_private_download ?? file?.url_private ?? null,
+    name: file?.name ?? null,
+    mime: String(file?.mimetype ?? "").split(";")[0].trim(),
+    size: Number(file?.size ?? 0),
+  };
+}
+
+export function composeText(stripped, parsed, limit = MAX_ATTACHMENTS) {
+  const notes = [];
+  if (!stripped) notes.push(`（发了 ${parsed.saved.length} 个附件，未附文字）`);
+  if (parsed.failed.length) notes.push(`（${parsed.failed.length} 个附件下载失败，未能查看）`);
+  if (parsed.truncated) notes.push(`（还有 ${parsed.truncated} 个附件未处理，单条消息最多 ${limit} 个）`);
+  return [stripped, ...notes].filter(Boolean).join("\n");
+}
+
+export function shouldAlertFiles(parsed) {
+  return parsed.failed.length > 0 && parsed.saved.length === 0;
+}
+
+export function createAttachmentDownloader({ config, log, channel, token, api, fetchFn = (...args) => fetch(...args) }) {
+  async function resolveFile(file) {
+    const base = fileOf(file);
+    if (base.url) return base;
+    const res = await api("files.info", { file: base.key });
+    if (!res?.ok) throw new Error(`files.info ${res?.error ?? "unknown"}`);
+    return fileOf(res.file);
+  }
+
+  async function fetchBytes(url) {
+    const res = await fetchFn(url, {
+      headers: { Authorization: `Bearer ${token}` },
+      signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
+    });
+    const type = String(res.headers.get("content-type") ?? "").split(";")[0].trim();
+    if (!res.ok) throw new Error(`download ${res.status}`);
+    if (type === "text/html") throw new Error("download html: bot 缺少 files:read");
+    return { bytes: Buffer.from(await res.arrayBuffer()), type };
+  }
+
+  return async function downloadAttachments(files) {
+    const all = Array.isArray(files) ? files.slice() : [];
+    const picked = all.slice(0, MAX_ATTACHMENTS);
+    const dir = uploadDirFor(config.configDir, channel);
+    const saved = [];
+    const failed = [];
+    for (const file of picked) {
+      try {
+        const item = await resolveFile(file);
+        if (item.size && item.size > MAX_BYTES) throw new Error(`too-large ${item.size}`);
+        const { bytes, type } = await fetchBytes(item.url);
+        const mime = item.mime || type;
+        const target = join(dir, `${item.key.slice(0, 12)}.${extFor(mime, item.name)}`);
+        ensurePrivateDir(dir);
+        writeFileSync(target, bytes, { mode: 0o600 });
+        saved.push({ kind: mime.startsWith("image/") ? "image" : "file", path: target, name: item.name });
+      } catch (error) {
+        log("error", "attachment", String(file?.id ?? ""), String(error?.message ?? error));
+        failed.push(file);
+      }
+    }
+    return { saved, failed, truncated: Math.max(0, all.length - picked.length) };
+  };
 }
 
 export function heartbeatVerdict(state, now, cfg = {}) {
@@ -369,6 +440,14 @@ export function createPlatform({ config, log: baseLog }) {
     emoji: progressEmoji,
   });
 
+  const downloadAttachments = createAttachmentDownloader({
+    config,
+    log,
+    channel,
+    token: botToken,
+    api: botToken ? apiFor(botToken) : null,
+  });
+
   const adapter = {
     name: "slack",
     surface: "本 thread",
@@ -409,7 +488,9 @@ export function createPlatform({ config, log: baseLog }) {
         if (!verdict.ok) return log("ignore", verdict.why, event?.ts ?? "");
         const thread = verdict.thread;
         const stripped = stripMentions(event.text ?? "");
-        const text = event.files?.length ? `${stripped}\n[附件]`.trim() : stripped;
+        const parsed = event.files?.length ? await downloadAttachments(event.files) : { saved: [], failed: [], truncated: 0 };
+        const text = composeText(stripped, parsed);
+        if (shouldAlertFiles(parsed)) alertOnce("files", FILES_ALERT);
         const rootText = await rootTextFor(thread);
         await onMessage({
           key: thread,
@@ -419,13 +500,19 @@ export function createPlatform({ config, log: baseLog }) {
           authorId: event.user,
           text,
           chatId: channel,
-          rootText: rootText ?? text,
+          rootText: rootText || text,
           replyTo: thread,
           replyIds: [thread, event.thread_ts].filter(Boolean),
+          attachments: parsed.saved,
         });
       };
 
       log("info", "start", `channel=${channel}`, `allowed=${allowedUser}`, `state=${config.stateFile("slack")}`);
+      try {
+        pruneUploads(config.uploadsDir);
+      } catch (error) {
+        log("warn", "prune", String(error?.message ?? error));
+      }
       setInterval(() => {
         const pruned = pruneThreads(state.convs);
         const dropped = Object.keys(state.convs).length - Object.keys(pruned).length;
@@ -504,6 +591,10 @@ export function createPlatform({ config, log: baseLog }) {
 
     async onProgressDone(ctx) {
       return runtime.onProgressDone(ctx);
+    },
+
+    prune() {
+      return pruneUploads(config.uploadsDir);
     },
 
     async postNotice(text) {
