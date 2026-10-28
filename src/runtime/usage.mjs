@@ -49,9 +49,9 @@ export function createUsage(deps = {}) {
     };
   }
 
-  async function recordRun({ job, platform, key, session, answer, status, startedAt }) {
+  async function recordRun({ job, platform, key, session, answer, status, startedAt, cutoffAt }) {
     try {
-      const endedAt = clock();
+      const endedAt = Number.isFinite(cutoffAt) ? cutoffAt : clock();
       const beganAt = Number.isFinite(startedAt) ? startedAt : endedAt;
       const input = String(job?.inbound?.text ?? "");
       const output = String(answer ?? "");

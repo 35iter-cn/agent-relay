@@ -20,7 +20,7 @@ import { createPrompts } from "./prompts.mjs";
 
 const STALL_MS = relayEnv("STALL_MS", 10 * 60_000);
 const TOOL_STALL_MS = relayEnv("TOOL_STALL_MS", 10 * 60_000);
-const STALL_CHECK_MS = 60_000;
+const STALL_CHECK_MS = relayEnv("STALL_CHECK_MS", 60_000);
 const RETENTION_MS = 72 * 3_600_000;
 const SEEN_RETENTION_MS = 72 * 3_600_000;
 const MAX_SEEN = 5000;
@@ -210,12 +210,15 @@ export function createCore({ adapter, config, deps = {} }) {
     const job = runningNow ? active : null;
     let outcome = "dequeued";
     if (job) {
+      const lastAt = Date.parse(job.lastActivityAt ?? "");
       const notifiedAt = Date.parse(job.stallNotifiedAt ?? "");
-      const at = Number.isFinite(notifiedAt) ? notifiedAt : now();
+      const at = [lastAt, notifiedAt].find(Number.isFinite) ?? now();
       const startedAt = job.lease?.startedAt ?? Date.parse(job.createdAt);
       const minutes = Math.max(0, Math.round((at - startedAt) / 60_000));
-      outcome = await terminate(key, `已终止：这一轮卡住了。工时按最后一次进展截止，计入 ${minutes} 分钟（到 ${localStamp(at)}）。`);
       job.stallCancelled = true;
+      job.cutoffAt = isoAt(at);
+      save();
+      outcome = await terminate(key, `已终止：这一轮卡住了。工时按最后一次进展截止，计入 ${minutes} 分钟（到 ${localStamp(at)}）。`);
       job.updatedAt = isoNow();
       save();
       appendLog({ event: "action", action, key, job: job.id, outcome });
@@ -423,6 +426,7 @@ export function createCore({ adapter, config, deps = {} }) {
         job.updatedAt = isoNow();
         save();
         await deliver(job);
+        const cutoffAt = Date.parse(job.cutoffAt ?? "");
         usage?.recordRun({
           job,
           platform: adapter.name,
@@ -431,6 +435,7 @@ export function createCore({ adapter, config, deps = {} }) {
           answer: text,
           status: job.status,
           startedAt: job.startedAt ?? Date.parse(job.createdAt),
+          cutoffAt: Number.isFinite(cutoffAt) ? cutoffAt : undefined,
         });
         runtimeInbounds.delete(job.id);
         resolve();
@@ -483,6 +488,7 @@ export function createCore({ adapter, config, deps = {} }) {
     } catch (error) {
       log("warn", "progress-done", String(error?.message ?? error));
     }
+    job.progress = null;
     if (failed && job.status === "answered") {
       job.status = "failed";
       job.error = "reply-failed";

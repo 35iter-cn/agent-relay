@@ -171,3 +171,31 @@ test("TC-U12 log file is named by the Asia/Shanghai day, not the UTC day", async
   assert.equal(lines.length, 1);
   assert.equal(JSON.parse(lines[0]).ts, "2026-10-25T17:30:00.000Z");
 });
+
+test("TC-U15 cutoffAt replaces the clock for ts, endedAt, durationMs and the day file", async () => {
+  const { usage, dir } = harness();
+  const record = await usage.recordRun({
+    job,
+    platform: "feishu",
+    key: "k",
+    session: "s",
+    answer: "",
+    status: "cancelled",
+    startedAt: Date.parse("2026-10-22T13:55:00.000Z"),
+    cutoffAt: Date.parse("2026-10-22T14:00:00.000Z"),
+  });
+  assert.equal(record.ts, "2026-10-22T14:00:00.000Z");
+  assert.equal(record.endedAt, "2026-10-22T14:00:00.000Z");
+  assert.equal(record.durationMs, 300_000);
+  const lines = readFileSync(join(dir, "2026-10-22.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0].endedAt, "2026-10-22T14:00:00.000Z");
+});
+
+test("TC-U16 without cutoffAt the clock still closes the run", async () => {
+  const { usage } = harness();
+  const record = await usage.recordRun({ job, platform: "feishu", key: "k", session: "s", answer: "", status: "cancelled", startedAt: Date.parse("2026-10-23T03:59:30.000Z") });
+  assert.equal(record.ts, "2026-10-23T04:00:00.000Z");
+  assert.equal(record.endedAt, "2026-10-23T04:00:00.000Z");
+  assert.equal(record.durationMs, 30_000);
+});

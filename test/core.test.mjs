@@ -988,6 +988,8 @@ test("TC-ST1 stall notice names the session, key, pid and restart prompt", () =>
   assert.match(text, /pid：4242/);
   assert.match(text, /上一轮似乎卡住了，继续，不要犯相同错误/);
   assert.match(text, /回复本消息/);
+  assert.match(text, /按最后一次进展截止入账/);
+  assert.doesNotMatch(text, /已用时间/);
 });
 
 test("TC-ST2 a graceful terminate lets the plugin write the row and only posts the note", async () => {
@@ -1146,13 +1148,24 @@ function writeSession(sessionsDir, session, entries) {
   writeFileSync(join(sessionsDir, `2026-01-01T00-00-00_${session}.jsonl`), `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`);
 }
 
+function closingSpawn() {
+  return () => {
+    const child = controlledChild();
+    child.kill = (signal) => {
+      if (signal === "SIGTERM") setTimeout(() => child.emit("close", null), 0);
+    };
+    return child;
+  };
+}
+
 async function runningJob(harnessArgs = {}) {
   const clock = { now: Date.parse("2026-10-26T13:00:00.000Z") };
+  const { deps: extraDeps, ...rest } = harnessArgs;
   const built = harness({
     sessions: ["fs-th-abc"],
-    deps: { now: () => clock.now, stallGraceMs: 5 },
+    deps: { now: () => clock.now, stallGraceMs: 5, ...(extraDeps ?? {}) },
     spawn: () => controlledChild(),
-    ...harnessArgs,
+    ...rest,
   });
   await built.core.handle(inbound());
   const job = Object.values(built.core.state.jobs).find((item) => item.key === "th-abc");
@@ -1248,6 +1261,104 @@ test("TC-ST13 a restarted job starts with empty stall fields", async () => {
   assert.equal(restarted.stallNotifiedAt, undefined);
   assert.equal(restarted.stallReason, undefined);
   assert.equal(restarted.stallRunningMs, undefined);
+});
+
+test("TC-ST16 a stall cancel bills to the last progress, not to the notice", async () => {
+  const recorded = [];
+  const { core, replies, dir, sessionsDir, clock, job } = await runningJob({
+    spawn: closingSpawn(),
+    adapterOverrides: { chunkLimit: 1000 },
+    deps: { usage: { recordRun: async (args) => { recorded.push(args); } } },
+  });
+  clock.now = Date.parse("2026-10-26T13:20:00.000Z");
+  const toolAt = clock.now - 12 * 60_000;
+  writeSession(sessionsDir, "fs-th-abc", [sessionAssistant(toolAt, [{ id: "c1" }])]);
+  await core.checkStall(job);
+  assert.equal(job.lastActivityAt, isoAt(toolAt));
+  clock.now = Date.parse("2026-10-26T13:25:00.000Z");
+  const cmdDir = join(dir, ".config/agent-relay/relay-fake.cmd");
+  mkdirSync(cmdDir, { recursive: true });
+  writeFileSync(join(cmdDir, "1-cancel.json"), JSON.stringify({ action: "cancel", key: "th-abc", at: isoAt(clock.now) }));
+  await core.drainCommands();
+  await tick();
+  const text = replies.map((reply) => reply.text).join("\n");
+  assert.match(text, /计入 8 分钟/);
+  assert.match(text, /到 2026-10-26 21:08:00/);
+  assert.equal(job.cutoffAt, isoAt(toolAt));
+  assert.equal(job.stallCancelled, true);
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0].cutoffAt, toolAt);
+  assert.equal(recorded[0].status, "cancelled");
+  assert.equal(recorded[0].startedAt, Date.parse("2026-10-26T13:00:00.000Z"));
+  const logDir = join(dir, "logs", "fake");
+  const events = readdirSync(logDir).flatMap((name) => readFileSync(join(logDir, name), "utf8").trim().split("\n")).map((line) => JSON.parse(line));
+  const done = events.find((event) => event.event === "done" && event.job === job.id);
+  assert.ok(done);
+  assert.equal(done.elapsedMs, Date.parse("2026-10-26T13:25:00.000Z") - Date.parse("2026-10-26T13:00:00.000Z"));
+});
+
+test("TC-ST17 a silent stall cancel bills to the last session entry", async () => {
+  const { core, replies, dir, sessionsDir, clock, job } = await runningJob({ spawn: closingSpawn(), adapterOverrides: { chunkLimit: 1000 } });
+  clock.now = Date.parse("2026-10-26T13:20:00.000Z");
+  const finishedAt = clock.now - 11 * 60_000;
+  writeSession(sessionsDir, "fs-th-abc", [sessionAssistant(finishedAt - 1000, [{ id: "c1" }]), sessionToolResult(finishedAt, "c1")]);
+  await core.checkStall(job);
+  assert.equal(job.lastActivityAt, isoAt(finishedAt));
+  clock.now = Date.parse("2026-10-26T13:30:00.000Z");
+  const cmdDir = join(dir, ".config/agent-relay/relay-fake.cmd");
+  mkdirSync(cmdDir, { recursive: true });
+  writeFileSync(join(cmdDir, "1-cancel.json"), JSON.stringify({ action: "cancel", key: "th-abc", at: isoAt(clock.now) }));
+  await core.drainCommands();
+  await tick();
+  const text = replies.map((reply) => reply.text).join("\n");
+  assert.match(text, /计入 9 分钟/);
+  assert.match(text, /到 2026-10-26 21:09:00/);
+  assert.equal(job.cutoffAt, isoAt(finishedAt));
+});
+
+test("TC-ST18 a cancel without a stall record falls back to now", async () => {
+  const { core, replies, clock, job } = await runningJob({ spawn: closingSpawn() });
+  clock.now = Date.parse("2026-10-26T13:10:00.000Z");
+  assert.equal(await core.applyAction({ action: "cancel", key: "th-abc", text: "" }), true);
+  await tick();
+  const text = replies.map((reply) => reply.text).join("\n");
+  assert.match(text, /计入 10 分钟/);
+  assert.equal(job.cutoffAt, isoAt(clock.now));
+});
+
+test("TC-ST19 a restart cuts the old job at its last progress and leaves the new one uncut", async () => {
+  const { core, dir, sessionsDir, clock, job } = await runningJob();
+  clock.now = Date.parse("2026-10-26T13:20:00.000Z");
+  const toolAt = clock.now - 12 * 60_000;
+  writeSession(sessionsDir, "fs-th-abc", [sessionAssistant(toolAt, [{ id: "c1" }])]);
+  await core.checkStall(job);
+  clock.now = Date.parse("2026-10-26T13:25:00.000Z");
+  const cmdDir = join(dir, ".config/agent-relay/relay-fake.cmd");
+  mkdirSync(cmdDir, { recursive: true });
+  writeFileSync(join(cmdDir, "1-restart.json"), JSON.stringify({ action: "restart", key: "th-abc", at: isoAt(clock.now) }));
+  await core.drainCommands();
+  assert.equal(job.cutoffAt, isoAt(toolAt));
+  assert.equal(job.stallCancelled, true);
+  const restarted = Object.values(core.state.jobs).find((item) => item.auto === "stall-restart");
+  assert.ok(restarted, "a restarted job is queued");
+  assert.equal(restarted.cutoffAt, undefined);
+  assert.equal(restarted.stallCancelled, undefined);
+});
+
+test("TC-ST20 a finished job clears its progress only after the reaction is done", async () => {
+  const seen = [];
+  const { core } = harness({
+    adapterOverrides: {
+      onProgress: async () => ({ mode: "reaction", messageId: "m-1", name: "eyes" }),
+      onProgressDone: async (ctx) => { seen.push(ctx.progress); },
+    },
+  });
+  await core.handle(inbound());
+  await tick();
+  const job = Object.values(core.state.jobs).find((item) => item.key === "th-abc");
+  assert.equal(seen.length, 1);
+  assert.deepEqual(seen[0], { mode: "reaction", messageId: "m-1", name: "eyes" });
+  assert.equal(job.progress, null);
 });
 
 test("TC-42 the stall section carries only the skeleton when no job is running", async () => {

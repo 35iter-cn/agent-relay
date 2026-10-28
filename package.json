@@ -11,7 +11,8 @@
   },
   "scripts": {
     "test": "bun test",
-    "start": "bun src/cli.mjs serve"
+    "start": "bun src/cli.mjs serve",
+    "e2e": "bun test/e2e/stall-cutoff.e2e.mjs"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.76.0"
