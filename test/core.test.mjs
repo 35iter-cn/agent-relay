@@ -1290,6 +1290,11 @@ test("TC-ST16 a stall cancel bills to the last progress, not to the notice", asy
   assert.equal(recorded[0].cutoffAt, toolAt);
   assert.equal(recorded[0].status, "cancelled");
   assert.equal(recorded[0].startedAt, Date.parse("2026-10-26T13:00:00.000Z"));
+  const logDir = join(dir, "logs", "fake");
+  const events = readdirSync(logDir).flatMap((name) => readFileSync(join(logDir, name), "utf8").trim().split("\n")).map((line) => JSON.parse(line));
+  const done = events.find((event) => event.event === "done" && event.job === job.id);
+  assert.ok(done);
+  assert.equal(done.elapsedMs, Date.parse("2026-10-26T13:25:00.000Z") - Date.parse("2026-10-26T13:00:00.000Z"));
 });
 
 test("TC-ST17 a silent stall cancel bills to the last session entry", async () => {
