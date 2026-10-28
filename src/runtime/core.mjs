@@ -20,7 +20,7 @@ import { createPrompts } from "./prompts.mjs";
 
 const STALL_MS = relayEnv("STALL_MS", 10 * 60_000);
 const TOOL_STALL_MS = relayEnv("TOOL_STALL_MS", 10 * 60_000);
-const STALL_CHECK_MS = 60_000;
+const STALL_CHECK_MS = relayEnv("STALL_CHECK_MS", 60_000);
 const RETENTION_MS = 72 * 3_600_000;
 const SEEN_RETENTION_MS = 72 * 3_600_000;
 const MAX_SEEN = 5000;
