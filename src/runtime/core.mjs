@@ -210,12 +210,15 @@ export function createCore({ adapter, config, deps = {} }) {
     const job = runningNow ? active : null;
     let outcome = "dequeued";
     if (job) {
+      const lastAt = Date.parse(job.lastActivityAt ?? "");
       const notifiedAt = Date.parse(job.stallNotifiedAt ?? "");
-      const at = Number.isFinite(notifiedAt) ? notifiedAt : now();
+      const at = [lastAt, notifiedAt].find(Number.isFinite) ?? now();
       const startedAt = job.lease?.startedAt ?? Date.parse(job.createdAt);
       const minutes = Math.max(0, Math.round((at - startedAt) / 60_000));
-      outcome = await terminate(key, `已终止：这一轮卡住了。工时按最后一次进展截止，计入 ${minutes} 分钟（到 ${localStamp(at)}）。`);
       job.stallCancelled = true;
+      job.cutoffAt = isoAt(at);
+      save();
+      outcome = await terminate(key, `已终止：这一轮卡住了。工时按最后一次进展截止，计入 ${minutes} 分钟（到 ${localStamp(at)}）。`);
       job.updatedAt = isoNow();
       save();
       appendLog({ event: "action", action, key, job: job.id, outcome });
