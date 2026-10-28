@@ -1340,6 +1340,22 @@ test("TC-ST19 a restart cuts the old job at its last progress and leaves the new
   assert.equal(restarted.stallCancelled, undefined);
 });
 
+test("TC-ST20 a finished job clears its progress only after the reaction is done", async () => {
+  const seen = [];
+  const { core } = harness({
+    adapterOverrides: {
+      onProgress: async () => ({ mode: "reaction", messageId: "m-1", name: "eyes" }),
+      onProgressDone: async (ctx) => { seen.push(ctx.progress); },
+    },
+  });
+  await core.handle(inbound());
+  await tick();
+  const job = Object.values(core.state.jobs).find((item) => item.key === "th-abc");
+  assert.equal(seen.length, 1);
+  assert.deepEqual(seen[0], { mode: "reaction", messageId: "m-1", name: "eyes" });
+  assert.equal(job.progress, null);
+});
+
 test("TC-42 the stall section carries only the skeleton when no job is running", async () => {
   const captured = [];
   const { core } = harness({

@@ -488,6 +488,7 @@ export function createCore({ adapter, config, deps = {} }) {
     } catch (error) {
       log("warn", "progress-done", String(error?.message ?? error));
     }
+    job.progress = null;
     if (failed && job.status === "answered") {
       job.status = "failed";
       job.error = "reply-failed";
