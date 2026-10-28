@@ -1160,11 +1160,12 @@ function closingSpawn() {
 
 async function runningJob(harnessArgs = {}) {
   const clock = { now: Date.parse("2026-10-26T13:00:00.000Z") };
+  const { deps: extraDeps, ...rest } = harnessArgs;
   const built = harness({
     sessions: ["fs-th-abc"],
-    deps: { now: () => clock.now, stallGraceMs: 5 },
+    deps: { now: () => clock.now, stallGraceMs: 5, ...(extraDeps ?? {}) },
     spawn: () => controlledChild(),
-    ...harnessArgs,
+    ...rest,
   });
   await built.core.handle(inbound());
   const job = Object.values(built.core.state.jobs).find((item) => item.key === "th-abc");
@@ -1263,7 +1264,12 @@ test("TC-ST13 a restarted job starts with empty stall fields", async () => {
 });
 
 test("TC-ST16 a stall cancel bills to the last progress, not to the notice", async () => {
-  const { core, replies, dir, sessionsDir, clock, job } = await runningJob({ spawn: closingSpawn(), adapterOverrides: { chunkLimit: 1000 } });
+  const recorded = [];
+  const { core, replies, dir, sessionsDir, clock, job } = await runningJob({
+    spawn: closingSpawn(),
+    adapterOverrides: { chunkLimit: 1000 },
+    deps: { usage: { recordRun: async (args) => { recorded.push(args); } } },
+  });
   clock.now = Date.parse("2026-10-26T13:20:00.000Z");
   const toolAt = clock.now - 12 * 60_000;
   writeSession(sessionsDir, "fs-th-abc", [sessionAssistant(toolAt, [{ id: "c1" }])]);
@@ -1280,6 +1286,10 @@ test("TC-ST16 a stall cancel bills to the last progress, not to the notice", asy
   assert.match(text, /到 2026-10-26 21:08:00/);
   assert.equal(job.cutoffAt, isoAt(toolAt));
   assert.equal(job.stallCancelled, true);
+  assert.equal(recorded.length, 1);
+  assert.equal(recorded[0].cutoffAt, toolAt);
+  assert.equal(recorded[0].status, "cancelled");
+  assert.equal(recorded[0].startedAt, Date.parse("2026-10-26T13:00:00.000Z"));
 });
 
 test("TC-ST17 a silent stall cancel bills to the last session entry", async () => {

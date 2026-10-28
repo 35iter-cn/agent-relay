@@ -426,6 +426,7 @@ export function createCore({ adapter, config, deps = {} }) {
         job.updatedAt = isoNow();
         save();
         await deliver(job);
+        const cutoffAt = Date.parse(job.cutoffAt ?? "");
         usage?.recordRun({
           job,
           platform: adapter.name,
@@ -434,6 +435,7 @@ export function createCore({ adapter, config, deps = {} }) {
           answer: text,
           status: job.status,
           startedAt: job.startedAt ?? Date.parse(job.createdAt),
+          cutoffAt: Number.isFinite(cutoffAt) ? cutoffAt : undefined,
         });
         runtimeInbounds.delete(job.id);
         resolve();
