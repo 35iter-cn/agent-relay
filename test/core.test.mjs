@@ -988,6 +988,8 @@ test("TC-ST1 stall notice names the session, key, pid and restart prompt", () =>
   assert.match(text, /pid：4242/);
   assert.match(text, /上一轮似乎卡住了，继续，不要犯相同错误/);
   assert.match(text, /回复本消息/);
+  assert.match(text, /按最后一次进展截止入账/);
+  assert.doesNotMatch(text, /已用时间/);
 });
 
 test("TC-ST2 a graceful terminate lets the plugin write the row and only posts the note", async () => {
