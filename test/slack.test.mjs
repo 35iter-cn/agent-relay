@@ -1,7 +1,10 @@
 import test from "node:test";
-import { readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import assert from "node:assert/strict";
-import { stripMentions, sessionFor, acceptsEvent, heartbeatVerdict, refreshDelayMs, alertAllowed, pruneThreads, decideProgressMode, createRuntime, createPlatform } from "../src/platforms/slack.mjs";
+import { stripMentions, sessionFor, acceptsEvent, heartbeatVerdict, refreshDelayMs, alertAllowed, pruneThreads, decideProgressMode, createRuntime, createPlatform, createAttachmentDownloader, composeText, shouldAlertFiles, FILES_ALERT } from "../src/platforms/slack.mjs";
+import { uploadDirFor } from "../src/platforms/shared/uploads.mjs";
 
 const TEST_SCOPE = { channel: "CTEST", allowedUser: "UTEST", botUser: "UBOT" };
 
@@ -293,4 +296,134 @@ test("slack refuses to start without a channel or an allowed user", async () => 
   assert.deepEqual(exits, [1, 1]);
   assert.ok(logs.some((line) => line.includes("AGENT_RELAY_SLACK_CHANNEL")));
   assert.ok(logs.some((line) => line.includes("AGENT_RELAY_ALLOWED_USER")));
+});
+
+function attachmentHarness({ files, response, info } = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "relay-slack-attach-"));
+  const logs = [];
+  const fetches = [];
+  const infos = [];
+  const download = createAttachmentDownloader({
+    config: { configDir: dir },
+    log: (level, ...args) => logs.push([level, ...args]),
+    channel: "CTESTCHANNEL",
+    token: "xoxb-test",
+    api: async (method, params) => {
+      infos.push([method, params]);
+      return info ?? { ok: true };
+    },
+    fetchFn: async (url) => {
+      fetches.push(url);
+      return response ?? okDownload("image/jpeg");
+    },
+  });
+  return { dir, logs, fetches, infos, download };
+}
+
+function okDownload(type, size = 8) {
+  return {
+    ok: true,
+    status: 200,
+    headers: new Map([["content-type", type]]),
+    arrayBuffer: async () => new ArrayBuffer(size),
+  };
+}
+
+function slackFile(over = {}) {
+  return {
+    id: "F0CCC510MPH",
+    name: "IMG_0129.jpg",
+    mimetype: "image/jpeg",
+    size: 580409,
+    url_private_download: "https://files.slack.com/files-pri/T1-F0CCC510MPH/download/img_0129.jpg",
+    ...over,
+  };
+}
+
+test("AC-1 a captioned image lands in uploads and is passed as an attachment", async () => {
+  const { dir, download } = attachmentHarness();
+  const parsed = await download([slackFile()]);
+  assert.equal(parsed.saved.length, 1);
+  assert.equal(parsed.saved[0].kind, "image");
+  assert.equal(parsed.saved[0].path, join(uploadDirFor(dir, "CTESTCHANNEL"), "F0CCC510MPH.jpg"));
+  assert.equal(existsSync(parsed.saved[0].path), true);
+  const text = composeText("图片里这是什么？", parsed);
+  assert.equal(text, "图片里这是什么？");
+  assert.doesNotMatch(text, /\[附件\]/);
+});
+
+test("AC-2 an image without text is accepted and says how many files arrived", async () => {
+  const { download } = attachmentHarness();
+  const parsed = await download([slackFile()]);
+  assert.equal(composeText("", parsed), "（发了 1 个附件，未附文字）");
+  assert.equal(acceptsEvent({ ...base, text: "", subtype: "file_share", files: [slackFile()] }, TEST_SCOPE).ok, true);
+});
+
+test("AC-3 more than four files downloads four and reports the rest", async () => {
+  const { download, fetches } = attachmentHarness();
+  const files = [0, 1, 2, 3, 4].map((n) => slackFile({ id: `F0000000000${n}`, name: `f${n}.jpg` }));
+  const parsed = await download(files);
+  assert.equal(fetches.length, 4);
+  assert.equal(parsed.saved.length, 4);
+  assert.equal(parsed.truncated, 1);
+  assert.match(composeText("看这几张", parsed), /（还有 1 个附件未处理，单条消息最多 4 个）/);
+});
+
+test("AC-4 a file over the byte limit is not written and counts as failed", async () => {
+  const { download, logs } = attachmentHarness();
+  const parsed = await download([slackFile({ size: 21 * 1024 * 1024 })]);
+  assert.equal(parsed.saved.length, 0);
+  assert.equal(parsed.failed.length, 1);
+  assert.match(composeText("看图", parsed), /（1 个附件下载失败，未能查看）/);
+  assert.ok(logs.some(([level, event]) => level === "error" && event === "attachment"));
+});
+
+test("AC-5 an HTML body means the bot lacks files:read and is never saved", async () => {
+  const { download, logs } = attachmentHarness({ response: okDownload("text/html") });
+  const parsed = await download([slackFile()]);
+  assert.equal(parsed.saved.length, 0);
+  assert.equal(parsed.failed.length, 1);
+  assert.ok(logs.some(([, event, , message]) => event === "attachment" && message.includes("files:read")));
+});
+
+test("AC-6 every download failing raises one alert naming the missing scope", async () => {
+  const { download } = attachmentHarness({ response: { ok: false, status: 403, headers: new Map(), arrayBuffer: async () => new ArrayBuffer(0) } });
+  const parsed = await download([slackFile()]);
+  assert.equal(parsed.saved.length, 0);
+  assert.equal(shouldAlertFiles(parsed), true);
+  assert.equal(shouldAlertFiles({ saved: [{}], failed: [{}], truncated: 0 }), false);
+  assert.match(FILES_ALERT, /files:read/);
+  const source = readFileSync(new URL("../src/platforms/slack.mjs", import.meta.url), "utf8");
+  assert.match(source, /if \(shouldAlertFiles\(parsed\)\) alertOnce\("files", FILES_ALERT\)/);
+});
+
+test("AC-7 an unknown mimetype keeps the name suffix, a suffixed file keeps its own", async () => {
+  const { download } = attachmentHarness({ response: okDownload("application/pdf") });
+  const parsed = await download([slackFile({ name: "report.pdf", mimetype: "application/pdf" })]);
+  assert.match(parsed.saved[0].path, /\.pdf$/);
+  assert.equal(parsed.saved[0].kind, "file");
+  const bare = attachmentHarness({ response: okDownload("application/octet-stream") });
+  const other = await bare.download([slackFile({ name: "no-suffix", mimetype: "application/octet-stream" })]);
+  assert.match(other.saved[0].path, /\.bin$/);
+});
+
+test("AC-8 a file without a download url is resolved through files.info", async () => {
+  const { download, infos } = attachmentHarness({ info: { ok: true, file: slackFile() } });
+  const parsed = await download([slackFile({ url_private_download: undefined, url_private: undefined })]);
+  assert.equal(infos.length, 1);
+  assert.equal(infos[0][0], "files.info");
+  assert.equal(parsed.saved.length, 1);
+
+  const denied = attachmentHarness({ info: { ok: false, error: "missing_scope" } });
+  const failed = await denied.download([slackFile({ url_private_download: undefined, url_private: undefined })]);
+  assert.equal(failed.saved.length, 0);
+  assert.equal(failed.failed.length, 1);
+});
+
+test("AC-9 messages without files never download anything", () => {
+  const source = readFileSync(new URL("../src/platforms/slack.mjs", import.meta.url), "utf8");
+  assert.match(source, /event\.files\?\.length \? await downloadAttachments\(event\.files\)/);
+  assert.equal(acceptsEvent({ ...base, text: "   " }, TEST_SCOPE).ok, false);
+  assert.equal(acceptsEvent({ ...base, user: "U-stranger", files: [slackFile()] }, TEST_SCOPE).ok, false);
+  assert.equal(acceptsEvent({ ...base, bot_id: "B1", files: [slackFile()] }, TEST_SCOPE).ok, false);
 });

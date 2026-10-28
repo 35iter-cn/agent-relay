@@ -1,26 +1,14 @@
 #!/usr/bin/env bun
-import { mkdirSync, readFileSync, readdirSync, rmdirSync, statSync, unlinkSync } from "node:fs";
+import { mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { chunkText } from "../shared/chunk.mjs";
 import { relayEnv } from "../shared/env.mjs";
 import { createRootCache } from "./shared/root-cache.mjs";
 import { ensurePrivateDir } from "../shared/fs.mjs";
+import { MAX_ATTACHMENTS, MAX_BYTES, uploadDirFor, pruneUploads, extFor } from "./shared/uploads.mjs";
 
 const CARD_LIMIT = 3000;
-const MAX_ATTACHMENTS = 4;
-const MAX_BYTES = 20 * 1024 * 1024;
 const DOWNLOAD_TIMEOUT_MS = 15_000;
-const UPLOAD_TTL_MS = 7 * 86_400_000;
-const EXT_BY_TYPE = { "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp" };
-const CLOCK = new Intl.DateTimeFormat("en-CA", {
-  timeZone: "Asia/Shanghai",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  hourCycle: "h23",
-});
 const PROGRESS_EMOJI = "THINKING";
 const PERMISSION_ERRORS = new Set([99991672, 99991663, 99991400, 1061045]);
 
@@ -268,37 +256,6 @@ export function attachmentsOf(message) {
   return found;
 }
 
-export function uploadDirFor(configDir, chatId, date = new Date(), format = CLOCK) {
-  const day = format.format(date).slice(0, 10).replaceAll("-", "");
-  return join(configDir, "uploads", chatId, day);
-}
-
-export function pruneUploads(root, ttl = UPLOAD_TTL_MS, now = Date.now()) {
-  const cutoff = now - ttl;
-  const walk = (dir) => {
-    let entries = [];
-    try {
-      entries = readdirSync(dir, { withFileTypes: true });
-    } catch {
-      return;
-    }
-    for (const entry of entries) {
-      const full = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(full);
-        continue;
-      }
-      try {
-        if (statSync(full).mtimeMs < cutoff) unlinkSync(full);
-      } catch {}
-    }
-    try {
-      if (!readdirSync(dir).length) rmdirSync(dir);
-    } catch {}
-  };
-  walk(root);
-}
-
 export function withTimeout(promise, ms) {
   let timer = null;
   const guard = new Promise((_, reject) => {
@@ -402,7 +359,7 @@ export function createPlatform({ config, log: baseLog, createClient = defaultCli
           DOWNLOAD_TIMEOUT_MS,
         );
         const mime = String(res?.headers?.["content-type"] ?? res?.headers?.["Content-Type"] ?? "").split(";")[0].trim();
-        const file = join(dir, `${item.key.slice(0, 12)}.${EXT_BY_TYPE[mime] ?? "bin"}`);
+        const file = join(dir, `${item.key.slice(0, 12)}.${extFor(mime, item.name)}`);
         ensurePrivateDir(dir);
         await res.writeFile(file);
         if (statSync(file).size > MAX_BYTES) {

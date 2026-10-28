@@ -93,8 +93,16 @@ thread stays visible as quoting rather than as a separate topic.
 
 Adapter contract (`src/platforms/contract.mjs`): `name`, `start`, `reply`,
 `sessionFor` are required; `postNotice`, `edit`, `onProgress`, `onProgressDone`,
-`buildWorker` are optional. `postNotice` must be callable before `start()` so the
+`buildWorker`, `prune` are optional. `postNotice` must be callable before `start()` so the
 CLI can emit notices without a running daemon.
+
+Attachments: feishu downloads message resources through the SDK, slack downloads
+`url_private_download` with the bot token — that token needs the `files:read` scope,
+and a 200 `text/html` body means the scope is missing. Both write into
+`uploads/<chat>/<yyyymmdd>/` and share the same limits (4 files, 20 MB each, 7-day
+retention) from `src/platforms/shared/uploads.mjs`; the landed paths reach the
+worker as `@path` arguments. `.slack-xoxc.tmp` is unrelated to this — it only feeds
+`conversations.replies`.
 
 ## Run
 
@@ -109,7 +117,7 @@ Configuration lives in `~/.config/agent-relay/` (override with
 
 ```
 feishu.env | slack-app.env | telegram.env | jev.env
-webhook.url, .slack-xoxc.tmp        # slack fallbacks
+webhook.url, .slack-xoxc.tmp        # slack fallbacks (.slack-xoxc.tmp: root-text reads only)
 relay-<platform>.json               # state: conversations, jobs, notices
 relay-<platform>.cmd/               # CLI → daemon command queue
 logs/<platform>/<day>.jsonl
