@@ -18,7 +18,7 @@ user message ──▶ platform adapter ──▶ relay core ──▶ agent ses
 Anything the relay posts on its own initiative is a **notice**, and every notice
 has the same two fields:
 
-- `text` — what the users sees in the chat (the stall alert, the intake
+- `text` — what the user sees in the chat (the stall alert, the intake
   broadcast, the hours report, the boot line)
 - `prompt` — optional instructions injected into the session that opens when the
   user replies to that notice: what to do, which job key it belongs to, which
@@ -36,8 +36,9 @@ That means:
 - adding a new notification type is a change in the sender, not in this repo:
   `agent-relay notice emit --platform feishu --text "$(…)" --prompt-file …`
 - the policy for acting on a notice lives in that `prompt`; the relay itself only
-  knows `agent-relay stall <platform> cancel|restart <key>`, and that entry
-  point validates its own arguments
+  knows `agent-relay stall <platform> cancel|restart <key>` and the two
+  in-conversation commands `/stop` (cancel the running turn) and `/重跑` (re-run
+  it), and each entry point validates its own arguments
 - the notice body is data, not instructions — `notice.md` says so, because the
   text can carry third-party content (issue titles, chat excerpts)
 
@@ -50,10 +51,10 @@ fields in `src/runtime/stall-notice.mjs`.
 src/
 ├── cli.mjs                 entry: serve | notice | notify | stall
 ├── config.mjs              paths, env files, state/command locations
-├── shared/                 chunking, json, time, logging, retention, prompts, env
+├── shared/                 chunking, json, time, logging, retention, prompts, env, fs, boot
 ├── state/                  state schema + atomic store
 ├── jobs/                   job model, leases, delivery plan, worker signals, next action
-├── runtime/                core loop, prompts, stall notice, usage recorder
+├── runtime/                core loop, prompts, stall notice, usage recorder, instance lock
 ├── notices/                notice service (emit / match / prune)
 ├── prompts/                prompt templates (thread, notice, stall fragments)
 └── platforms/              feishu | slack | telegram adapters + shared helpers
@@ -116,9 +117,11 @@ logs/<platform>/<day>.jsonl
 
 Environment knobs use the `AGENT_RELAY_` prefix (the legacy `RELAY_` prefix is
 still read): `AGENT_RELAY_STALL_MS`, `AGENT_RELAY_TOOL_STALL_MS`,
-`AGENT_RELAY_TIMEOUT_MS`, `AGENT_RELAY_MAX_WORKERS`, `AGENT_RELAY_QUEUE_DEPTH`,
-`AGENT_RELAY_WORKER`, `AGENT_RELAY_ALLOWED_USER`. With nothing set, one turn
-times out after 2 hours, `MAX_WORKERS` is 5 and `QUEUE_DEPTH` is 3 — the source
+`AGENT_RELAY_STALL_CHECK_MS`, `AGENT_RELAY_TIMEOUT_MS`, `AGENT_RELAY_MAX_WORKERS`,
+`AGENT_RELAY_QUEUE_DEPTH`, `AGENT_RELAY_WORKER`, `AGENT_RELAY_ALLOWED_USER`; the
+slack adapter adds its own `PING_MS` / `PONG_TIMEOUT_MS` / `ALERT_COOLDOWN_MS`.
+With nothing set, one turn times out after 2 hours, `MAX_WORKERS` is 5,
+`QUEUE_DEPTH` is 3 and the stall watchdog runs once a minute — the source
 defaults are the production values, so no systemd drop-in is involved.
 
 CLI commands write a JSON file into `relay-<platform>.cmd/` and wait up to 20s for
@@ -197,7 +200,17 @@ schema (adding the `notices` table). The legacy files are left untouched.
 ## Tests
 
 ```bash
-bun test
+bun test        # unit and integration, milliseconds
+bun run e2e     # process level, seconds
 ```
 
-Tests live next to the code they cover under `test/`, one file per module.
+Tests live next to the code they cover under `test/`, one file per module;
+`test/e2e/` holds the process-level scripts, which spawn real workers and write
+real state, event and usage files, faking only the IM delivery.
+
+## Contributing
+
+`main` only takes squash-merged pull requests: branch, push, open a PR, merge.
+[`AGENTS.md`](AGENTS.md) records the conventions this repository expects from a
+change — the test evidence a PR carries and how a change reaches the running
+daemon.

@@ -12,7 +12,7 @@
   "scripts": {
     "test": "bun test",
     "start": "bun src/cli.mjs serve",
-    "e2e": "bun test/e2e/stall-cutoff.e2e.mjs"
+    "e2e": "for f in test/e2e/*.e2e.mjs; do bun \"$f\" || exit 1; done"
   },
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.76.0"
