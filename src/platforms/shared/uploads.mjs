@@ -6,6 +6,7 @@ export const MAX_BYTES = 20 * 1024 * 1024;
 export const UPLOAD_TTL_MS = 7 * 86_400_000;
 
 const EXT_BY_TYPE = { "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp" };
+const TYPE_BY_EXT = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp" };
 const CLOCK = new Intl.DateTimeFormat("en-CA", {
   timeZone: "Asia/Shanghai",
   year: "numeric",
@@ -45,6 +46,10 @@ export function pruneUploads(root, ttl = UPLOAD_TTL_MS, now = Date.now()) {
     } catch {}
   };
   walk(root);
+}
+
+export function mimeForExt(ext) {
+  return TYPE_BY_EXT[String(ext ?? "").toLowerCase()] ?? null;
 }
 
 export function extFor(mime, name = null) {
