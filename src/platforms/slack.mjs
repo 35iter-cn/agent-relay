@@ -39,10 +39,20 @@ function slackFailure(message, slackError) {
 }
 
 export function createMediaUploader({ api, channel, token, log = () => {}, reply, fetchFn = (...args) => fetch(...args), alertOnce = () => {} }) {
+  async function ticketFor(file, bytes) {
+    const res = await fetchFn("https://slack.com/api/files.getUploadURLExternal", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ filename: file.name, length: String(bytes.byteLength) }),
+    });
+    const parsed = await res.json().catch(() => ({ ok: false, error: "unreadable-body" }));
+    if (!parsed.ok) throw slackFailure(`getUploadURLExternal ${parsed.error ?? "unknown"}`, parsed.error);
+    return parsed;
+  }
+
   async function uploadFile(file) {
     const bytes = readFileSync(file.path);
-    const ticket = await api("files.getUploadURLExternal", { filename: file.name, length: bytes.byteLength });
-    if (!ticket?.ok) throw slackFailure(`getUploadURLExternal ${ticket?.error ?? "unknown"}`, ticket?.error);
+    const ticket = await ticketFor(file, bytes);
     const put = await fetchFn(ticket.upload_url, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: bytes });
     if (!put?.ok) throw new Error(`upload ${put?.status ?? "failed"}`);
     return ticket.file_id;
