@@ -3,12 +3,9 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createConfig } from "./config.mjs";
 import { ensurePrivateDir } from "./shared/fs.mjs";
-import { readJson } from "./shared/json.mjs";
 import { createLog } from "./shared/log.mjs";
 import { createCore } from "./runtime/core.mjs";
 import { acquireInstanceLock } from "./runtime/instance-lock.mjs";
-import { createUsage } from "./runtime/usage.mjs";
-import { createJev } from "./judgment/jev.mjs";
 import { definePlatform, isPlatform, PLATFORMS } from "./platforms/contract.mjs";
 
 export const ACTION_NAMES = new Set(["cancel", "restart"]);
@@ -93,11 +90,7 @@ async function serve(platform, config, log) {
     });
   }
   const adapter = await loadPlatform(platform, config, log);
-  const jev = createJev({ env: { ...process.env, ...config.readEnv(config.envFile("jev.env")) }, log });
-  const usagePrompt = readJson(config.usagePromptFile, null);
-  if (!usagePrompt) log("warn", "usage-prompt", `missing ${config.usagePromptFile} — usage magic stays unconfigured`);
-  const usageRecorder = createUsage({ dir: join(config.logDir, platform), judge: jev, prompt: usagePrompt, log });
-  const core = createCore({ adapter, config, deps: { jev, usage: usageRecorder } });
+  const core = createCore({ adapter, config });
   core.pruneLogs();
   setInterval(() => core.pruneLogs(), 86_400_000).unref();
   core.drainCommands().catch((error) => log("error", "command", String(error?.stack ?? error)));

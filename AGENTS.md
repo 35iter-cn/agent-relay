@@ -10,12 +10,12 @@ is not repeated here.
 - **No secrets, no deployment identifiers in the sources.** Platform ids, channels,
   tenant or host names live in `~/.config/agent-relay/`.
 - **`bun test` green before a push.** `bun run e2e` green when the change touches
-  stall handling, termination, or the usage recorder.
+  stall handling or termination.
 
 ## Tests
 
 `bun test` runs `test/<module>.test.mjs`, one file per module. Name cases
-`TC-<group><n>` — `TC-ST16` for stall, `TC-U15` for usage. Ids are stable and get
+`TC-<group><n>` — `TC-ST16` for stall, `TC-V3` for prompt variants. Ids are stable and get
 reused in PR notes; never renumber them.
 
 Assert the behaviour, not the existence. When a fix involves a number a user will
@@ -23,7 +23,7 @@ see, assert that number. A case that would also pass on the broken code proves
 nothing.
 
 `bun run e2e` runs `test/e2e/*.e2e.mjs`: real child processes, real state, event
-and usage files, real command queue — only the IM delivery is faked. It is not
+and event files, real command queue — only the IM delivery is faked. It is not
 part of `bun test`, because it takes seconds instead of milliseconds.
 
 ## Deploying
@@ -45,7 +45,6 @@ upgrade; that is expected, so make sure the reply goes out first.
 | Path | What |
 | --- | --- |
 | `src/runtime/core.mjs` | job lifecycle, stall detection, termination, delivery |
-| `src/runtime/usage.mjs` | usage rows under `logs/<platform>/<day>.jsonl` |
 | `src/jobs/` | job model, leases, delivery planning, session signals |
 | `src/platforms/` | one adapter per IM platform |
 | `src/prompts/` | prompt templates; a same-named file under `~/.config/agent-relay/prompts/` wins |

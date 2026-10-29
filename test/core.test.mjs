@@ -842,30 +842,6 @@ test("TC-V3 empty root falls back to the message text for the variant judgement"
   assert.doesNotMatch(captured[0].prompt, /本会话的起点/);
 });
 
-test("TC-V4 jev verdict wins over the regex fallback", async () => {
-  const captured = [];
-  const { core } = harness({
-    candidateRules: "## 候选任务\n\n候选规则正文",
-    deps: { jev: { judgeChoice: async () => ({ choice: "candidate_rules", confidence: 0.99, fallback: null }) } },
-    adapterOverrides: { buildWorker: ({ prompt, full }) => (captured.push({ prompt, full }), { bin: "/bin/true", args: [] }) },
-  });
-  await core.handle(inbound({ text: "没有方括号的候选播报", rootText: "没有方括号的候选播报" }));
-  await tick();
-  assert.match(captured[0].prompt, /## 候选任务/);
-});
-
-test("TC-V5 jev failure falls back to the regex and does not break dispatch", async () => {
-  const captured = [];
-  const { core } = harness({
-    candidateRules: "## 候选任务\n\n候选规则正文",
-    deps: { jev: { judgeChoice: async () => ({ choice: null, confidence: null, fallback: "timeout" }) } },
-    adapterOverrides: { buildWorker: ({ prompt, full }) => (captured.push({ prompt, full }), { bin: "/bin/true", args: [] }) },
-  });
-  await core.handle(inbound({ text: "go", rootText: "[20261023-0834-1] 候选 https://x/1" }));
-  await tick();
-  assert.match(captured[0].prompt, /## 候选任务/);
-});
-
 test("TC-V6 killed worker tells the user to continue instead of rerunning", async () => {
   const { spawn } = await import("node:child_process");
   const replies = [];
@@ -902,17 +878,6 @@ test("TC-V7 a timed-out job cannot be rerun while an interrupted one can", async
   await core.handle(inbound({ dedupeId: "cmd-1", text: "/重跑" }));
   assert.equal(replies.length, 1);
   assert.match(replies[0].text, /没有可重跑/);
-});
-
-test("TC-V8 usage records one run per terminal job", async () => {
-  const runs = [];
-  const { core } = harness({ deps: { usage: { recordRun: (args) => runs.push(args) } } });
-  await core.handle(inbound({ text: "hi" }));
-  await tick();
-  assert.equal(runs.length, 1);
-  assert.equal(runs[0].status, "done");
-  assert.equal(runs[0].platform, "fake");
-  assert.equal(runs[0].answer, "ok");
 });
 
 test("TC-40 attachments become @refs ahead of the prompt", async () => {
@@ -1264,11 +1229,9 @@ test("TC-ST13 a restarted job starts with empty stall fields", async () => {
 });
 
 test("TC-ST16 a stall cancel bills to the last progress, not to the notice", async () => {
-  const recorded = [];
   const { core, replies, dir, sessionsDir, clock, job } = await runningJob({
     spawn: closingSpawn(),
     adapterOverrides: { chunkLimit: 1000 },
-    deps: { usage: { recordRun: async (args) => { recorded.push(args); } } },
   });
   clock.now = Date.parse("2026-10-26T13:20:00.000Z");
   const toolAt = clock.now - 12 * 60_000;
@@ -1286,10 +1249,6 @@ test("TC-ST16 a stall cancel bills to the last progress, not to the notice", asy
   assert.match(text, /到 2026-10-26 21:08:00/);
   assert.equal(job.cutoffAt, isoAt(toolAt));
   assert.equal(job.stallCancelled, true);
-  assert.equal(recorded.length, 1);
-  assert.equal(recorded[0].cutoffAt, toolAt);
-  assert.equal(recorded[0].status, "cancelled");
-  assert.equal(recorded[0].startedAt, Date.parse("2026-10-26T13:00:00.000Z"));
   const logDir = join(dir, "logs", "fake");
   const events = readdirSync(logDir).flatMap((name) => readFileSync(join(logDir, name), "utf8").trim().split("\n")).map((line) => JSON.parse(line));
   const done = events.find((event) => event.event === "done" && event.job === job.id);

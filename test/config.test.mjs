@@ -16,7 +16,6 @@ test("config paths default under ~/.config/agent-relay and stay overridable", ()
   assert.equal(config.configDir, "/home/tester/.config/agent-relay");
   assert.equal(config.stateFile("feishu"), "/home/tester/.config/agent-relay/relay-feishu.json");
   assert.equal(config.commandDir("slack"), "/home/tester/.config/agent-relay/relay-slack.cmd");
-  assert.equal(config.usagePromptFile, "/home/tester/.config/agent-relay/usage-prompt.json");
   const custom = createConfig({ env: { HOME: "/home/tester", AGENT_RELAY_CONFIG_DIR: "/srv/relay" } });
   assert.equal(custom.stateFile("feishu"), "/srv/relay/relay-feishu.json");
 });

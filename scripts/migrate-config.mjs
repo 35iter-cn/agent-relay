@@ -7,7 +7,7 @@ import { upgradeState } from "../src/state/schema.mjs";
 const HOME = process.env.HOME;
 const SOURCE = process.env.AGENT_RELAY_LEGACY_DIR ?? join(HOME, ".config/taskradar");
 const TARGET = process.env.AGENT_RELAY_CONFIG_DIR ?? join(HOME, ".config/agent-relay");
-const ENV_FILES = ["feishu.env", "slack-app.env", "telegram.env", "jev.env", "webhook.url", ".slack-xoxc.tmp", "usage-prompt.json"];
+const ENV_FILES = ["feishu.env", "slack-app.env", "telegram.env", "webhook.url", ".slack-xoxc.tmp"];
 const PLATFORMS = ["feishu", "slack", "telegram"];
 
 export const INFLIGHT = new Set(["running", "queued", "answered"]);

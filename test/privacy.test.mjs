@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { appendDailyJsonl } from "../src/shared/log.mjs";
@@ -27,7 +27,7 @@ test("no platform id, tenant name or private host leaks into the sources", () =>
   ];
   const offenders = [];
   const self = join(ROOT, "test", "privacy.test.mjs");
-  for (const file of SCAN.flatMap(walk)) {
+  for (const file of SCAN.filter(existsSync).flatMap(walk)) {
     if (file === self) continue;
     if (!/\.(mjs|md|json)$/.test(file)) continue;
     const text = readFileSync(file, "utf8");
