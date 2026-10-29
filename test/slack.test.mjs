@@ -444,70 +444,79 @@ function shotFile(bytes = "png-bytes", name = "shot.png") {
   return { path, name, mime: "image/png" };
 }
 
-function mediaRig({ api, fetchFn, alertOnce = () => {}, reply = async () => {} } = {}) {
-  const calls = [];
+function mediaRig({ fetchFn, alertOnce = () => {}, reply = async () => {}, token = "xoxb-TEST" } = {}) {
+  const posts = [];
+  let tickets = 0;
+  const defaultFetch = async (url) => {
+    if (url.endsWith("files.getUploadURLExternal")) {
+      tickets += 1;
+      const ticket = { file_id: `F${tickets}`, upload_url: `https://files.slack.test/${tickets}` };
+      return { ok: true, status: 200, json: async () => ({ ok: true, ...ticket }) };
+    }
+    if (url.startsWith("https://files.slack.test/")) return { ok: true, status: 200 };
+    return { ok: true, status: 200, json: async () => ({ ok: true, files: [] }) };
+  };
   return {
-    calls,
+    posts,
     postMedia: createMediaUploader({
-      api: api ?? (async (method, params) => (calls.push({ method, params }), { ok: true, file_id: `F${calls.length}`, upload_url: `https://files.slack.test/${calls.length}` })),
       channel: "CTEST",
-      token: "xoxb-TEST",
+      token,
       log: () => {},
       reply,
-      fetchFn,
+      fetchFn: (url, init) => (posts.push({ url, init }), (fetchFn ?? defaultFetch)(url, init)),
       alertOnce,
     }),
   };
 }
 
 test("TC-MEDIA1 media is uploaded in three steps and shared into the reply thread", async () => {
-  const posts = [];
-  const fetchFn = async (url, init) => {
-    posts.push({ url, init });
-    return { ok: true, status: 200, json: async () => ({ ok: true, files: [{ id: "F1" }, { id: "F2" }] }) };
-  };
   const first = shotFile("first-bytes");
   const second = shotFile("second-bytes", "chart.png");
-  const { postMedia, calls } = mediaRig({ fetchFn });
+  const { postMedia, posts } = mediaRig();
   const result = await postMedia({ replyTo: "1792.0001" }, [first, second]);
 
-  assert.deepEqual(calls.map((call) => call.method), ["files.getUploadURLExternal", "files.getUploadURLExternal"]);
-  assert.equal(calls[0].params.filename, "shot.png");
-  assert.equal(calls[0].params.length, 11);
-  assert.equal(calls[1].params.length, 12);
-  assert.equal(posts[0].url, "https://files.slack.test/1");
-  assert.equal(posts[0].init.method, "POST");
-  assert.equal(posts[0].init.headers["Content-Type"], "application/octet-stream");
-  assert.equal(String(posts[0].init.body), "first-bytes");
-  assert.equal(String(posts[1].init.body), "second-bytes");
-  assert.equal(posts[2].url, "https://slack.com/api/files.completeUploadExternal");
-  assert.equal(posts[2].init.headers.Authorization, "Bearer xoxb-TEST");
-  assert.equal(posts[2].init.body.get("channel_id"), "CTEST");
-  assert.equal(posts[2].init.body.get("thread_ts"), "1792.0001");
-  assert.deepEqual(JSON.parse(posts[2].init.body.get("files")), [{ id: "F1" }, { id: "F2" }]);
+  assert.equal(posts[0].url, "https://slack.com/api/files.getUploadURLExternal");
+  assert.equal(posts[0].init.headers.Authorization, "Bearer xoxb-TEST");
+  assert.equal(posts[0].init.headers["Content-Type"], "application/x-www-form-urlencoded");
+  assert.equal(posts[0].init.body.get("filename"), "shot.png");
+  assert.equal(posts[0].init.body.get("length"), "11");
+  assert.equal(posts[2].init.body.get("filename"), "chart.png");
+  assert.equal(posts[2].init.body.get("length"), "12");
+  assert.equal(posts[1].url, "https://files.slack.test/1");
+  assert.equal(posts[1].init.method, "POST");
+  assert.equal(posts[1].init.headers["Content-Type"], "application/octet-stream");
+  assert.equal(String(posts[1].init.body), "first-bytes");
+  assert.equal(String(posts[3].init.body), "second-bytes");
+  assert.equal(posts[4].url, "https://slack.com/api/files.completeUploadExternal");
+  assert.equal(posts[4].init.headers.Authorization, "Bearer xoxb-TEST");
+  assert.equal(posts[4].init.body.get("channel_id"), "CTEST");
+  assert.equal(posts[4].init.body.get("thread_ts"), "1792.0001");
+  assert.deepEqual(JSON.parse(posts[4].init.body.get("files")), [{ id: "F1" }, { id: "F2" }]);
   assert.deepEqual(result, { messageId: null, degraded: false });
 });
 
 test("TC-MEDIA2 a missing files:write scope degrades to one text note plus one alert", async () => {
   const alerts = [];
   const replies = [];
-  const api = async () => ({ ok: false, error: "missing_scope" });
-  const fetchFn = async () => {
-    throw new Error("nothing must be uploaded without a scope");
-  };
-  const { postMedia } = mediaRig({ api, fetchFn, alertOnce: (kind) => alerts.push(kind), reply: async (ctx, text) => replies.push({ replyTo: ctx.replyTo, text }) });
+  const fetchFn = async (url) => (url.endsWith("files.getUploadURLExternal") ? { ok: true, json: async () => ({ ok: false, error: "missing_scope" }) } : { ok: true, status: 200 });
+  const { postMedia, posts } = mediaRig({
+    fetchFn,
+    alertOnce: (kind) => alerts.push(kind),
+    reply: async (ctx, text) => replies.push({ replyTo: ctx.replyTo, text }),
+  });
   const result = await postMedia({ replyTo: "1792.0001" }, [shotFile(), shotFile("two", "b.png")]);
 
   assert.equal(result.degraded, true);
   assert.deepEqual(alerts, ["media"]);
   assert.deepEqual(replies, [{ replyTo: "1792.0001", text: "（2 张图片未能上传：Slack 授权缺少 files:write）" }]);
   assert.equal(MEDIA_ALERT.includes("files:write"), true);
+  assert.equal(posts.length, 1, "only the rejected ticket request is attempted");
 });
 
 test("TC-MEDIA3 a missing bot token degrades instead of throwing", async () => {
   const replies = [];
   const alerts = [];
-  const postMedia = createMediaUploader({ api: null, channel: "CTEST", token: null, log: () => {}, reply: async (ctx, text) => replies.push(text), alertOnce: (kind) => alerts.push(kind) });
+  const postMedia = createMediaUploader({ channel: "CTEST", token: null, log: () => {}, reply: async (ctx, text) => replies.push(text), alertOnce: (kind) => alerts.push(kind) });
   const result = await postMedia({ replyTo: "1" }, [shotFile()]);
   assert.deepEqual(result, { messageId: null, degraded: true });
   assert.deepEqual(alerts, ["media"]);
@@ -515,10 +524,12 @@ test("TC-MEDIA3 a missing bot token degrades instead of throwing", async () => {
 });
 
 test("TC-MEDIA4 a transient upload failure is rethrown so the job retries it", async () => {
-  const api = async () => ({ ok: true, file_id: "F1", upload_url: "https://files.slack.test/1" });
-  const fetchFn = async (url) => (url.endsWith("completeUploadExternal") ? { ok: true, json: async () => ({ ok: false, error: "internal_error" }) } : { ok: true, status: 200 });
-  const posts = [];
-  const { postMedia } = mediaRig({ api, fetchFn: (url, init) => (posts.push(url), fetchFn(url, init)) });
+  const fetchFn = async (url) => {
+    if (url.endsWith("files.getUploadURLExternal")) return { ok: true, json: async () => ({ ok: true, file_id: "F1", upload_url: "https://files.slack.test/1" }) };
+    if (url.endsWith("completeUploadExternal")) return { ok: true, json: async () => ({ ok: false, error: "internal_error" }) };
+    return { ok: true, status: 200 };
+  };
+  const { postMedia, posts } = mediaRig({ fetchFn });
   await assert.rejects(() => postMedia({ replyTo: "1" }, [shotFile()]), /completeUploadExternal internal_error/);
-  assert.equal(posts.length, 2, "the bytes go up before complete is attempted");
+  assert.equal(posts.length, 3, "the ticket, the bytes and the failing complete are all attempted");
 });
