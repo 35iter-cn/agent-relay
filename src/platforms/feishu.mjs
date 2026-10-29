@@ -385,7 +385,7 @@ export function createPlatform({ config, log: baseLog, createClient = defaultCli
     maxWorkers: relayEnv("MAX_WORKERS", 5),
     queueDepth: relayEnv("QUEUE_DEPTH", 3),
     worker: relayEnv("WORKER", "pi"),
-    piBin: join(config.home, ".bun/bin/pi"),
+    piBin: config.workerBin,
     replyRules,
     sessionFor,
     prune: () => pruneUploads(config.uploadsDir),

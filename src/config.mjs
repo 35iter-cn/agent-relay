@@ -35,6 +35,7 @@ export function createConfig({ env = process.env } = {}) {
     usagePromptFile: join(configDir, "usage-prompt.json"),
     uploadsDir: join(configDir, "uploads"),
     cli: env.AGENT_RELAY_CLI ?? "agent-relay",
+    workerBin: env.AGENT_RELAY_WORKER_BIN ?? "pi",
     readEnv: (file) => readEnvFile(file),
     envFile: (name) => join(configDir, name),
     stateFile: (platform) => join(configDir, `relay-${platform}.json`),

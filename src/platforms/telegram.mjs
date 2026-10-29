@@ -1,5 +1,4 @@
 #!/usr/bin/env bun
-import { join } from "node:path";
 import { chunkText } from "../shared/chunk.mjs";
 import { relayEnv } from "../shared/env.mjs";
 import { pruneConversations } from "./shared/root-cache.mjs";
@@ -176,7 +175,7 @@ export function createPlatform({ config, log: baseLog }) {
     maxWorkers: relayEnv("MAX_WORKERS", 5),
     queueDepth: relayEnv("QUEUE_DEPTH", 3),
     worker: relayEnv("WORKER", "pi"),
-    piBin: join(config.home, ".bun/bin/pi"),
+    piBin: config.workerBin,
     replyRules,
     sessionFor,
 
