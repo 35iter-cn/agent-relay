@@ -21,6 +21,12 @@ test("config paths default under ~/.config/agent-relay and stay overridable", ()
   assert.equal(custom.stateFile("feishu"), "/srv/relay/relay-feishu.json");
 });
 
+test("TC-CFG9 the worker binary is resolved by name and stays overridable", () => {
+  assert.equal(config.workerBin, "pi");
+  const custom = createConfig({ env: { HOME: "/home/tester", AGENT_RELAY_WORKER_BIN: "/opt/pi/bin/pi" } });
+  assert.equal(custom.workerBin, "/opt/pi/bin/pi");
+});
+
 test("sessions live under the agent's session root for the working directory", () => {
   assert.equal(sessionsDirFor("/home/tester/code", "/home/tester"), "/home/tester/.pi/agent/sessions/--home-tester-code--");
 });

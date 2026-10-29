@@ -50,3 +50,4 @@ upgrade; that is expected, so make sure the reply goes out first.
 | `src/platforms/` | one adapter per IM platform |
 | `src/prompts/` | prompt templates; a same-named file under `~/.config/agent-relay/prompts/` wins |
 | `src/state/`, `src/notices/` | state schema + atomic store, replyable notices |
+| External binaries | Called by name from `PATH` (`pi`, `agent-relay`); the systemd user environment (`~/.config/environment.d/`) owns `PATH`, so neither the unit nor the sources set it |
