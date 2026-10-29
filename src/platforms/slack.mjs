@@ -32,6 +32,56 @@ export function decideProgressMode(error) {
   return "none";
 }
 
+export const MEDIA_ALERT = "relay: Slack 图片回帖没发出去，检查 app 是否有 files:write 且已 Reinstall";
+
+function slackFailure(message, slackError) {
+  return Object.assign(new Error(message), { slackError });
+}
+
+export function createMediaUploader({ api, channel, token, log = () => {}, reply, fetchFn = (...args) => fetch(...args), alertOnce = () => {} }) {
+  async function uploadFile(file) {
+    const bytes = readFileSync(file.path);
+    const ticket = await api("files.getUploadURLExternal", { filename: file.name, length: bytes.byteLength });
+    if (!ticket?.ok) throw slackFailure(`getUploadURLExternal ${ticket?.error ?? "unknown"}`, ticket?.error);
+    const put = await fetchFn(ticket.upload_url, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: bytes });
+    if (!put?.ok) throw new Error(`upload ${put?.status ?? "failed"}`);
+    return ticket.file_id;
+  }
+
+  async function complete(thread, ids) {
+    const body = new URLSearchParams({ files: JSON.stringify(ids.map((id) => ({ id }))), channel_id: channel });
+    if (thread) body.set("thread_ts", thread);
+    const res = await fetchFn("https://slack.com/api/files.completeUploadExternal", {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    const parsed = await res.json().catch(() => ({ ok: false, error: "unreadable-body" }));
+    if (!parsed.ok) throw slackFailure(`completeUploadExternal ${parsed.error ?? "unknown"}`, parsed.error);
+    return parsed;
+  }
+
+  async function degrade(ctx, files, reason) {
+    alertOnce("media", MEDIA_ALERT);
+    await reply(ctx, `（${files.length} 张图片未能上传：${reason}）`);
+    return { messageId: null, degraded: true };
+  }
+
+  return async function postMedia(ctx, files) {
+    if (!api) return degrade(ctx, files, "缺少 bot token");
+    try {
+      const ids = [];
+      for (const file of files) ids.push(await uploadFile(file));
+      await complete(ctx?.replyTo ?? null, ids);
+      return { messageId: null, degraded: false };
+    } catch (error) {
+      if (!PERMISSION_ERRORS.has(error?.slackError)) throw error;
+      log("warn", "postMedia", String(error?.slackError ?? error));
+      return degrade(ctx, files, "Slack 授权缺少 files:write");
+    }
+  };
+}
+
 export function createRuntime({ api, log, channel, post, emoji = PROGRESS_EMOJI }) {
   async function postMessage(ctx, text) {
     const res = await api("chat.postMessage", { channel, text, ...(ctx.replyTo ? { thread_ts: ctx.replyTo } : {}) });
@@ -104,7 +154,7 @@ export function createRuntime({ api, log, channel, post, emoji = PROGRESS_EMOJI 
   };
 }
 
-export const replyRules = "- 你的 stdout 会以 app `Intake Notifier` 的身份发回本 thread（不是你本人账号）。\n- 用 Slack mrkdwn：标题和粗体都写 `*x*`（别写 `##`、别写 `**x**`）、列表用 `• `（别写 `- `）、别用表格；行内代码与 ``` 围栏照常。";
+export const replyRules = "- 你的 stdout 会以 app `Intake Notifier` 的身份发回本 thread（不是你本人账号）。\n- 用 Slack mrkdwn：标题和粗体都写 `*x*`（别写 `##`、别写 `**x**`）、列表用 `• `（别写 `- `）、别用表格；行内代码与 ``` 围栏照常。\n- 要给用户看图时，在 stdout 里单独一行写 `![](/绝对路径.png)`（png/jpg/gif/webp，≤20MB，最多 4 张）；relay 会把图作为附件发在同一条 thread。";
 
 export function stripMentions(text) {
   return String(text ?? "").replace(/\s*<@[A-Z0-9]+>/g, "").trim();
@@ -440,6 +490,15 @@ export function createPlatform({ config, log: baseLog }) {
     emoji: progressEmoji,
   });
 
+  const postMedia = createMediaUploader({
+    api: botToken ? apiFor(botToken) : null,
+    channel,
+    token: botToken,
+    log,
+    reply: (ctx, text) => runtime.reply(ctx, text),
+    alertOnce,
+  });
+
   const downloadAttachments = createAttachmentDownloader({
     config,
     log,
@@ -580,6 +639,8 @@ export function createPlatform({ config, log: baseLog }) {
     async reply(ctx, text) {
       return runtime.reply(ctx, text);
     },
+
+    postMedia,
 
     async edit(ctx, messageId, text) {
       return runtime.edit(ctx, messageId, text);
