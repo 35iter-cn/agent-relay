@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import { stripMentions, sessionFor, acceptsEvent, heartbeatVerdict, refreshDelayMs, alertAllowed, pruneThreads, decideProgressMode, createRuntime, createPlatform, createAttachmentDownloader, composeText, shouldAlertFiles, FILES_ALERT } from "../src/platforms/slack.mjs";
+import { stripMentions, sessionFor, acceptsEvent, heartbeatVerdict, refreshDelayMs, alertAllowed, pruneThreads, decideProgressMode, createRuntime, createPlatform, createAttachmentDownloader, composeText, shouldAlertFiles, FILES_ALERT, replyRules } from "../src/platforms/slack.mjs";
 import { uploadDirFor } from "../src/platforms/shared/uploads.mjs";
 
 const TEST_SCOPE = { channel: "CTEST", allowedUser: "UTEST", botUser: "UBOT" };
@@ -426,4 +426,12 @@ test("AC-9 messages without files never download anything", () => {
   assert.equal(acceptsEvent({ ...base, text: "   " }, TEST_SCOPE).ok, false);
   assert.equal(acceptsEvent({ ...base, user: "U-stranger", files: [slackFile()] }, TEST_SCOPE).ok, false);
   assert.equal(acceptsEvent({ ...base, bot_id: "B1", files: [slackFile()] }, TEST_SCOPE).ok, false);
+});
+
+test("TC-12 the reply rules pair every markdown habit with the mrkdwn form Slack actually renders", () => {
+  for (const fragment of ["`*x*`", "`##`", "`**x**`", "`• `", "`- `", "表格"]) {
+    assert.ok(replyRules.includes(fragment), `replyRules never mentions ${fragment}`);
+  }
+  assert.match(replyRules, /标题和粗体都写 `\*x\*`/);
+  assert.match(replyRules, /列表用 `• `/);
 });
