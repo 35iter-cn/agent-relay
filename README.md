@@ -92,9 +92,9 @@ any message in that chain continues it — the relay answers with a reply, so th
 thread stays visible as quoting rather than as a separate topic.
 
 Adapter contract (`src/platforms/contract.mjs`): `name`, `start`, `reply`,
-`sessionFor` are required; `postNotice`, `edit`, `onProgress`, `onProgressDone`,
-`buildWorker`, `prune` are optional. `postNotice` must be callable before `start()` so the
-CLI can emit notices without a running daemon.
+`sessionFor` are required; `postNotice`, `postMedia`, `edit`, `onProgress`,
+`onProgressDone`, `buildWorker`, `prune` are optional. `postNotice` must be callable
+before `start()` so the CLI can emit notices without a running daemon.
 
 Attachments: feishu downloads message resources through the SDK, slack downloads
 `url_private_download` with the bot token — that token needs the `files:read` scope,
@@ -103,6 +103,15 @@ and a 200 `text/html` body means the scope is missing. Both write into
 retention) from `src/platforms/shared/uploads.mjs`; the landed paths reach the
 worker as `@path` arguments. `.slack-xoxc.tmp` is unrelated to this — it only feeds
 `conversations.replies`.
+
+Outbound images are the mirror of that: a worker asks for a picture to be sent by
+putting `![](/absolute/path.png)` on a line of its own in stdout (png/jpg/jpeg/gif/webp,
+20 MB each, at most 4 per reply). `extractMedia()` removes those lines, the delivery plan
+sends every text chunk first and the images after, and only the adapters that implement
+`postMedia` upload anything — slack walks `files.getUploadURLExternal` → upload →
+`files.completeUploadExternal` into the same thread, so that token also needs the
+`files:write` scope; without it the image degrades into a text note plus one alert.
+Feishu and telegram keep the reference as plain text.
 
 ## Run
 
