@@ -48,8 +48,6 @@ export function createCore({ adapter, config, deps = {} }) {
     }
   });
   const log = deps.log ?? createLog();
-  const jev = deps.jev ?? null;
-  const usage = deps.usage ?? null;
   const stallGraceMs = deps.stallGraceMs ?? 5_000;
   const deliveryRetryMs = deps.deliveryRetryMs ?? DELIVERY_RETRY_MS;
   const store = deps.store ?? createStateStore({ file: config.stateFile(adapter.name), log });
@@ -337,16 +335,7 @@ export function createCore({ adapter, config, deps = {} }) {
       const notice = notices.get(job.noticeId);
       if (notice) return prompts.noticeReply({ ...base, notice });
     }
-    if (prompts.variant(root) === "candidate" || typeof jev?.judgeChoice !== "function") return prompts.conversation(base);
-    return jev.judgeChoice({
-      id: "prompt-variant",
-      state: root,
-      instructions: "要给这条消息拼装 prompt 模板，应该选哪个变体？",
-      criteria: {
-        candidate_rules: "在播报新候选任务，带候选编号或任务链接",
-        task_skeleton: "用户在给指令、表态或提问，不是在播报候选",
-      },
-    }).then((verdict) => prompts.conversation({ ...base, variant: verdict?.choice === "candidate_rules" ? "candidate" : "task" }));
+    return prompts.conversation(base);
   }
 
   function execute(job, entry) {
@@ -426,17 +415,6 @@ export function createCore({ adapter, config, deps = {} }) {
         job.updatedAt = isoNow();
         save();
         await deliver(job);
-        const cutoffAt = Date.parse(job.cutoffAt ?? "");
-        usage?.recordRun({
-          job,
-          platform: adapter.name,
-          key: inbound.key,
-          session: entry.session,
-          answer: text,
-          status: job.status,
-          startedAt: job.startedAt ?? Date.parse(job.createdAt),
-          cutoffAt: Number.isFinite(cutoffAt) ? cutoffAt : undefined,
-        });
         runtimeInbounds.delete(job.id);
         resolve();
       });

@@ -32,7 +32,6 @@ export function createConfig({ env = process.env } = {}) {
     sessionsDir: env.AGENT_RELAY_SESSIONS_DIR ?? sessionsDirFor(cwd, home),
     promptsDir: join(SRC_DIR, "prompts"),
     userPromptsDir: join(configDir, "prompts"),
-    usagePromptFile: join(configDir, "usage-prompt.json"),
     uploadsDir: join(configDir, "uploads"),
     cli: env.AGENT_RELAY_CLI ?? "agent-relay",
     workerBin: env.AGENT_RELAY_WORKER_BIN ?? "pi",

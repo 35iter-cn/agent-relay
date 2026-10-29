@@ -10,7 +10,7 @@ detects stalled runs, and posts **notices** that users can reply to.
 user message ──▶ platform adapter ──▶ relay core ──▶ agent session (pi --print)
                         ▲                  │
                         │                  ├─ job queue, leases, timeouts
-                        └── chunked reply ─┘  stall watchdog, usage ledger
+                        └── chunked reply ─┘  stall watchdog, event log
 ```
 
 ## Replyable notices
@@ -54,7 +54,7 @@ src/
 ├── shared/                 chunking, json, time, logging, retention, prompts, env, fs, boot
 ├── state/                  state schema + atomic store
 ├── jobs/                   job model, leases, delivery plan, worker signals, next action
-├── runtime/                core loop, prompts, stall notice, usage recorder, instance lock
+├── runtime/                core loop, prompts, stall notice, instance lock
 ├── notices/                notice service (emit / match / prune)
 ├── prompts/                prompt templates (thread, notice, stall fragments)
 └── platforms/              feishu | slack | telegram adapters + shared helpers
@@ -116,7 +116,7 @@ Configuration lives in `~/.config/agent-relay/` (override with
 `AGENT_RELAY_CONFIG_DIR`):
 
 ```
-feishu.env | slack-app.env | telegram.env | jev.env
+feishu.env | slack-app.env | telegram.env
 webhook.url, .slack-xoxc.tmp        # slack fallbacks (.slack-xoxc.tmp: root-text reads only)
 relay-<platform>.json               # state: conversations, jobs, notices
 relay-<platform>.cmd/               # CLI → daemon command queue
@@ -179,15 +179,12 @@ Everything identifying lives in `~/.config/agent-relay/`, never in the sources:
   are `0600`;
 - prompt text can be overridden per deployment: a same-named file under
   `~/.config/agent-relay/prompts/` wins over the built-in template;
-- `usage-prompt.json` drives the work classifier (`instructions` + `criteria`); with
-  no file the verdict is `unconfigured` instead of judging against a hard-coded
-  asset list. See `examples/usage-prompt.example.json`.
 
 Retention runs at startup and every 24h (`core.pruneLogs()`):
 
 | data | window |
 | --- | --- |
-| event + usage logs | 72h |
+| event logs | 72h |
 | command queue files | 10min (also deleted the first time they are seen stale) |
 | uploaded attachments | 7 days |
 | notices | 7 days, max 500 |
@@ -214,7 +211,7 @@ bun run e2e     # process level, seconds
 
 Tests live next to the code they cover under `test/`, one file per module;
 `test/e2e/` holds the process-level scripts, which spawn real workers and write
-real state, event and usage files, faking only the IM delivery.
+real state and event files, faking only the IM delivery.
 
 ## Contributing
 

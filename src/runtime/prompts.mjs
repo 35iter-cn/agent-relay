@@ -87,9 +87,5 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
     return renderPrompt(read("notice.md"), values);
   }
 
-  function variant(root) {
-    return promptVariant(root);
-  }
-
-  return { read, conversation, noticeReply, stallActions, variant };
+  return { read, conversation, noticeReply, stallActions };
 }

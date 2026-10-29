@@ -8,7 +8,6 @@ process.env.AGENT_RELAY_STALL_CHECK_MS = "1000";
 process.env.AGENT_RELAY_TOOL_STALL_MS = "2000";
 
 const { createCore } = await import("../../src/runtime/core.mjs");
-const { createUsage } = await import("../../src/runtime/usage.mjs");
 const { localDay, localStamp, isoAt } = await import("../../src/shared/time.mjs");
 
 const KEY = "e2e-th-1";
@@ -87,7 +86,6 @@ const core = createCore({
     log: (level, ...parts) => {
       if (level === "error" || level === "warn") process.stderr.write(`[${level}] ${parts.join(" ")}\n`);
     },
-    usage: createUsage({ dir: join(logDir, adapter.name), judge: null }),
     stallGraceMs: 1_000,
     spawn: (bin, args, options) => {
       const child = spawn(bin, args, options);
@@ -168,17 +166,17 @@ const job = Object.values(state.jobs ?? {}).find((item) => item.key === KEY);
 const replies = readReplies();
 const replyText = replies.filter((item) => item.key === KEY).map((item) => item.text).join("\n");
 const events = readEvents();
-const usageRows = events.filter((event) => event.event === "usage" && event.jobId === job?.id);
+const usageRows = events.filter((event) => event.event === "usage");
 const doneEvent = events.find((event) => event.event === "done" && event.job === job?.id);
 
 check("E-1 the reply stamps the last progress, not the notice", replyText.includes(`到 ${localStamp(toolAt)}`) && !replyText.includes(`到 ${localStamp(Date.parse(stalled.stallNotifiedAt))}`), replyText.trim());
 check("E-2 the job carries the cutoff equal to the last progress", job?.cutoffAt === isoAt(toolAt), `cutoffAt=${job?.cutoffAt} expected=${isoAt(toolAt)}`);
+check("E-3 no usage row is written for a cancelled run", usageRows.length === 0, JSON.stringify(usageRows));
 check(
-  "E-3 the usage row closes at the cutoff",
-  usageRows.length === 1 && usageRows[0].endedAt === isoAt(toolAt) && usageRows[0].durationMs === toolAt - job.startedAt && usageRows[0].status === "cancelled",
-  JSON.stringify(usageRows[0] ?? null),
+  "E-4 the done event keeps the real lifetime, longer than the billed cutoff",
+  Number.isFinite(doneEvent?.elapsedMs) && doneEvent.elapsedMs > toolAt - job.startedAt,
+  `elapsedMs=${doneEvent?.elapsedMs} billed=${toolAt - (job?.startedAt ?? 0)}`,
 );
-check("E-4 the done event keeps the real lifetime", Number.isFinite(doneEvent?.elapsedMs) && doneEvent.elapsedMs > usageRows[0]?.durationMs, `elapsedMs=${doneEvent?.elapsedMs} durationMs=${usageRows[0]?.durationMs}`);
 check("E-5 the worker process is gone", Boolean(workerPid) && !alive(workerPid), `pid=${workerPid}`);
 check("E-6 progress is cleared after the reaction is done", job?.progress === null && progressSeen.length > 0 && Boolean(progressSeen[0]), `progress=${JSON.stringify(job?.progress)} seen=${JSON.stringify(progressSeen)}`);
 
