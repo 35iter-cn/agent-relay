@@ -1348,3 +1348,92 @@ test("TC-43 a running job is listed with its id and elapsed minutes", async () =
   assert.match(captured[1].prompt, /- job-1，已跑 \d+ 分钟/);
   assert.doesNotMatch(captured[1].prompt, /job-2/);
 });
+
+test("TC-29 a reply with one image posts the text first, then the media, and records both", async () => {
+  const delivered = [];
+  const posted = [];
+  let shot = null;
+  const { core, dir } = harness({
+    spawn: () => fakeChild({ stdout: `结论\n![](${shot})` }),
+    adapterOverrides: {
+      reply: async (ctx, text) => {
+        delivered.push({ text, replyTo: ctx.replyTo });
+        return { messageId: `m-${delivered.length}` };
+      },
+      postMedia: async (ctx, files) => {
+        posted.push({ files, replyTo: ctx.replyTo });
+        return { messageId: null, degraded: false };
+      },
+    },
+  });
+  shot = join(dir, "shot.png");
+  writeFileSync(shot, "png");
+  await core.handle(inbound({ replyTo: "1792.0001" }));
+  await tick();
+  const job = core.state.jobs[core.state.seen.m1];
+  assert.equal(job.status, "done");
+  assert.deepEqual(delivered.map((item) => item.text), ["结论"]);
+  assert.equal(delivered[0].replyTo, "1792.0001");
+  assert.equal(posted.length, 1);
+  assert.deepEqual(posted[0].files.map((file) => file.path), [shot]);
+  assert.equal(posted[0].files[0].mime, "image/png");
+  assert.equal(posted[0].replyTo, "1792.0001");
+  assert.deepEqual(job.parts.map((part) => part.kind ?? "text"), ["text", "media"]);
+  assert.equal(job.parts[1].hash.length, 16);
+  assert.equal(job.parts[1].messageId, null);
+});
+
+test("TC-30 a failed media step is retried without resending the text", async () => {
+  const delivered = [];
+  let attempts = 0;
+  let shot = null;
+  const { core, dir } = harness({
+    spawn: () => fakeChild({ stdout: `结论\n![](${shot})` }),
+    deps: { deliveryRetryMs: 0 },
+    adapterOverrides: {
+      reply: async (ctx, text) => {
+        delivered.push(text);
+        return { messageId: `m-${delivered.length}` };
+      },
+      postMedia: async () => {
+        attempts += 1;
+        if (attempts === 1) throw new Error("slack down");
+        return { messageId: null };
+      },
+    },
+  });
+  shot = join(dir, "shot.png");
+  writeFileSync(shot, "png");
+  await core.handle(inbound());
+  await tick();
+  const job = core.state.jobs[core.state.seen.m1];
+  assert.equal(job.status, "done");
+  assert.deepEqual(delivered, ["结论"], "the text is sent exactly once");
+  assert.equal(attempts, 2, "the media step is retried");
+  assert.deepEqual(job.parts.map((part) => part.kind ?? "text"), ["text", "media"]);
+});
+
+test("TC-31 an adapter without postMedia keeps the image line as plain text", async () => {
+  const delivered = [];
+  let shot = null;
+  const { core, dir } = harness({
+    spawn: () => fakeChild({ stdout: `结论\n![](${shot})` }),
+    adapterOverrides: {
+      reply: async (ctx, text) => {
+        delivered.push(text);
+        return { messageId: `m-${delivered.length}` };
+      },
+    },
+  });
+  shot = join(dir, "shot.png");
+  writeFileSync(shot, "png");
+  await core.handle(inbound());
+  await tick();
+  const job = core.state.jobs[core.state.seen.m1];
+  assert.equal(job.status, "done");
+  const whole = delivered.join("");
+  assert.match(whole, /^结论/);
+  assert.equal(whole.includes(`![](${shot})`), true, "the reference stays in the text verbatim");
+  assert.equal(job.parts.length, delivered.length, "every chunk is recorded as a text part");
+  assert.equal(job.parts.every((part) => part.kind === undefined), true, "no media step is planned");
+});

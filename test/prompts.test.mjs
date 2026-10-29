@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createPrompts, stallSection } from "../src/runtime/prompts.mjs";
 import { replyRules } from "../src/platforms/slack.mjs";
+import { replyRules as feishuReplyRules } from "../src/platforms/feishu.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const read = (name) => readFileSync(join(HERE, "..", "src", "prompts", name), "utf8");
@@ -99,7 +100,7 @@ function slackAdapter() {
   return { surface: "本 thread", replyRules, chunkLimit: 3500 };
 }
 
-test("TC-P11 the built-in first-turn prompt stays under 1300 characters with no running job", () => {
+test("TC-P11 the built-in first-turn prompt stays under 1400 characters with no running job", () => {
   const text = builtinPrompts().conversation({
     platform: "slack",
     adapter: slackAdapter(),
@@ -107,8 +108,9 @@ test("TC-P11 the built-in first-turn prompt stays under 1300 characters with no 
     root: "",
     running: [],
   });
-  assert.ok(text.length <= 1300, `rendered ${text.length} characters`);
+  assert.ok(text.length <= 1400, `rendered ${text.length} characters`);
   assert.match(text, /## 处置卡住的 job/);
+  assert.match(text, /单独一行写 `!\[\]\(\/绝对路径\.png\)`/);
   assert.doesNotMatch(text, /\{\{/);
 });
 
@@ -154,4 +156,17 @@ test("TC-P14 without an override the prompt falls back to the documented default
   const actions = builtinPrompts().stallActions("slack");
   assert.match(actions, /~\/\.config\/agent-relay\/relay-slack\.json/);
   assert.doesNotMatch(actions, /\{\{/);
+});
+
+test("TC-P15 only the slack prompt teaches the image reference, other platforms stay text-only", () => {
+  const render = (adapter) =>
+    builtinPrompts().conversation({
+      platform: "same",
+      adapter,
+      inbound: { key: "th-1", chatId: "chat-1", text: "给我看下图" },
+      root: "",
+      running: [],
+    });
+  assert.equal(render({ surface: "本 thread", replyRules, chunkLimit: 3500 }).includes("![](/绝对路径.png)"), true);
+  assert.equal(render({ surface: "本会话", replyRules: feishuReplyRules, chunkLimit: 3500 }).includes("![](/绝对路径.png)"), false);
 });

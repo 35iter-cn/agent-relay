@@ -11,6 +11,7 @@ import { bootNoticeText, readBootId, shouldAnnounceBoot } from "../shared/boot.m
 import { createJob, ctxOf, isFinished } from "../jobs/model.mjs";
 import { readProcStartTicks } from "../jobs/lease.mjs";
 import { hashOf, planParts } from "../jobs/delivery.mjs";
+import { extractMedia } from "../jobs/media.mjs";
 import { declaredTimeoutMs, readSessionSignal, TOOL_GRACE_MS } from "../jobs/signals.mjs";
 import { nextAction } from "../jobs/next-action.mjs";
 import { createStateStore } from "../state/store.mjs";
@@ -421,13 +422,21 @@ export function createCore({ adapter, config, deps = {} }) {
     });
   }
 
+  function mediaFor(job) {
+    return typeof adapter.postMedia === "function" ? extractMedia(job.answer ?? "") : null;
+  }
+
   async function deliverParts(job) {
     const canEdit = typeof adapter.edit === "function";
-    const plan = planParts({ answer: job.answer ?? "", parts: job.parts, chunkLimit: adapter.chunkLimit, canEdit });
+    const media = mediaFor(job);
+    const plan = planParts({ answer: media ? media.text : job.answer ?? "", parts: job.parts, chunkLimit: adapter.chunkLimit, canEdit, media });
     for (const step of plan) {
       if (step.action === "skip") continue;
       try {
-        if (step.action === "edit") {
+        if (step.kind === "media") {
+          await adapter.postMedia(ctxOf(job), step.files);
+          job.parts = [...job.parts.filter((part) => part.i !== step.i), { i: step.i, kind: "media", messageId: null, hash: step.hash, sentAt: isoNow() }];
+        } else if (step.action === "edit") {
           const ok = await adapter.edit(ctxOf(job), step.messageId, step.text);
           if (!ok) {
             log("warn", "edit-skip", job.id, step.i);
@@ -640,7 +649,7 @@ export function createCore({ adapter, config, deps = {} }) {
         if (state.inbox.includes(job.id)) state.inbox = state.inbox.filter((id) => id !== job.id);
         continue;
       }
-      const action = nextAction(job, { canEdit, chunkLimit: adapter.chunkLimit, readStartTicks, probeAlive });
+      const action = nextAction(job, { canEdit, chunkLimit: adapter.chunkLimit, media: mediaFor(job), readStartTicks, probeAlive });
       if (action.type === "rerun") {
         if (!state.inbox.includes(job.id)) state.inbox.push(job.id);
         touched += 1;

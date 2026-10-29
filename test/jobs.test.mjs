@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { chunkText } from "../src/shared/chunk.mjs";
 import { createJob, ctxOf, isFinished } from "../src/jobs/model.mjs";
 import { hashOf, planParts } from "../src/jobs/delivery.mjs";
+import { mediaHash } from "../src/jobs/media.mjs";
 import { isLeaseAlive, readProcStartTicks } from "../src/jobs/lease.mjs";
 import { nextAction } from "../src/jobs/next-action.mjs";
 
@@ -133,6 +134,56 @@ test("TC-19 planParts resends only what is missing", () => {
   assert.deepEqual(noEdit[0], { i: 0, action: "skip" });
 
   assert.deepEqual(planParts({ answer: null, parts: [], chunkLimit: 10 }), []);
+});
+
+const shot = (name, size = 10, mtimeMs = 1_000) => ({ path: `/tmp/${name}`, name: `${name}.png`, mime: "image/png", size, mtimeMs });
+
+test("TC-20 without media the plan is byte-for-byte the old plan, whitespace included", () => {
+  assert.deepEqual(planParts({ answer: "  ", parts: [], chunkLimit: 10 }), [{ i: 0, text: "  ", action: "send" }]);
+  assert.deepEqual(planParts({ answer: "", parts: [], chunkLimit: 10 }), [{ i: 0, text: "", action: "send" }]);
+});
+
+test("TC-21 the media step lands after every text chunk and carries its own hash", () => {
+  const files = [shot("a")];
+  const plan = planParts({ answer: "abcdefghij" + "klmnopqrst", parts: [], chunkLimit: 10, media: { files } });
+  assert.deepEqual(plan.map((step) => step.kind ?? "text"), ["text", "text", "media"]);
+  assert.deepEqual(plan.map((step) => step.i), [0, 1, 2]);
+  assert.deepEqual(plan[2].files, files);
+  assert.equal(plan[2].action, "send");
+  assert.equal(plan[2].hash, mediaHash(files));
+});
+
+test("TC-22 an image-only answer produces a single media step, never an empty text step", () => {
+  for (const answer of ["", "  ", "\n\n"]) {
+    const plan = planParts({ answer, parts: [], chunkLimit: 10, media: { files: [shot("a")] } });
+    assert.equal(plan.length, 1, `answer ${JSON.stringify(answer)} produced ${plan.length} steps`);
+    assert.equal(plan[0].kind, "media");
+    assert.equal(plan[0].i, 0);
+  }
+});
+
+test("TC-23 a delivered media step is skipped until the file changes", () => {
+  const files = [shot("a")];
+  const parts = [{ i: 0, kind: "media", hash: mediaHash(files), sentAt: "" }];
+  assert.deepEqual(planParts({ answer: "", parts, chunkLimit: 10, media: { files } }), [{ i: 0, kind: "media", files, hash: mediaHash(files), action: "skip" }]);
+
+  const changed = [shot("a", 11)];
+  const plan = planParts({ answer: "", parts, chunkLimit: 10, media: { files: changed } });
+  assert.equal(plan[0].action, "send");
+  assert.equal(plan[0].hash, mediaHash(changed));
+});
+
+test("TC-24 sent text plus unsent media resends only the images", () => {
+  const files = [shot("a")];
+  const plan = planParts({
+    answer: "hello",
+    parts: [{ i: 0, messageId: "m0", hash: hashOf("hello") }],
+    chunkLimit: 10,
+    media: { files },
+  });
+  assert.deepEqual(plan.map((step) => step.action), ["skip", "send"]);
+  assert.equal(plan[1].i, 1);
+  assert.equal(plan[1].kind, "media");
 });
 
 test("ctxOf carries every field the adapter needs and stays serializable", () => {
