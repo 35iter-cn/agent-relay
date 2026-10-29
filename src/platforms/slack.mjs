@@ -38,10 +38,19 @@ function slackFailure(message, slackError) {
   return Object.assign(new Error(message), { slackError });
 }
 
-export function createMediaUploader({ api, channel, token, log = () => {}, reply, fetchFn = (...args) => fetch(...args), alertOnce = () => {} }) {
+export function createMediaUploader({ channel, token, log = () => {}, reply, fetchFn = (...args) => fetch(...args), alertOnce = () => {} }) {
+  async function form(method, body) {
+    const res = await fetchFn(`https://slack.com/api/${method}`, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/x-www-form-urlencoded" },
+      body,
+    });
+    return res.json().catch(() => ({ ok: false, error: "unreadable-body" }));
+  }
+
   async function uploadFile(file) {
     const bytes = readFileSync(file.path);
-    const ticket = await api("files.getUploadURLExternal", { filename: file.name, length: bytes.byteLength });
+    const ticket = await form("files.getUploadURLExternal", new URLSearchParams({ filename: file.name, length: String(bytes.byteLength) }));
     if (!ticket?.ok) throw slackFailure(`getUploadURLExternal ${ticket?.error ?? "unknown"}`, ticket?.error);
     const put = await fetchFn(ticket.upload_url, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: bytes });
     if (!put?.ok) throw new Error(`upload ${put?.status ?? "failed"}`);
@@ -51,12 +60,7 @@ export function createMediaUploader({ api, channel, token, log = () => {}, reply
   async function complete(thread, ids) {
     const body = new URLSearchParams({ files: JSON.stringify(ids.map((id) => ({ id }))), channel_id: channel });
     if (thread) body.set("thread_ts", thread);
-    const res = await fetchFn("https://slack.com/api/files.completeUploadExternal", {
-      method: "POST",
-      headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/x-www-form-urlencoded" },
-      body,
-    });
-    const parsed = await res.json().catch(() => ({ ok: false, error: "unreadable-body" }));
+    const parsed = await form("files.completeUploadExternal", body);
     if (!parsed.ok) throw slackFailure(`completeUploadExternal ${parsed.error ?? "unknown"}`, parsed.error);
     return parsed;
   }
@@ -68,7 +72,7 @@ export function createMediaUploader({ api, channel, token, log = () => {}, reply
   }
 
   return async function postMedia(ctx, files) {
-    if (!api) return degrade(ctx, files, "缺少 bot token");
+    if (!token) return degrade(ctx, files, "缺少 bot token");
     try {
       const ids = [];
       for (const file of files) ids.push(await uploadFile(file));
@@ -491,7 +495,6 @@ export function createPlatform({ config, log: baseLog }) {
   });
 
   const postMedia = createMediaUploader({
-    api: botToken ? apiFor(botToken) : null,
     channel,
     token: botToken,
     log,
