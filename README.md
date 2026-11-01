@@ -28,7 +28,7 @@ A notice has no kind, no actions and no refs. The relay records it in the
 platform state file together with the message id it was posted as; when the user
 replies, the adapter reports the parent message id, the relay resolves it back to
 the notice and opens a session scoped to it (`notice-ntc-12`). The fixed
-`prompts/notice.md` template then renders just `text`, `prompt` and the platform
+`prompts/sections/` notice sections then render just `text`, `prompt` and the platform
 reply rules.
 
 That means:
@@ -39,7 +39,7 @@ That means:
   knows `agent-relay stall <platform> cancel|restart <key>` and the two
   in-conversation commands `/stop` (cancel the running turn) and `/重跑` (re-run
   it), and each entry point validates its own arguments
-- the notice body is data, not instructions — `notice.md` says so, because the
+- the notice body is data, not instructions — the notice task section says so, because the
   text can carry third-party content (issue titles, chat excerpts)
 
 The stall alert is the one notice the relay raises by itself; it builds both
@@ -56,7 +56,7 @@ src/
 ├── jobs/                   job model, leases, delivery plan, worker signals, next action
 ├── runtime/                core loop, prompts, stall notice, instance lock
 ├── notices/                notice service (emit / match / prune)
-├── prompts/                prompt templates (thread, notice, stall fragments)
+├── prompts/                prompt sections (one file per block) + stall fragments
 └── platforms/              feishu | slack | telegram adapters + shared helpers
 ```
 
@@ -67,8 +67,11 @@ Design rules:
 - **Runtime never mentions a platform by name.** Differences live in
   `src/platforms/<name>.mjs`; shared behaviour (root-text cache, conversation
   pruning) lives in `src/platforms/shared/`.
-- **User-initiated versus relay-initiated** is the split between `thread.md`
-  (replies in a conversation) and `notice.md` (replies to a notice).
+- **User-initiated versus relay-initiated** live in one set of section files
+  (`src/prompts/sections/NN-<name>.md`); `ENTRY_SECTIONS` in
+  `src/runtime/prompts.mjs` decides which sections a conversation and a notice
+  reply each render. A `platform-<name>-reply` section renders only on that
+  platform.
 - **The ledger is not relay's.** Relay decides which job runs when and how it
   stops; the pi extension and the agent-hours service own every ledger row.
 - **A lease is identity, not a liveness pulse.** A worker's lease is `pid` plus
