@@ -1,8 +1,15 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { renderPrompt } from "../shared/prompt.mjs";
 
 export const CANDIDATE_LINE = /^[ \t]*\[\d{8}-\d{4}-\d+\][ \t]+\S/m;
+export const SECTIONS_DIR = "sections";
+export const SECTION_FILE = /^(\d{2})-(.+)\.md$/;
+
+export const ENTRY_SECTIONS = {
+  conversation: ["header-conversation", "task", "record", "reply", "surface", "situation", "stall", "boundary"],
+  notice: ["header-notice", "notice-task", "record", "reply", "situation", "boundary"],
+};
 
 export function rootSectionText(root, message) {
   const value = String(root ?? "").trim();
@@ -30,8 +37,21 @@ export function stallSection({ platform, cli, configDir = "~/.config/agent-relay
   ].join("\n");
 }
 
+function platformMatches(name, platform) {
+  if (!name.startsWith("platform-")) return null;
+  const rest = name.slice("platform-".length);
+  return rest === platform || rest === `${platform}-reply`;
+}
+
+function anyoneSelects(name) {
+  if (name === "candidate") return true;
+  if (name.startsWith("platform-")) return true;
+  return Object.values(ENTRY_SECTIONS).some((list) => list.includes(name));
+}
+
 export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agent-relay", configDir = "~/.config/agent-relay" }) {
   const cache = new Map();
+  let audited = false;
 
   function read(name) {
     if (cache.has(name)) return cache.get(name);
@@ -48,8 +68,62 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
     return text;
   }
 
+  function scan(baseDir, target) {
+    if (!baseDir) return;
+    let entries = [];
+    try {
+      entries = readdirSync(join(baseDir, SECTIONS_DIR));
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const match = SECTION_FILE.exec(entry);
+      if (!match) {
+        log("warn", "prompt-section", entry, "ignored: expected NN-<name>.md");
+        continue;
+      }
+      target.set(match[2], { name: match[2], order: Number(match[1]), file: entry, base: baseDir });
+    }
+  }
+
+  function listSections() {
+    const merged = new Map();
+    scan(dir, merged);
+    scan(userDir, merged);
+    return [...merged.values()]
+      .sort((a, b) => (a.order - b.order) || a.file.localeCompare(b.file));
+  }
+
+  function audit(sections) {
+    if (audited) return;
+    audited = true;
+    const seenOrder = new Map();
+    for (const section of sections) {
+      const same = seenOrder.get(section.order);
+      if (same) log("warn", "prompt-section", section.file, `duplicate section number ${section.order} with ${same}`);
+      else seenOrder.set(section.order, section.file);
+      if (!anyoneSelects(section.name)) log("warn", "prompt-section", section.file, "no selection rule renders this section");
+    }
+    const names = new Set(sections.map((section) => section.name));
+    for (const list of Object.values(ENTRY_SECTIONS)) {
+      for (const name of list) {
+        if (!names.has(name)) log("warn", "prompt-section", name, "listed in ENTRY_SECTIONS but no section file provides it");
+      }
+    }
+  }
+
   function stallActions(platform) {
     return renderPrompt(read("stall-actions.md").trim(), { platform, cli, config_dir: configDir });
+  }
+
+  function selectSections({ entry, platform, variant }) {
+    const listed = new Set(ENTRY_SECTIONS[entry] ?? []);
+    return listSections().filter((section) => {
+      if (section.name === "candidate") return variant === "candidate";
+      const match = platformMatches(section.name, platform);
+      if (match !== null) return match;
+      return listed.has(section.name);
+    });
   }
 
   function baseValues({ platform, adapter, inbound, root, running = [] }) {
@@ -62,30 +136,36 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
       chat_id: inbound.chatId ?? "",
       user_message: inbound.text,
       root_section: rootSectionText(root, inbound.text),
-      reply_rules: adapter.replyRules ?? "",
       chunk_limit: adapter.chunkLimit,
       stall_actions: stallActions(platform),
       stall_section: stallSection({ platform, cli, configDir, running }),
     };
   }
 
-  function conversation({ platform, adapter, inbound, root, variant = null, running = [] }) {
+  function buildPrompt({ entry, platform, adapter, inbound, root, notice = null, running = [], variant = null }) {
+    const sections = listSections();
+    audit(sections);
     const resolved = variant ?? promptVariant(root);
-    const candidateRules = resolved === "candidate" ? read("candidate-rules.md").trim() : "";
-    return renderPrompt(read("thread.md"), {
-      ...baseValues({ platform, adapter, inbound, root, running }),
-      candidate_rules: candidateRules ? `\n\n${candidateRules}` : "",
-    });
-  }
-
-  function noticeReply({ platform, adapter, inbound, root, notice, running = [] }) {
+    const bodies = selectSections({ entry, platform, variant: resolved })
+      .map((section) => read(join(SECTIONS_DIR, section.file)).trim())
+      .filter(Boolean);
     const values = {
       ...baseValues({ platform, adapter, inbound, root, running }),
-      notice_id: notice.id,
-      notice_prompt: String(notice.prompt ?? "").trim() || "没有额外说明，按用户本轮消息处理。",
+      notice_id: notice?.id ?? "",
+      notice_prompt: String(notice?.prompt ?? "").trim() || "没有额外说明，按用户本轮消息处理。",
     };
-    return renderPrompt(read("notice.md"), values);
+    const text = renderPrompt(bodies.join("\n\n"), values);
+    if (text.includes("{{")) log("warn", "prompt", entry, "rendered prompt still holds an unresolved placeholder");
+    return text;
   }
 
-  return { read, conversation, noticeReply, stallActions };
+  return {
+    read,
+    listSections,
+    selectSections,
+    buildPrompt,
+    stallActions,
+    conversation: (args) => buildPrompt({ ...args, entry: "conversation" }),
+    noticeReply: (args) => buildPrompt({ ...args, entry: "notice" }),
+  };
 }
