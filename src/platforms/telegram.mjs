@@ -11,8 +11,6 @@ const CHUNK_LIMIT = 4096;
 const MESSAGE_INDEX_RETENTION_MS = 30 * 86_400_000;
 const MESSAGE_INDEX_MAX = 5_000;
 
-export const replyRules = "- 可以写 `**粗体**`、行内代码与 ``` 代码围栏（会转成 Telegram 的 HTML），不要用 Markdown 表格。";
-
 export function sessionFor(key) {
   return `tg-${key}`;
 }
@@ -176,7 +174,6 @@ export function createPlatform({ config, log: baseLog }) {
     queueDepth: relayEnv("QUEUE_DEPTH", 3),
     worker: relayEnv("WORKER", "pi"),
     piBin: config.workerBin,
-    replyRules,
     sessionFor,
 
     async start({ onMessage, onReady, core }) {
