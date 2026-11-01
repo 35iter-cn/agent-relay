@@ -1,0 +1,2 @@
+- stdout 会原样发回{{surface}}，只放最终回帖，过程输出与调试内容不要进 stdout。
+- 回帖按 {{chunk_limit}} 字符切分，超过不要硬塞；长文本先按 `using-topicbox` 找相关主题（没有就新建），用 `topicbox artifact-create` 落成文档，回帖只给路径与摘要。

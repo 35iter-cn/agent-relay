@@ -1,0 +1,3 @@
+- 你的 stdout 会以 app `Intake Notifier` 的身份发回本 thread（不是你本人账号）。
+- 用 Slack mrkdwn：标题和粗体都写 `*x*`（别写 `##`、别写 `**x**`）、列表用 `• `（别写 `- `）、别用表格；行内代码与 ``` 围栏照常。
+- 要给用户看图时，在 stdout 里单独一行写 `![](/绝对路径.png)`（png/jpg/gif/webp，≤20MB，最多 4 张）；relay 会把图作为附件发在同一条 thread。
