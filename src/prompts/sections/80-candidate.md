@@ -8,4 +8,4 @@
 - 语义含糊且会引发写操作时，同一会话追问一次，问句里给出两种可选理解。
 - 判定结果只留在回帖与日志，不写本地台账。
 
-项目特有的领取流程写在 `~/.config/agent-relay/prompts/candidate-rules.md`，存在时覆盖本文件。
+项目特有的领取流程写在 `~/.config/agent-relay/prompts/sections/80-candidate.md`，存在时覆盖本段。

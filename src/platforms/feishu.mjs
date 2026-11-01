@@ -12,8 +12,6 @@ const DOWNLOAD_TIMEOUT_MS = 15_000;
 const PROGRESS_EMOJI = "THINKING";
 const PERMISSION_ERRORS = new Set([99991672, 99991663, 99991400, 1061045]);
 
-export const replyRules = "- 用 **粗体**、`行内代码`、``` 代码围栏、• 列表；不要用 `#` 标题，不要用 Markdown 表格。";
-
 export function conversationKey(message) {
   if (message?.thread_id) return `th-${message.thread_id}`;
   if (message?.root_id) return `th-${message.root_id}`;
@@ -386,7 +384,6 @@ export function createPlatform({ config, log: baseLog, createClient = defaultCli
     queueDepth: relayEnv("QUEUE_DEPTH", 3),
     worker: relayEnv("WORKER", "pi"),
     piBin: config.workerBin,
-    replyRules,
     sessionFor,
     prune: () => pruneUploads(config.uploadsDir),
 

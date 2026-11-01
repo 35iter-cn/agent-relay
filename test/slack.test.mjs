@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import { stripMentions, sessionFor, acceptsEvent, heartbeatVerdict, refreshDelayMs, alertAllowed, pruneThreads, decideProgressMode, createRuntime, createPlatform, createAttachmentDownloader, createMediaUploader, composeText, shouldAlertFiles, FILES_ALERT, MEDIA_ALERT, replyRules } from "../src/platforms/slack.mjs";
+import { stripMentions, sessionFor, acceptsEvent, heartbeatVerdict, refreshDelayMs, alertAllowed, pruneThreads, decideProgressMode, createRuntime, createPlatform, createAttachmentDownloader, createMediaUploader, composeText, shouldAlertFiles, FILES_ALERT, MEDIA_ALERT } from "../src/platforms/slack.mjs";
 import { uploadDirFor } from "../src/platforms/shared/uploads.mjs";
 
 const TEST_SCOPE = { channel: "CTEST", allowedUser: "UTEST", botUser: "UBOT" };
@@ -428,13 +428,14 @@ test("AC-9 messages without files never download anything", () => {
   assert.equal(acceptsEvent({ ...base, bot_id: "B1", files: [slackFile()] }, TEST_SCOPE).ok, false);
 });
 
-test("TC-12 the reply rules pair every markdown habit with the mrkdwn form Slack actually renders", () => {
+test("TC-12 the slack reply section pairs every markdown habit with the mrkdwn form Slack actually renders", () => {
+  const rules = readFileSync(new URL("../src/prompts/sections/22-platform-slack-reply.md", import.meta.url), "utf8");
   for (const fragment of ["`*x*`", "`##`", "`**x**`", "`• `", "`- `", "表格"]) {
-    assert.ok(replyRules.includes(fragment), `replyRules never mentions ${fragment}`);
+    assert.ok(rules.includes(fragment), `the slack reply section never mentions ${fragment}`);
   }
-  assert.match(replyRules, /标题和粗体都写 `\*x\*`/);
-  assert.match(replyRules, /列表用 `• `/);
-  assert.match(replyRules, /单独一行写 `!\[\]\(\/绝对路径\.png\)`/);
+  assert.match(rules, /标题和粗体都写 `\*x\*`/);
+  assert.match(rules, /列表用 `• `/);
+  assert.match(rules, /单独一行写 `!\[\]\(\/绝对路径\.png\)`/);
 });
 
 function shotFile(bytes = "png-bytes", name = "shot.png") {
