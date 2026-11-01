@@ -60,12 +60,12 @@ test("jsonl event logs are created 0600", () => {
   assert.equal(statSync(join(dir, name)).mode & 0o777, 0o600);
 });
 
-test("user prompt files override the built-in ones without touching the repo", () => {
+test("user prompt sections override the built-in ones without touching the repo", () => {
   const dir = mkdtempSync(join(tmpdir(), "relay-private-"));
   const userDir = join(dir, "prompts");
-  mkdirSync(userDir, { recursive: true });
-  writeFileSync(join(userDir, "thread.md"), "USER-OVERRIDE {{user_message}}");
+  mkdirSync(join(userDir, "sections"), { recursive: true });
+  writeFileSync(join(userDir, "sections", "20-reply.md"), "USER-OVERRIDE {{user_message}}");
   const prompts = createPrompts({ dir: join(ROOT, "src", "prompts"), userDir });
-  assert.equal(prompts.read("thread.md"), "USER-OVERRIDE {{user_message}}");
-  assert.match(prompts.read("notice.md"), /\{\{notice_id\}\}/);
+  assert.equal(prompts.read(join("sections", "20-reply.md")), "USER-OVERRIDE {{user_message}}");
+  assert.match(prompts.read(join("sections", "01-header-notice.md")), /\{\{notice_id\}\}/);
 });

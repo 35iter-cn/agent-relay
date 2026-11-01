@@ -44,11 +44,17 @@ function harness({ spawn, replies = [], adapterOverrides = {}, state = emptyStat
   for (const name of sessions) writeFileSync(join(sessionsDir, `2026-01-01T00-00-00_${name}.jsonl`), "{}\n");
   const promptsDir = join(dir, "prompts");
   mkdirSync(promptsDir, { recursive: true });
-  writeFileSync(join(promptsDir, "thread.md"), "conversation={{conversation}} user={{user_message}} root={{root_section}} platform={{platform}} surface={{surface}} rules={{reply_rules}} chunk={{chunk_limit}} candidate={{candidate_rules}} section={{stall_section}} actions={{stall_actions}}");
-  writeFileSync(join(promptsDir, "notice.md"), "NOTICE id={{notice_id}} prompt={{notice_prompt}} user={{user_message}} root={{root_section}}");
+  const sectionsDir = join(promptsDir, "sections");
+  mkdirSync(sectionsDir, { recursive: true });
+  writeFileSync(join(sectionsDir, "00-header-conversation.md"), "conversation={{conversation}} user={{user_message}} root={{root_section}} platform={{platform}} surface={{surface}} chunk={{chunk_limit}} section={{stall_section}} actions={{stall_actions}}");
+  writeFileSync(join(sectionsDir, "10-task.md"), "TASK");
+  writeFileSync(join(sectionsDir, "20-reply.md"), "REPLY");
+  writeFileSync(join(sectionsDir, "40-stall.md"), "STALL-TAIL");
+  writeFileSync(join(sectionsDir, "01-header-notice.md"), "NOTICE id={{notice_id}} prompt={{notice_prompt}} user={{user_message}} root={{root_section}}");
+  writeFileSync(join(sectionsDir, "11-notice-task.md"), "NOTICE-TASK");
   writeFileSync(join(promptsDir, "stall-instructions.md"), "STALL-INSTRUCTIONS");
   writeFileSync(join(promptsDir, "stall-actions.md"), "ACTIONS platform={{platform}} key=<key>");
-  if (candidateRules) writeFileSync(join(promptsDir, "candidate-rules.md"), candidateRules);
+  if (candidateRules) writeFileSync(join(sectionsDir, "80-candidate.md"), candidateRules);
   const configDir = join(dir, ".config/agent-relay");
   const config = {
     home: dir,
@@ -106,14 +112,15 @@ test("TC-1 first turn injects the rendered prompt template", async () => {
   assert.equal(captured.length, 1);
   assert.equal(captured[0].full, true);
   assert.match(captured[0].prompt, /conversation=th-abc/);
-  assert.match(captured[0].prompt, /rules=RULES/);
+  assert.match(captured[0].prompt, /REPLY/);
   assert.doesNotMatch(captured[0].prompt, /\{\{/);
 });
 
 test("TC-2b an empty first-turn prompt fails the job instead of spawning a blind worker", async () => {
   let spawned = 0;
   const built = harness({ spawn: () => (spawned += 1, fakeChild({ stdout: "ok" })) });
-  writeFileSync(join(built.dir, "prompts", "thread.md"), "");
+  const sectionsDir = join(built.dir, "prompts", "sections");
+  for (const name of readdirSync(sectionsDir)) rmSync(join(sectionsDir, name));
   await built.core.handle(inbound({ text: "第一条" }));
   await tick();
   assert.equal(spawned, 0);

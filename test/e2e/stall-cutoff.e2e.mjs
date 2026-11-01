@@ -23,9 +23,13 @@ const promptsDir = join(dir, "prompts");
 const userPromptsDir = join(configDir, "prompts");
 for (const path of [configDir, logDir, sessionsDir, promptsDir, userPromptsDir, join(configDir, "uploads")]) mkdirSync(path, { recursive: true });
 
+const sectionsDir = join(promptsDir, "sections");
+mkdirSync(sectionsDir, { recursive: true });
 for (const [name, body] of [
-  ["thread.md", "conversation={{conversation}} user={{user_message}}"],
-  ["notice.md", "NOTICE id={{notice_id}} prompt={{notice_prompt}}"],
+  ["00-header-conversation.md", "conversation={{conversation}} user={{user_message}}"],
+  ["01-header-notice.md", "NOTICE id={{notice_id}} prompt={{notice_prompt}}"],
+]) writeFileSync(join(sectionsDir, name), `${body}\n`);
+for (const [name, body] of [
   ["stall-instructions.md", "STALL-INSTRUCTIONS"],
   ["stall-actions.md", "ACTIONS platform={{platform}} key=<key>"],
 ]) writeFileSync(join(promptsDir, name), `${body}\n`);

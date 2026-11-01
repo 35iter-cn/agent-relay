@@ -7,8 +7,9 @@ import { createConfig, sessionsDirFor } from "../src/config.mjs";
 const config = createConfig({ env: { HOME: "/home/tester" } });
 
 test("the built-in prompts directory is the one that ships with the sources", () => {
-  assert.equal(existsSync(join(config.promptsDir, "thread.md")), true);
-  assert.equal(existsSync(join(config.promptsDir, "notice.md")), true);
+  assert.equal(existsSync(join(config.promptsDir, "sections", "00-header-conversation.md")), true);
+  assert.equal(existsSync(join(config.promptsDir, "sections", "01-header-notice.md")), true);
+  assert.equal(existsSync(join(config.promptsDir, "sections", "50-boundary.md")), true);
   assert.equal(existsSync(join(config.promptsDir, "stall-actions.md")), true);
 });
 
