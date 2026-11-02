@@ -243,3 +243,10 @@ test("TC-P21 a rendered prompt reports an unresolved placeholder instead of ship
   assert.match(text, /\{\{unknown\}\}/);
   assert.match(warnings.join("\n"), /unresolved placeholder/);
 });
+
+test("TC-P22 the topic-first rule opens the task section, not the situation section", () => {
+  const task = readSection("10-task.md");
+  assert.match(task.split("\n\n")[1], /指向哪个 topic/);
+  assert.doesNotMatch(readSection("30-situation.md"), /topic/);
+  assert.match(render(builtinPrompts(), "feishu"), /^## 你在干什么\n\n先弄清消息指向哪个 topic：/m);
+});
