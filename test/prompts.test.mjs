@@ -59,7 +59,7 @@ const stubSections = {
 test("TC-P1 every built-in section file carries a number prefix and a name", () => {
   const prompts = builtinPrompts();
   const sections = prompts.listSections();
-  assert.equal(sections.length, 14);
+  assert.equal(sections.length, 15);
   assert.deepEqual(sections.map((section) => section.order), [...sections.map((section) => section.order)].sort((a, b) => a - b));
   assert.equal(new Set(sections.map((section) => section.name)).size, sections.length);
 });
@@ -182,7 +182,7 @@ test("TC-P16 each entry selects its documented sections plus its own platform re
     const allowed = new Set([...ENTRY_SECTIONS[entry], `platform-${platform}-reply`]);
     return fileOrder.filter((name) => allowed.has(name));
   };
-  for (const platform of ["slack", "feishu", "telegram"]) {
+  for (const platform of ["slack", "feishu", "telegram", "discord"]) {
     assert.deepEqual(sectionsByName(prompts, { entry: "conversation", platform, variant: "task" }), withPlatform("conversation", platform));
     assert.deepEqual(sectionsByName(prompts, { entry: "notice", platform, variant: "task" }), withPlatform("notice", platform));
   }
@@ -190,7 +190,7 @@ test("TC-P16 each entry selects its documented sections plus its own platform re
 
 test("TC-P17 every platform-* section renders only for its own platform", () => {
   const prompts = builtinPrompts();
-  for (const platform of ["slack", "feishu", "telegram"]) {
+  for (const platform of ["slack", "feishu", "telegram", "discord"]) {
     for (const entry of ["conversation", "notice"]) {
       const names = sectionsByName(prompts, { entry, platform, variant: "task" });
       const platformSections = names.filter((name) => name.startsWith("platform-"));
