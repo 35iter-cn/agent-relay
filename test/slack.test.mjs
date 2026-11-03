@@ -5,6 +5,7 @@ import { join } from "node:path";
 import assert from "node:assert/strict";
 import { stripMentions, sessionFor, acceptsEvent, heartbeatVerdict, refreshDelayMs, alertAllowed, pruneThreads, decideProgressMode, createRuntime, createPlatform, createAttachmentDownloader, createMediaUploader, composeText, shouldAlertFiles, markdownBlocks, FILES_ALERT, MEDIA_ALERT } from "../src/platforms/slack.mjs";
 import { uploadDirFor } from "../src/platforms/shared/uploads.mjs";
+import { planParts } from "../src/jobs/delivery.mjs";
 
 const TEST_SCOPE = { channel: "CTEST", allowedUser: "UTEST", botUser: "UBOT" };
 
@@ -478,6 +479,24 @@ test("TC-12 the slack reply section pairs every markdown habit with the mrkdwn f
   assert.match(rules, /标题和粗体都写 `\*x\*`/);
   assert.match(rules, /列表用 `• `/);
   assert.match(rules, /单独一行写 `!\[\]\(\/绝对路径\.png\)`/);
+});
+
+function slackPlatform(env = {}) {
+  const values = { SLACK_APP_TOKEN: "xapp", SLACK_BOT_TOKEN: "xoxb", AGENT_RELAY_SLACK_CHANNEL: "CTEST", AGENT_RELAY_ALLOWED_USER: "UTEST", ...env };
+  return createPlatform({
+    config: { readEnv: () => values, envFile: (name) => `/tmp/${name}`, home: "/tmp", configDir: "/tmp" },
+    log: () => {},
+  });
+}
+
+test("TC-16 the adapter chunks a long answer into 8000 character messages and every piece fits", () => {
+  const adapter = slackPlatform();
+  assert.equal(adapter.chunkLimit, 8_000);
+  const answer = Array.from({ length: 400 }, (_, i) => `第 ${i} 行 ${"x".repeat(40)}`).join("\n");
+  const steps = planParts({ answer, parts: [], chunkLimit: adapter.chunkLimit });
+  assert.ok(answer.length > 16_000, `answer is ${answer.length} characters`);
+  assert.equal(steps.length, 3);
+  for (const step of steps) assert.ok(step.text.length <= 8_000, `chunk ${step.i} is ${step.text.length}`);
 });
 
 function shotFile(bytes = "png-bytes", name = "shot.png") {
