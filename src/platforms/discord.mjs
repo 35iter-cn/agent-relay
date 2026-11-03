@@ -10,7 +10,6 @@ import { extFor, MAX_ATTACHMENTS, MAX_BYTES, uploadDirFor } from "./shared/uploa
 const API_BASE = "https://discord.com/api/v10";
 const GATEWAY_BASE = "wss://gateway.discord.gg/?v=10&encoding=json";
 const CHUNK_LIMIT = 2_000;
-const STATUS_TEXT = "⏳ 处理中…";
 const INTENTS = { GUILDS: 1 << 0, GUILD_MESSAGES: 1 << 9, MESSAGE_CONTENT: 1 << 15 };
 const FATAL_CLOSE_CODES = new Set([4004, 4010, 4011, 4012, 4013, 4014]);
 const MESSAGE_INDEX_RETENTION_MS = 30 * 86_400_000;
@@ -677,29 +676,12 @@ export function createPlatform({ config, log: baseLog }) {
       const channel = ctx.threadId ? String(ctx.threadId) : String(channelId);
       typing.jobs.add(channel);
       syncTyping();
-      if (!ctx.threadId) return null;
-      rest = rest ?? createRest(token);
-      try {
-        const sent = await rest(`/channels/${channel}/messages`, { method: "POST", body: { content: STATUS_TEXT, allowed_mentions: { parse: [] } } });
-        return sent?.id ? { messageId: String(sent.id), channel } : null;
-      } catch (error) {
-        log("warn", "status", channel, String(error?.message ?? error));
-        return null;
-      }
     },
 
     async onProgressDone(ctx) {
       const channel = ctx.threadId ? String(ctx.threadId) : String(channelId);
       typing.jobs.delete(channel);
       syncTyping();
-      const entry = ctx.progress;
-      if (!entry?.messageId) return;
-      rest = rest ?? createRest(token);
-      try {
-        await rest(`/channels/${entry.channel ?? channel}/messages/${entry.messageId}`, { method: "DELETE" });
-      } catch (error) {
-        if (error?.status !== 404) log("warn", "status-delete", String(error?.message ?? error));
-      }
     },
 
     prune: () => {
