@@ -633,3 +633,21 @@ test("TC-38 a failing download still queues the message with a note", async () =
 test("TC-39 withTimeout rejects a hanging download", async () => {
   await assert.rejects(() => withTimeout(new Promise(() => {}), 10), /timeout/);
 });
+
+test("TC-TB1 a table becomes a card table element with the header as columns", () => {
+  const card = toCard(["说明", "", "| 字段 | 值 |", "| --- | --- |", "| 协议 | UDP |", "| 端口 | 41641 |"].join("\n"));
+  assert.deepEqual(card.body.elements, [
+    { tag: "markdown", content: "说明" },
+    {
+      tag: "table",
+      element_id: "tbl1",
+      page_size: 10,
+      row_height: "auto",
+      columns: [
+        { name: "c1", display_name: "字段", data_type: "lark_md" },
+        { name: "c2", display_name: "值", data_type: "lark_md" },
+      ],
+      rows: [{ c1: "协议", c2: "UDP" }, { c1: "端口", c2: "41641" }],
+    },
+  ]);
+});

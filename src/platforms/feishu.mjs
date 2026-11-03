@@ -2,13 +2,14 @@
 import { mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { chunkText } from "../shared/chunk.mjs";
-import { flattenTables } from "../shared/markdown.mjs";
+import { splitTables, tableBullet } from "../shared/markdown.mjs";
 import { relayEnv } from "../shared/env.mjs";
 import { createRootCache } from "./shared/root-cache.mjs";
 import { ensurePrivateDir } from "../shared/fs.mjs";
 import { MAX_ATTACHMENTS, MAX_BYTES, uploadDirFor, pruneUploads, extFor } from "./shared/uploads.mjs";
 
 const CARD_LIMIT = 3000;
+const MAX_TABLES = 5;
 const DOWNLOAD_TIMEOUT_MS = 15_000;
 const PROGRESS_EMOJI = "THINKING";
 const PERMISSION_ERRORS = new Set([99991672, 99991663, 99991400, 1061045]);
@@ -61,11 +62,36 @@ export function shouldAlertLiveness(status, misses, threshold) {
   return misses >= threshold;
 }
 
-export function toCard(text, limit = CARD_LIMIT) {
+export function tableElement(rows, index = 1) {
+  const [header, ...body] = rows;
+  const columns = header.map((cell, at) => ({ name: `c${at + 1}`, display_name: String(cell ?? ""), data_type: "lark_md" }));
   return {
-    schema: "2.0",
-    body: { elements: chunkText(flattenTables(text), limit).map((content) => ({ tag: "markdown", content })) },
+    tag: "table",
+    element_id: `tbl${index}`,
+    page_size: 10,
+    row_height: "auto",
+    columns,
+    rows: body.map((cells) => Object.fromEntries(columns.map((column, at) => [column.name, cells[at] ?? ""]))),
   };
+}
+
+export function toCard(text, limit = CARD_LIMIT) {
+  const elements = [];
+  let tables = 0;
+  for (const segment of splitTables(text)) {
+    if (segment.type === "table") {
+      const body = segment.rows.slice(1).map(tableBullet).filter(Boolean);
+      tables += 1;
+      if (tables > MAX_TABLES) {
+        if (body.length) elements.push({ tag: "markdown", content: body.join("\n") });
+        continue;
+      }
+      elements.push(tableElement(segment.rows, tables));
+      continue;
+    }
+    for (const content of chunkText(segment.text, limit)) elements.push({ tag: "markdown", content });
+  }
+  return { schema: "2.0", body: { elements } };
 }
 
 export function notifyCard(text, limit = CARD_LIMIT) {

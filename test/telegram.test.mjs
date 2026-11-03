@@ -9,6 +9,8 @@ import {
   escapeHtml,
   toTelegramHtml,
   pickTypingTarget,
+  hasTable,
+  richPayload,
   typingTargets,
   alertAllowed,
   pollUpdates,
@@ -127,4 +129,16 @@ test("TC-15 a running job outlives the dispatch window in the typing targets", (
   jobs.delete("g1");
   assert.deepEqual(typingTargets(keys, jobs), []);
   assert.deepEqual(typingTargets(new Set(["g2", "g3"]), new Set(["g3", "g4"])), ["g2", "g3", "g4"]);
+});
+
+test("TC-16 a message with a table goes out as a rich message in markdown", () => {
+  const table = ["| 字段 | 值 |", "| --- | --- |", "| 协议 | UDP |"].join("\n");
+  assert.equal(hasTable(table), true);
+  assert.equal(hasTable("普通文本 | 不是表格"), false);
+  assert.deepEqual(richPayload("-100", { topic: "42", replyTo: "9" }, table), {
+    chat_id: "-100",
+    rich_message: { markdown: table },
+    message_thread_id: 42,
+    reply_parameters: { message_id: 9, allow_sending_without_reply: true },
+  });
 });

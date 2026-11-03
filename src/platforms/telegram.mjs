@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { chunkText } from "../shared/chunk.mjs";
-import { flattenTables } from "../shared/markdown.mjs";
+import { flattenTables, splitTables } from "../shared/markdown.mjs";
 import { relayEnv } from "../shared/env.mjs";
 import { pruneConversations } from "./shared/root-cache.mjs";
 
@@ -86,6 +86,17 @@ export function pickTypingTarget(targets, cursor) {
   return targets[cursor % targets.length];
 }
 
+export function hasTable(text) {
+  return splitTables(text).some((segment) => segment.type === "table");
+}
+
+export function richPayload(chatId, target, text) {
+  const payload = { chat_id: String(chatId), rich_message: { markdown: text } };
+  if (target.topic) payload.message_thread_id = Number(target.topic);
+  if (target.replyTo) payload.reply_parameters = { message_id: Number(target.replyTo), allow_sending_without_reply: true };
+  return payload;
+}
+
 export function typingTargets(keys, jobs) {
   return [...new Set([...(keys ?? []), ...(jobs ?? [])])];
 }
@@ -126,8 +137,17 @@ export function createPlatform({ config, log: baseLog }) {
     return payload;
   }
 
+
+
   async function sendText(target, text) {
     const api = client;
+    if (hasTable(text)) {
+      try {
+        return await api("sendRichMessage", richPayload(chatId, target, text));
+      } catch (error) {
+        log("warn", "rich-message", String(error));
+      }
+    }
     try {
       return await api("sendMessage", messagePayload(target, text));
     } catch (error) {
