@@ -471,13 +471,14 @@ test("AC-9 messages without files never download anything", () => {
   assert.equal(acceptsEvent({ ...base, bot_id: "B1", files: [slackFile()] }, TEST_SCOPE).ok, false);
 });
 
-test("TC-12 the slack reply section pairs every markdown habit with the mrkdwn form Slack actually renders", () => {
+test("TC-12 the slack reply section asks for standard markdown, the only dialect a markdown block renders", () => {
   const rules = readFileSync(new URL("../src/prompts/sections/22-platform-slack-reply.md", import.meta.url), "utf8");
-  for (const fragment of ["`*x*`", "`##`", "`**x**`", "`• `", "`- `", "表格"]) {
+  for (const fragment of ["`**粗体**`", "`- `", "`##`", "表格", "```lang", "`*x*`", "`• `"]) {
     assert.ok(rules.includes(fragment), `the slack reply section never mentions ${fragment}`);
   }
-  assert.match(rules, /标题和粗体都写 `\*x\*`/);
-  assert.match(rules, /列表用 `• `/);
+  assert.match(rules, /用标准 Markdown/);
+  assert.doesNotMatch(rules, /mrkdwn/);
+  assert.doesNotMatch(rules, /标题和粗体都写/);
   assert.match(rules, /单独一行写 `!\[\]\(\/绝对路径\.png\)`/);
 });
 
