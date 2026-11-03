@@ -20,6 +20,7 @@ import {
   isArchivedError,
   stripBotMentions,
   routeMessage,
+  typingTargets,
 } from "../src/platforms/discord.mjs";
 
 function fakeConfig() {
@@ -274,4 +275,16 @@ test("TC-DC19 images land where reply does and are indexed so answering them con
   await inChannel.postMedia({ replyTo: "700", key: "g700" }, [shotFile()]);
   assert.equal(posts[1].url, "https://discord.com/api/v10/channels/500/messages");
   assert.deepEqual(JSON.parse(posts[1].init.body.get("payload_json")).message_reference, { message_id: "700", fail_if_not_exists: false });
+});
+
+test("TC-DC11 clearing the dispatch window keeps a running job's typing alive", () => {
+  const keys = new Set();
+  const jobs = new Set();
+  const channel = "901";
+  keys.add(channel);
+  jobs.add(channel);
+  keys.delete(channel);
+  assert.deepEqual(typingTargets(keys, jobs), [channel]);
+  jobs.delete(channel);
+  assert.deepEqual(typingTargets(keys, jobs), []);
 });

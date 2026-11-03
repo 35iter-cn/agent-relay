@@ -85,6 +85,10 @@ export function pickTypingTarget(targets, cursor) {
   return targets[cursor % targets.length];
 }
 
+export function typingTargets(keys, jobs) {
+  return [...new Set([...(keys ?? []), ...(jobs ?? [])])];
+}
+
 export function alertAllowed(alerts, kind, now, cooldownMs = ALERT_COOLDOWN_MS) {
   const last = Date.parse(alerts?.[kind] ?? "");
   return !Number.isFinite(last) || now - last > cooldownMs;
@@ -96,7 +100,7 @@ export function createPlatform({ config, log: baseLog }) {
   const chatId = env.TELEGRAM_CHAT_ID;
   const allowedUser = env.TELEGRAM_ALLOWED_USER ?? relayEnv("ALLOWED_USER", undefined, env);
   const log = baseLog;
-  const typing = { timer: null, cursor: 0, busy: false, keys: new Set() };
+  const typing = { timer: null, cursor: 0, busy: false, keys: new Set(), jobs: new Set() };
   let client = null;
 
   function apiFactory(tok) {
@@ -134,8 +138,7 @@ export function createPlatform({ config, log: baseLog }) {
 
 
   function syncTyping() {
-    const targets = [...typing.keys];
-    if (!targets.length) {
+    if (!typingTargets(typing.keys, typing.jobs).length) {
       if (typing.timer) clearInterval(typing.timer);
       typing.timer = null;
       return;
@@ -144,7 +147,7 @@ export function createPlatform({ config, log: baseLog }) {
     typing.cursor = 0;
     const tick = async () => {
       if (typing.busy) return;
-      const key = pickTypingTarget([...typing.keys], typing.cursor);
+      const key = pickTypingTarget(typingTargets(typing.keys, typing.jobs), typing.cursor);
       if (!key) return;
       typing.busy = true;
       typing.cursor += 1;
@@ -289,6 +292,16 @@ export function createPlatform({ config, log: baseLog }) {
           backoff = Math.min(backoff * 2, 60_000);
         }
       }
+    },
+
+    async onProgress(ctx) {
+      typing.jobs.add(String(ctx.key ?? chatId));
+      syncTyping();
+    },
+
+    async onProgressDone(ctx) {
+      typing.jobs.delete(String(ctx.key ?? chatId));
+      syncTyping();
     },
 
     async reply(ctx, text) {
