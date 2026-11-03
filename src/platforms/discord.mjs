@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chunkText } from "../shared/chunk.mjs";
 import { relayEnv } from "../shared/env.mjs";
@@ -88,6 +88,114 @@ export function routeMessage(message, { parentChannelId, allowedUser, botId, thr
   }
   if (known) return { ok: true, root: false, key: known.key, threadId: channel, replyTo: null };
   return { ok: false, why: "channel" };
+}
+
+export function mediaPayload(content, replyTo) {
+  const payload = { allowed_mentions: { parse: [] } };
+  if (content) payload.content = content;
+  if (replyTo) payload.message_reference = { message_id: String(replyTo), fail_if_not_exists: false };
+  return payload;
+}
+
+export function mediaBatches(files, maxBytes = MAX_BYTES) {
+  const batches = [];
+  let current = [];
+  let size = 0;
+  for (const file of files) {
+    if (current.length && size + file.size > maxBytes) {
+      batches.push(current);
+      current = [];
+      size = 0;
+    }
+    current.push(file);
+    size += file.size;
+  }
+  if (current.length) batches.push(current);
+  return batches;
+}
+
+export function mediaFormData(files, payload, { FormDataCtor = FormData, BlobCtor = Blob, readFile = readFileSync } = {}) {
+  const form = new FormDataCtor();
+  form.append("payload_json", JSON.stringify(payload));
+  files.forEach((file, i) => {
+    const bytes = readFile(file.path);
+    form.append(`files[${i}]`, new BlobCtor([bytes], { type: file.mime }), file.name ?? `image-${i}`);
+  });
+  return form;
+}
+
+const MEDIA_FAILURES = { 50013: "permission", 40005: "size", 50045: "size" };
+const DEGRADE_TEXT = { permission: "Discord 授权缺少 Attach Files", size: "图片超过 Discord 单文件上限" };
+
+export function mediaFailureKind(error) {
+  const mapped = MEDIA_FAILURES[error?.code];
+  if (mapped) return mapped;
+  if (error?.status === 403) return "permission";
+  if (error?.status === 413) return "size";
+  return null;
+}
+
+export function createMediaUploader({ token, channelId, log = () => {}, reply, remember = () => {}, unarchive = null, fetchFn = (...args) => fetch(...args) }) {
+  async function send(channel, buildForm) {
+    for (let attempt = 0; ; attempt += 1) {
+      const res = await fetchFn(`${API_BASE}/channels/${channel}/messages`, {
+        method: "POST",
+        headers: { Authorization: `Bot ${token}` },
+        body: buildForm(),
+      });
+      const raw = await res.text();
+      let parsed = null;
+      try {
+        parsed = raw ? JSON.parse(raw) : null;
+      } catch {
+        parsed = null;
+      }
+      if (res.status === 429 && attempt < 2) {
+        const wait = retryAfterMs(res.headers.get("retry-after"), parsed);
+        log("warn", "rate-limit", "POST media", `${wait}ms`);
+        await new Promise((resolve) => setTimeout(resolve, wait));
+        continue;
+      }
+      if (!res.ok) {
+        const error = new Error(`POST /channels/${channel}/messages ${res.status} ${parsed?.message ?? raw.slice(0, 200)}`);
+        error.status = res.status;
+        error.code = parsed?.code;
+        throw error;
+      }
+      return parsed;
+    }
+  }
+
+  async function degrade(ctx, files, reason) {
+    await reply(ctx, `（${files.length} 张图片未能上传：${reason}）`);
+    return { messageId: null, degraded: true };
+  }
+
+  return async function postMedia(ctx, files) {
+    if (!token) return degrade(ctx, files, "缺少 bot token");
+    const channel = ctx?.threadId ? String(ctx.threadId) : String(channelId);
+    const replyTo = ctx?.threadId ? null : (ctx?.replyTo ?? null);
+    try {
+      for (const batch of mediaBatches(files)) {
+        const buildForm = () => mediaFormData(batch, mediaPayload(null, replyTo));
+        let sent;
+        try {
+          sent = await send(channel, buildForm);
+        } catch (error) {
+          if (!isArchivedError(error) || !unarchive) throw error;
+          await unarchive(channel);
+          sent = await send(channel, buildForm);
+        }
+        if (sent?.id && ctx?.key) remember(String(sent.id), ctx.key);
+      }
+      return { messageId: null, degraded: false };
+    } catch (error) {
+      const kind = mediaFailureKind(error);
+      if (!kind) throw error;
+      log("warn", "postMedia", `${kind} ${String(error?.message ?? error)}`);
+      return degrade(ctx, files, DEGRADE_TEXT[kind]);
+    }
+  };
 }
 
 export function createPlatform({ config, log: baseLog }) {
@@ -607,6 +715,19 @@ export function createPlatform({ config, log: baseLog }) {
       const ids = await sendChunks(String(channelId), text);
       return { messageId: ids[0] ?? null };
     },
+
+    postMedia: createMediaUploader({
+      token,
+      channelId,
+      log,
+      reply: (ctx, text) => adapter.reply(ctx, text),
+      remember: (messageId, key) => {
+        if (!state?.meta?.msgKeys) return;
+        rememberMessage(messageId, key);
+        coreRef?.save();
+      },
+      unarchive: (channel) => unarchive(channel),
+    }),
   };
 
   return adapter;
