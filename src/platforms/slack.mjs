@@ -2,6 +2,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chunkText } from "../shared/chunk.mjs";
+import { flattenTables } from "../shared/markdown.mjs";
 import { relayEnv } from "../shared/env.mjs";
 import { ensurePrivateDir } from "../shared/fs.mjs";
 import { createRootCache } from "./shared/root-cache.mjs";
@@ -93,10 +94,11 @@ export function markdownBlocks(text) {
 }
 
 export async function sendWithBlocks(api, method, params, log = () => {}) {
-  const res = await api(method, { ...params, blocks: markdownBlocks(params.text) });
+  const text = flattenTables(params.text ?? "");
+  const res = await api(method, { ...params, text, blocks: markdownBlocks(text) });
   if (res.ok || !BLOCK_REJECTED.has(res.error)) return res;
   log("warn", "blocks-rejected", method, res.error);
-  return api(method, params);
+  return api(method, { ...params, text });
 }
 
 export function createRuntime({ api, log, channel, post, emoji = PROGRESS_EMOJI }) {
