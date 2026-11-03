@@ -2,6 +2,7 @@
 import { mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { chunkText } from "../shared/chunk.mjs";
+import { flattenTables } from "../shared/markdown.mjs";
 import { relayEnv } from "../shared/env.mjs";
 import { createRootCache } from "./shared/root-cache.mjs";
 import { ensurePrivateDir } from "../shared/fs.mjs";
@@ -63,7 +64,7 @@ export function shouldAlertLiveness(status, misses, threshold) {
 export function toCard(text, limit = CARD_LIMIT) {
   return {
     schema: "2.0",
-    body: { elements: chunkText(text, limit).map((content) => ({ tag: "markdown", content })) },
+    body: { elements: chunkText(flattenTables(text), limit).map((content) => ({ tag: "markdown", content })) },
   };
 }
 

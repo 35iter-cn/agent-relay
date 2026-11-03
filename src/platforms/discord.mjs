@@ -2,6 +2,7 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chunkText } from "../shared/chunk.mjs";
+import { flattenTables } from "../shared/markdown.mjs";
 import { relayEnv } from "../shared/env.mjs";
 import { ensurePrivateDir } from "../shared/fs.mjs";
 import { pruneConversations } from "./shared/root-cache.mjs";
@@ -306,7 +307,7 @@ export function createPlatform({ config, log: baseLog }) {
   }
 
   async function sendChunks(channel, text, replyTo = null) {
-    const chunks = chunkText(String(text ?? ""), CHUNK_LIMIT).filter((chunk) => chunk.trim());
+    const chunks = chunkText(flattenTables(String(text ?? "")), CHUNK_LIMIT).filter((chunk) => chunk.trim());
     const ids = [];
     for (const chunk of chunks) {
       const sent = await serial(channel, async () => {
@@ -662,7 +663,7 @@ export function createPlatform({ config, log: baseLog }) {
     async edit(ctx, messageId, text) {
       rest = rest ?? createRest(token);
       const channel = ctx.threadId ? String(ctx.threadId) : String(channelId);
-      const content = chunkText(String(text ?? ""), CHUNK_LIMIT)[0] ?? "";
+      const content = chunkText(flattenTables(String(text ?? "")), CHUNK_LIMIT)[0] ?? "";
       try {
         await rest(`/channels/${channel}/messages/${messageId}`, { method: "PATCH", body: { content, allowed_mentions: { parse: [] } } });
         return true;

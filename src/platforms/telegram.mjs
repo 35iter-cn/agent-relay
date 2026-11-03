@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { chunkText } from "../shared/chunk.mjs";
+import { flattenTables } from "../shared/markdown.mjs";
 import { relayEnv } from "../shared/env.mjs";
 import { pruneConversations } from "./shared/root-cache.mjs";
 
@@ -118,7 +119,8 @@ export function createPlatform({ config, log: baseLog }) {
   }
 
   function messagePayload(target, text) {
-    const payload = { chat_id: String(chatId), text: toTelegramHtml(text), parse_mode: "HTML", link_preview_options: { is_disabled: true } };
+    const rendered = flattenTables(text);
+    const payload = { chat_id: String(chatId), text: toTelegramHtml(rendered), parse_mode: "HTML", link_preview_options: { is_disabled: true } };
     if (target.topic) payload.message_thread_id = Number(target.topic);
     if (target.replyTo) payload.reply_parameters = { message_id: Number(target.replyTo), allow_sending_without_reply: true };
     return payload;
