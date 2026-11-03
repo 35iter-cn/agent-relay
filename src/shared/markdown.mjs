@@ -28,6 +28,40 @@ export function tableBullet(cells) {
   return tail ? `- **${head}**：${tail}` : `- **${head}**`;
 }
 
+export function splitTables(text) {
+  const lines = String(text ?? "").split("\n");
+  const segments = [];
+  let buffer = [];
+  let fenced = false;
+  const flush = () => {
+    const body = buffer.join("\n").trim();
+    if (body) segments.push({ type: "text", text: body });
+    buffer = [];
+  };
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    if (FENCE.test(line)) {
+      fenced = !fenced;
+      buffer.push(line);
+      continue;
+    }
+    if (fenced || !looksLikeRow(line) || !isSeparator(lines[index + 1])) {
+      buffer.push(line);
+      continue;
+    }
+    flush();
+    const rows = [splitRow(line)];
+    index += 1;
+    while (index + 1 < lines.length && looksLikeRow(lines[index + 1])) {
+      index += 1;
+      rows.push(splitRow(lines[index]));
+    }
+    segments.push({ type: "table", rows });
+  }
+  flush();
+  return segments;
+}
+
 export function flattenTables(text) {
   const lines = String(text ?? "").split("\n");
   const out = [];
