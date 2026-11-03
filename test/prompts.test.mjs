@@ -141,11 +141,13 @@ test("TC-P10 stallSection keeps the caller's order for several jobs", () => {
 });
 
 test("TC-P11 the built-in first-turn prompt stays within 1500 characters with no running job", () => {
-  const text = render(builtinPrompts(), "slack");
-  assert.ok(text.length <= 1500, `rendered ${text.length} characters`);
-  assert.match(text, /## 处置卡住的 job/);
-  assert.match(text, /单独一行写 `!\[\]\(\/绝对路径\.png\)`/);
-  assert.doesNotMatch(text, /\{\{/);
+  for (const platform of ["slack", "discord"]) {
+    const text = render(builtinPrompts(), platform);
+    assert.ok(text.length <= 1500, `${platform} rendered ${text.length} characters`);
+    assert.match(text, /## 处置卡住的 job/);
+    assert.match(text, /单独一行写 `!\[\]\(\/绝对路径\.png\)`/);
+    assert.doesNotMatch(text, /\{\{/);
+  }
 });
 
 test("TC-P12 a notice reply never renders the stall, surface or candidate sections", () => {
@@ -169,8 +171,9 @@ test("TC-P14 without an override the prompt falls back to the documented default
   assert.match(builtinPrompts().stallActions("slack"), /~\/\.config\/agent-relay\/relay-slack\.json/);
 });
 
-test("TC-P15 only the slack prompt teaches the image reference, other platforms stay text-only", () => {
+test("TC-P15 only the slack and discord prompts teach the image reference, other platforms stay text-only", () => {
   assert.match(render(builtinPrompts(), "slack"), /!\[\]\(\/绝对路径\.png\)/);
+  assert.match(render(builtinPrompts(), "discord"), /!\[\]\(\/绝对路径\.png\)/);
   assert.doesNotMatch(render(builtinPrompts(), "feishu"), /!\[\]\(\/绝对路径\.png\)/);
   assert.doesNotMatch(render(builtinPrompts(), "telegram"), /!\[\]\(\/绝对路径\.png\)/);
 });

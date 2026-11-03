@@ -109,7 +109,8 @@ before `start()` so the CLI can emit notices without a running daemon.
 
 Attachments: feishu downloads message resources through the SDK, slack downloads
 `url_private_download` with the bot token — that token needs the `files:read` scope,
-and a 200 `text/html` body means the scope is missing. Both write into
+and a 200 `text/html` body means the scope is missing, while discord messages already
+carry signed CDN urls that need no credential at all. All write into
 `uploads/<chat>/<yyyymmdd>/` and share the same limits (4 files, 20 MB each, 7-day
 retention) from `src/platforms/shared/uploads.mjs`; the landed paths reach the
 worker as `@path` arguments. `.slack-xoxc.tmp` is unrelated to this — it only feeds
@@ -122,6 +123,10 @@ sends every text chunk first and the images after, and only the adapters that im
 `postMedia` upload anything — slack walks `files.getUploadURLExternal` → upload →
 `files.completeUploadExternal` into the same thread, so that token also needs the
 `files:write` scope; without it the image degrades into a text note plus one alert.
+Discord is one request instead of three: `multipart/form-data` with `files[n]` parts
+and a `payload_json` part, posted into the current thread (or the parent channel as a
+reply), with images grouped so that no request carries more than 20 MB; a missing
+Attach Files permission or an oversized file degrades into the same kind of text note.
 Feishu and telegram keep the reference as plain text.
 
 ## Run
