@@ -57,7 +57,7 @@ src/
 ├── runtime/                core loop, prompts, stall notice, instance lock
 ├── notices/                notice service (emit / match / prune)
 ├── prompts/                prompt sections (one file per block) + stall fragments
-└── platforms/              feishu | slack | telegram adapters + shared helpers
+└── platforms/              discord | feishu | slack | telegram adapters + shared helpers
 ```
 
 Design rules:
@@ -85,6 +85,7 @@ Design rules:
 
 | platform | transport | reply identity |
 | --- | --- | --- |
+| discord | Gateway WebSocket (heartbeat + resume) | one thread per conversation: a message in the parent channel opens a thread, everything said inside it continues that conversation |
 | feishu | Lark WS long connection | `parent_id` / `root_id` |
 | slack | Socket Mode | `thread_ts` |
 | telegram | long polling | `reply_to_message.message_id` — a reply joins the conversation it answers |
@@ -93,6 +94,13 @@ On telegram the group is a plain chat: every message from the allowed user is a
 turn, a plain message opens a conversation keyed by its own id, and replying to
 any message in that chain continues it — the relay answers with a reply, so the
 thread stays visible as quoting rather than as a separate topic.
+
+On discord the parent channel is only a door: a top-level message from the allowed
+user opens a thread named after its first line, and the thread channel id becomes
+the conversation key — so every topic is a thread, and replying inside it is enough
+to continue. Threads auto-archive after 7 days; the adapter unarchives before
+sending when a thread has gone quiet that long. `MESSAGE_CONTENT` must be enabled
+for the application, otherwise the gateway delivers messages with empty content.
 
 Adapter contract (`src/platforms/contract.mjs`): `name`, `start`, `reply`,
 `sessionFor` are required; `postNotice`, `postMedia`, `edit`, `onProgress`,
