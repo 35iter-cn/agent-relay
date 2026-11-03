@@ -9,6 +9,7 @@ import {
   escapeHtml,
   toTelegramHtml,
   pickTypingTarget,
+  typingTargets,
   alertAllowed,
   pollUpdates,
 } from "../src/platforms/telegram.mjs";
@@ -116,4 +117,14 @@ test("mentions are stripped by entity offsets, never by scanning @", () => {
     "🚀 你好",
   );
   assert.equal(stripMentions("@_user_1 无 entities", []), "@_user_1 无 entities");
+});
+
+test("TC-15 a running job outlives the dispatch window in the typing targets", () => {
+  const keys = new Set(["g1"]);
+  const jobs = new Set(["g1"]);
+  keys.delete("g1");
+  assert.deepEqual(typingTargets(keys, jobs), ["g1"]);
+  jobs.delete("g1");
+  assert.deepEqual(typingTargets(keys, jobs), []);
+  assert.deepEqual(typingTargets(new Set(["g2", "g3"]), new Set(["g3", "g4"])), ["g2", "g3", "g4"]);
 });

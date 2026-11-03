@@ -20,6 +20,10 @@ export function sessionFor(key) {
   return `dc-${key}`;
 }
 
+export function typingTargets(keys, jobs) {
+  return [...new Set([...(keys ?? []), ...(jobs ?? [])])];
+}
+
 export function threadKey(threadId) {
   return threadId ? `t${threadId}` : null;
 }
@@ -207,7 +211,7 @@ export function createPlatform({ config, log: baseLog }) {
   const pacingMs = relayEnv("PACING_MS", 250);
   const log = baseLog;
 
-  const typing = { timer: null, cursor: 0, busy: false, keys: new Set() };
+  const typing = { timer: null, cursor: 0, busy: false, keys: new Set(), jobs: new Set() };
   let rest = null;
   let state = null;
   let coreRef = null;
@@ -431,7 +435,7 @@ export function createPlatform({ config, log: baseLog }) {
   }
 
   function syncTyping() {
-    const targets = [...typing.keys];
+    const targets = typingTargets(typing.keys, typing.jobs);
     if (!targets.length) {
       if (typing.timer) clearInterval(typing.timer);
       typing.timer = null;
@@ -441,7 +445,8 @@ export function createPlatform({ config, log: baseLog }) {
     typing.cursor = 0;
     const tick = async () => {
       if (typing.busy) return;
-      const channel = [...typing.keys][typing.cursor % Math.max(1, typing.keys.size)];
+      const live = typingTargets(typing.keys, typing.jobs);
+      const channel = live[typing.cursor % Math.max(1, live.length)];
       if (!channel) return;
       typing.busy = true;
       typing.cursor += 1;
@@ -669,13 +674,13 @@ export function createPlatform({ config, log: baseLog }) {
 
     async onProgress(ctx) {
       const channel = ctx.threadId ? String(ctx.threadId) : String(channelId);
-      typing.keys.add(channel);
+      typing.jobs.add(channel);
       syncTyping();
     },
 
     async onProgressDone(ctx) {
       const channel = ctx.threadId ? String(ctx.threadId) : String(channelId);
-      typing.keys.delete(channel);
+      typing.jobs.delete(channel);
       syncTyping();
     },
 
