@@ -277,7 +277,7 @@ test("TC-DC19 images land where reply does and are indexed so answering them con
   assert.deepEqual(JSON.parse(posts[1].init.body.get("payload_json")).message_reference, { message_id: "700", fail_if_not_exists: false });
 });
 
-test("TC-DC11 clearing the dispatch window keeps a running job's typing alive", () => {
+test("TC-DC20 clearing the dispatch window keeps a running job's typing alive", () => {
   const keys = new Set();
   const jobs = new Set();
   const channel = "901";
@@ -287,4 +287,54 @@ test("TC-DC11 clearing the dispatch window keeps a running job's typing alive", 
   assert.deepEqual(typingTargets(keys, jobs), [channel]);
   jobs.delete(channel);
   assert.deepEqual(typingTargets(keys, jobs), []);
+});
+
+test("TC-DC21 a job leaves a status line in its thread and clears it when done", async () => {
+  const savedFetch = globalThis.fetch;
+  const savedToken = process.env.DISCORD_BOT_TOKEN;
+  const savedChannel = process.env.DISCORD_CHANNEL_ID;
+  const calls = [];
+  process.env.DISCORD_BOT_TOKEN = "bot-TEST";
+  process.env.DISCORD_CHANNEL_ID = "500";
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), method: init.method ?? "GET", body: init.body ? JSON.parse(init.body) : null });
+    if (init.method === "POST") return new Response(JSON.stringify({ id: "9001" }), { status: 200 });
+    return new Response("{}", { status: 204 });
+  };
+  try {
+    const adapter = createPlatform({ config: fakeConfig(), log: () => {} });
+    const ctx = { jobId: "job-1", key: "t901", chatId: "901", threadId: "901", messageId: "100" };
+    const progress = await adapter.onProgress(ctx);
+    assert.deepEqual(progress, { messageId: "9001", channel: "901" });
+    const posted = calls.find((call) => call.method === "POST" && call.url.endsWith("/messages"));
+    assert.equal(posted.url, "https://discord.com/api/v10/channels/901/messages");
+    assert.equal(posted.body.content, "⏳ 处理中…");
+    await adapter.onProgressDone({ ...ctx, progress });
+    const done = calls.at(-1);
+    assert.equal(done.method, "DELETE");
+    assert.equal(done.url, "https://discord.com/api/v10/channels/901/messages/9001");
+  } finally {
+    globalThis.fetch = savedFetch;
+    if (savedToken === undefined) delete process.env.DISCORD_BOT_TOKEN; else process.env.DISCORD_BOT_TOKEN = savedToken;
+    if (savedChannel === undefined) delete process.env.DISCORD_CHANNEL_ID; else process.env.DISCORD_CHANNEL_ID = savedChannel;
+  }
+});
+
+test("TC-DC22 a job outside a thread leaves no status line behind in the parent channel", async () => {
+  const savedFetch = globalThis.fetch;
+  const savedToken = process.env.DISCORD_BOT_TOKEN;
+  const calls = [];
+  process.env.DISCORD_BOT_TOKEN = "bot-TEST";
+  globalThis.fetch = async (url, init = {}) => {
+    calls.push({ url: String(url), method: init.method ?? "GET" });
+    return new Response("{}", { status: 200 });
+  };
+  try {
+    const adapter = createPlatform({ config: fakeConfig(), log: () => {} });
+    assert.equal(await adapter.onProgress({ jobId: "job-2", key: "g1", chatId: "500", threadId: null, messageId: "101" }), null);
+    assert.equal(calls.filter((call) => call.url.endsWith("/messages")).length, 0);
+  } finally {
+    globalThis.fetch = savedFetch;
+    if (savedToken === undefined) delete process.env.DISCORD_BOT_TOKEN; else process.env.DISCORD_BOT_TOKEN = savedToken;
+  }
 });
