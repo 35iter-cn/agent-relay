@@ -86,9 +86,23 @@ export function createMediaUploader({ channel, token, log = () => {}, reply, fet
   };
 }
 
+const BLOCK_REJECTED = new Set(["invalid_blocks", "msg_too_long"]);
+
+export function markdownBlocks(text) {
+  return [{ type: "markdown", text }];
+}
+
+export async function sendWithBlocks(api, method, params, log = () => {}) {
+  const res = await api(method, { ...params, blocks: markdownBlocks(params.text) });
+  if (res.ok || !BLOCK_REJECTED.has(res.error)) return res;
+  log("warn", "blocks-rejected", method, res.error);
+  return api(method, params);
+}
+
 export function createRuntime({ api, log, channel, post, emoji = PROGRESS_EMOJI }) {
   async function postMessage(ctx, text) {
-    const res = await api("chat.postMessage", { channel, text, ...(ctx.replyTo ? { thread_ts: ctx.replyTo } : {}) });
+    const params = { channel, text, ...(ctx.replyTo ? { thread_ts: ctx.replyTo } : {}) };
+    const res = await sendWithBlocks(api, "chat.postMessage", params, log);
     if (!res.ok) throw new Error(`postMessage ${res.error}`);
     return { messageId: res.ts };
   }
@@ -101,7 +115,7 @@ export function createRuntime({ api, log, channel, post, emoji = PROGRESS_EMOJI 
       }
       const entry = ctx.progress;
       if (entry?.mode === "placeholder" && entry.messageId && entry.pending) {
-        const patched = await api("chat.update", { channel, ts: entry.messageId, text });
+        const patched = await sendWithBlocks(api, "chat.update", { channel, ts: entry.messageId, text }, log);
         if (patched.ok) {
           entry.pending = false;
           return { messageId: entry.messageId, patched: true };
@@ -120,7 +134,7 @@ export function createRuntime({ api, log, channel, post, emoji = PROGRESS_EMOJI 
 
     async edit(ctx, messageId, text) {
       if (!api || !messageId) return false;
-      const res = await api("chat.update", { channel, ts: messageId, text });
+      const res = await sendWithBlocks(api, "chat.update", { channel, ts: messageId, text }, log);
       if (res.ok) return true;
       log("warn", "edit", res.error);
       return false;
@@ -666,7 +680,7 @@ export function createPlatform({ config, log: baseLog }) {
       }
       let last = null;
       for (const part of chunkText(text, CHUNK_LIMIT)) {
-        const res = await api("chat.postMessage", { channel, text: part });
+        const res = await sendWithBlocks(api, "chat.postMessage", { channel, text: part }, log);
         if (!res.ok) throw new Error(`postNotice ${res.error}`);
         last = res.ts ?? last;
       }
