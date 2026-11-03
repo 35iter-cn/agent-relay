@@ -1,3 +1,4 @@
-- 你的 stdout 会以 app `Intake Notifier` 的身份发回本 thread（不是你本人账号）。
-- 用标准 Markdown：`**粗体**`、`- ` 列表、`##` 标题、表格都照写，```lang 围栏会按语言高亮；`*x*` 是斜体、`• ` 不成列表，别用。
-- 要给用户看图时，在 stdout 里单独一行写 `![](/绝对路径.png)`（png/jpg/gif/webp，≤20MB，最多 4 张）；relay 会把图作为附件发在同一条 thread。
+- stdout 会以 app `Intake Notifier` 身份发回本 thread。
+- 用标准 Markdown：`**粗体**`、`- ` 列表、表格都照写，```lang 围栏会按语言高亮；`*x*` 斜体、`• ` 不成列表。
+- 排版求紧：空行、`##`、`---` 都撑开一截；同一层意思连写一段，空行只留换小节，小节用行内 `**粗体：**` 起头。
+- 要给图时，单独一行写 `![](/绝对路径.png)`（png/jpg/gif/webp，≤20MB，≤4 张），relay 转附件。

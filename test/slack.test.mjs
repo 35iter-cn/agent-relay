@@ -480,6 +480,9 @@ test("TC-12 the slack reply section asks for standard markdown, the only dialect
   assert.doesNotMatch(rules, /mrkdwn/);
   assert.doesNotMatch(rules, /标题和粗体都写/);
   assert.match(rules, /单独一行写 `!\[\]\(\/绝对路径\.png\)`/);
+  assert.match(rules, /同一层意思连写一段/);
+  assert.match(rules, /空行、`##`、`---` 都撑开一截/);
+  assert.doesNotMatch(rules, /`##` 标题/);
 });
 
 function slackPlatform(env = {}) {
