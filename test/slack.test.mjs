@@ -3,8 +3,9 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import { stripMentions, sessionFor, acceptsEvent, heartbeatVerdict, refreshDelayMs, alertAllowed, pruneThreads, decideProgressMode, createRuntime, createPlatform, createAttachmentDownloader, createMediaUploader, composeText, shouldAlertFiles, FILES_ALERT, MEDIA_ALERT } from "../src/platforms/slack.mjs";
+import { stripMentions, sessionFor, acceptsEvent, heartbeatVerdict, refreshDelayMs, alertAllowed, pruneThreads, decideProgressMode, createRuntime, createPlatform, createAttachmentDownloader, createMediaUploader, composeText, shouldAlertFiles, markdownBlocks, FILES_ALERT, MEDIA_ALERT } from "../src/platforms/slack.mjs";
 import { uploadDirFor } from "../src/platforms/shared/uploads.mjs";
+import { planParts } from "../src/jobs/delivery.mjs";
 
 const TEST_SCOPE = { channel: "CTEST", allowedUser: "UTEST", botUser: "UBOT" };
 
@@ -187,10 +188,11 @@ test("AC-3 a missing scope falls back to a placeholder the answer replaces", asy
   assert.deepEqual(progress, { mode: "placeholder", messageId: "1792559000.000001", pending: true });
   assert.equal(calls[1][0], "chat.postMessage");
   assert.equal(calls[1][1].text, "⏳ 正在处理…");
+  assert.equal(calls[1][1].blocks, undefined, "占位消息不带 blocks");
 
   const sent = await runtime.reply(progressCtx({ progress }), "答案");
   assert.deepEqual(sent, { messageId: "1792559000.000001", patched: true });
-  assert.deepEqual(calls[2], ["chat.update", { channel: "CTESTCHANNEL", ts: "1792559000.000001", text: "答案" }]);
+  assert.deepEqual(calls[2], ["chat.update", { channel: "CTESTCHANNEL", ts: "1792559000.000001", text: "答案", blocks: markdownBlocks("答案") }]);
   assert.equal(progress.pending, false);
 
   await runtime.onProgressDone(progressCtx({ progress }));
@@ -222,13 +224,54 @@ test("AC-4 replies carry the thread and return the ts", async () => {
   const { runtime, calls } = harness({ handlers: { "chat.postMessage": { ok: true, ts: "1792559000.000002" } } });
   const sent = await runtime.reply(progressCtx(), "答案");
   assert.deepEqual(sent, { messageId: "1792559000.000002" });
-  assert.deepEqual(calls[0], ["chat.postMessage", { channel: "CTESTCHANNEL", text: "答案", thread_ts: "1792558469.808939" }]);
+  assert.deepEqual(calls[0], ["chat.postMessage", { channel: "CTESTCHANNEL", text: "答案", thread_ts: "1792558469.808939", blocks: markdownBlocks("答案") }]);
+});
+
+test("TC-13 a reply carries the markdown block next to the plain text Slack falls back to", async () => {
+  const { runtime, calls } = harness({ handlers: { "chat.postMessage": { ok: true, ts: "1792559000.000003" } } });
+  const answer = "```json\n{\"a\":1}\n```\n\n**粗** 与 | a | b |";
+  await runtime.reply(progressCtx(), answer);
+  assert.equal(calls[0][1].text, answer);
+  assert.deepEqual(calls[0][1].blocks, [{ type: "markdown", text: answer }]);
+});
+
+test("TC-14 a rejected block set is resent as plain text instead of failing the reply", async () => {
+  const { runtime, calls, logs } = harness({
+    handlers: {
+      "chat.postMessage": (params) => (params.blocks ? { ok: false, error: "invalid_blocks" } : { ok: true, ts: "1792559000.000004" }),
+    },
+  });
+  const sent = await runtime.reply(progressCtx(), "答案");
+  assert.deepEqual(sent, { messageId: "1792559000.000004" });
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1][1].blocks, undefined);
+  assert.equal(calls[1][1].text, "答案");
+  assert.deepEqual(logs, [["warn", "blocks-rejected", "chat.postMessage", "invalid_blocks"]]);
+});
+
+test("TC-15 an oversized markdown block is resent as plain text too", async () => {
+  const { runtime, calls, logs } = harness({
+    handlers: {
+      "chat.update": (params) => (params.blocks ? { ok: false, error: "msg_too_long" } : { ok: true }),
+    },
+  });
+  assert.equal(await runtime.edit(progressCtx(), "1792559000.000005", "很长的答案"), true);
+  assert.equal(calls.length, 2);
+  assert.equal(calls[1][1].blocks, undefined);
+  assert.deepEqual(logs, [["warn", "blocks-rejected", "chat.update", "msg_too_long"]]);
+});
+
+test("TC-15 a non-block rejection keeps the existing failure path", async () => {
+  const { runtime, calls, sent } = harness({ handlers: { "chat.postMessage": { ok: false, error: "not_in_channel" } } });
+  assert.equal(await runtime.reply(progressCtx(), "答案"), null);
+  assert.equal(calls.length, 1, "只有一次 API 调用，不重试 blocks");
+  assert.deepEqual(sent, [["1792558469.808939", "答案"]]);
 });
 
 test("AC-4 editing updates the existing message", async () => {
   const { runtime, calls } = harness({ handlers: { "chat.update": { ok: true } } });
   assert.equal(await runtime.edit(progressCtx(), "1792559000.000002", "改过的答案"), true);
-  assert.deepEqual(calls[0], ["chat.update", { channel: "CTESTCHANNEL", ts: "1792559000.000002", text: "改过的答案" }]);
+  assert.deepEqual(calls[0], ["chat.update", { channel: "CTESTCHANNEL", ts: "1792559000.000002", text: "改过的答案", blocks: markdownBlocks("改过的答案") }]);
 });
 
 test("AC-4 a failed edit reports false instead of throwing", async () => {
@@ -428,14 +471,33 @@ test("AC-9 messages without files never download anything", () => {
   assert.equal(acceptsEvent({ ...base, bot_id: "B1", files: [slackFile()] }, TEST_SCOPE).ok, false);
 });
 
-test("TC-12 the slack reply section pairs every markdown habit with the mrkdwn form Slack actually renders", () => {
+test("TC-12 the slack reply section asks for standard markdown, the only dialect a markdown block renders", () => {
   const rules = readFileSync(new URL("../src/prompts/sections/22-platform-slack-reply.md", import.meta.url), "utf8");
-  for (const fragment of ["`*x*`", "`##`", "`**x**`", "`• `", "`- `", "表格"]) {
+  for (const fragment of ["`**粗体**`", "`- `", "`##`", "表格", "```lang", "`*x*`", "`• `"]) {
     assert.ok(rules.includes(fragment), `the slack reply section never mentions ${fragment}`);
   }
-  assert.match(rules, /标题和粗体都写 `\*x\*`/);
-  assert.match(rules, /列表用 `• `/);
+  assert.match(rules, /用标准 Markdown/);
+  assert.doesNotMatch(rules, /mrkdwn/);
+  assert.doesNotMatch(rules, /标题和粗体都写/);
   assert.match(rules, /单独一行写 `!\[\]\(\/绝对路径\.png\)`/);
+});
+
+function slackPlatform(env = {}) {
+  const values = { SLACK_APP_TOKEN: "xapp", SLACK_BOT_TOKEN: "xoxb", AGENT_RELAY_SLACK_CHANNEL: "CTEST", AGENT_RELAY_ALLOWED_USER: "UTEST", ...env };
+  return createPlatform({
+    config: { readEnv: () => values, envFile: (name) => `/tmp/${name}`, home: "/tmp", configDir: "/tmp" },
+    log: () => {},
+  });
+}
+
+test("TC-16 the adapter chunks a long answer into 8000 character messages and every piece fits", () => {
+  const adapter = slackPlatform();
+  assert.equal(adapter.chunkLimit, 8_000);
+  const answer = Array.from({ length: 400 }, (_, i) => `第 ${i} 行 ${"x".repeat(40)}`).join("\n");
+  const steps = planParts({ answer, parts: [], chunkLimit: adapter.chunkLimit });
+  assert.ok(answer.length > 16_000, `answer is ${answer.length} characters`);
+  assert.equal(steps.length, 3);
+  for (const step of steps) assert.ok(step.text.length <= 8_000, `chunk ${step.i} is ${step.text.length}`);
 });
 
 function shotFile(bytes = "png-bytes", name = "shot.png") {
