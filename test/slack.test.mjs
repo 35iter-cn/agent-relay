@@ -599,3 +599,19 @@ test("TC-MEDIA4 a transient upload failure is rethrown so the job retries it", a
   await assert.rejects(() => postMedia({ replyTo: "1" }, [shotFile()]), /completeUploadExternal internal_error/);
   assert.equal(posts.length, 3, "the ticket, the bytes and the failing complete are all attempted");
 });
+
+test("TC-17 a markdown table becomes a native table block instead of visible pipes", () => {
+  const blocks = markdownBlocks(["前", "", "| 字段 | 值 |", "| --- | --- |", "| **协议** | UDP |", "", "后"].join("\n"));
+  assert.deepEqual(blocks, [
+    { type: "markdown", text: "前" },
+    {
+      type: "table",
+      rows: [
+        [{ type: "raw_text", text: "字段" }, { type: "raw_text", text: "值" }],
+        [{ type: "raw_text", text: "协议" }, { type: "raw_text", text: "UDP" }],
+      ],
+    },
+    { type: "markdown", text: "后" },
+  ]);
+  assert.deepEqual(markdownBlocks("没有表格"), [{ type: "markdown", text: "没有表格" }]);
+});

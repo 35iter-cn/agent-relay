@@ -2,7 +2,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chunkText } from "../shared/chunk.mjs";
-import { flattenTables } from "../shared/markdown.mjs";
+import { flattenTables, splitTables, tableBullet } from "../shared/markdown.mjs";
 import { relayEnv } from "../shared/env.mjs";
 import { ensurePrivateDir } from "../shared/fs.mjs";
 import { createRootCache } from "./shared/root-cache.mjs";
@@ -88,17 +88,48 @@ export function createMediaUploader({ channel, token, log = () => {}, reply, fet
 }
 
 const BLOCK_REJECTED = new Set(["invalid_blocks", "msg_too_long"]);
+const TABLE_CELL_LIMIT = 10_000;
+const TABLE_TEXT_LIMIT = 2_000;
 
 export function markdownBlocks(text) {
-  return [{ type: "markdown", text }];
+  const blocks = [];
+  for (const segment of splitTables(text)) {
+    if (segment.type !== "table") {
+      if (segment.text) blocks.push({ type: "markdown", text: segment.text });
+      continue;
+    }
+    const cells = segment.rows.flat().join("");
+    if (cells.length > TABLE_CELL_LIMIT) {
+      blocks.push({ type: "markdown", text: segment.rows.slice(1).map(tableBullet).filter(Boolean).join("\n") });
+      continue;
+    }
+    blocks.push(tableBlock(segment.rows));
+  }
+  return blocks.length ? blocks : [{ type: "markdown", text }];
+}
+
+export function tableCell(cell) {
+  const text = String(cell ?? "")
+    .replace(/\*\*(.+?)\*\*/g, "$1")
+    .replace(/~~(.+?)~~/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1$2")
+    .trim();
+  return { type: "raw_text", text: text.slice(0, TABLE_TEXT_LIMIT) };
+}
+
+export function tableBlock(rows) {
+  return { type: "table", rows: rows.map((row) => row.map(tableCell)) };
 }
 
 export async function sendWithBlocks(api, method, params, log = () => {}) {
-  const text = flattenTables(params.text ?? "");
-  const res = await api(method, { ...params, text, blocks: markdownBlocks(text) });
+  const source = params.text ?? "";
+  const plain = flattenTables(source);
+  const res = await api(method, { ...params, text: plain, blocks: markdownBlocks(source) });
   if (res.ok || !BLOCK_REJECTED.has(res.error)) return res;
   log("warn", "blocks-rejected", method, res.error);
-  return api(method, { ...params, text });
+  return api(method, { ...params, text: plain });
 }
 
 export function createRuntime({ api, log, channel, post, emoji = PROGRESS_EMOJI }) {
