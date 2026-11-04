@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import { stripMentions, sessionFor, acceptsEvent, heartbeatVerdict, refreshDelayMs, alertAllowed, pruneThreads, decideProgressMode, createRuntime, createPlatform, createAttachmentDownloader, createMediaUploader, composeText, shouldAlertFiles, markdownBlocks, FILES_ALERT, MEDIA_ALERT } from "../src/platforms/slack.mjs";
+import { stripMentions, sessionFor, acceptsEvent, heartbeatVerdict, refreshDelayMs, alertAllowed, pruneThreads, decideProgressMode, createRuntime, createPlatform, createAttachmentDownloader, createMediaUploader, composeText, shouldAlertFiles, FILES_ALERT, MEDIA_ALERT } from "../src/platforms/slack.mjs";
 import { uploadDirFor } from "../src/platforms/shared/uploads.mjs";
 import { planParts } from "../src/jobs/delivery.mjs";
 
@@ -188,11 +188,11 @@ test("AC-3 a missing scope falls back to a placeholder the answer replaces", asy
   assert.deepEqual(progress, { mode: "placeholder", messageId: "1792559000.000001", pending: true });
   assert.equal(calls[1][0], "chat.postMessage");
   assert.equal(calls[1][1].text, "⏳ 正在处理…");
-  assert.equal(calls[1][1].blocks, undefined, "占位消息不带 blocks");
+  assert.equal(calls[1][1].markdown_text, undefined, "占位消息是纯文本");
 
   const sent = await runtime.reply(progressCtx({ progress }), "答案");
   assert.deepEqual(sent, { messageId: "1792559000.000001", patched: true });
-  assert.deepEqual(calls[2], ["chat.update", { channel: "CTESTCHANNEL", ts: "1792559000.000001", text: "答案", blocks: markdownBlocks("答案") }]);
+  assert.deepEqual(calls[2], ["chat.update", { channel: "CTESTCHANNEL", ts: "1792559000.000001", markdown_text: "答案" }]);
   assert.equal(progress.pending, false);
 
   await runtime.onProgressDone(progressCtx({ progress }));
@@ -224,54 +224,55 @@ test("AC-4 replies carry the thread and return the ts", async () => {
   const { runtime, calls } = harness({ handlers: { "chat.postMessage": { ok: true, ts: "1792559000.000002" } } });
   const sent = await runtime.reply(progressCtx(), "答案");
   assert.deepEqual(sent, { messageId: "1792559000.000002" });
-  assert.deepEqual(calls[0], ["chat.postMessage", { channel: "CTESTCHANNEL", text: "答案", thread_ts: "1792558469.808939", blocks: markdownBlocks("答案") }]);
+  assert.deepEqual(calls[0], ["chat.postMessage", { channel: "CTESTCHANNEL", thread_ts: "1792558469.808939", markdown_text: "答案" }]);
 });
 
-test("TC-13 a reply carries the markdown block next to the plain text Slack falls back to", async () => {
+test("TC-13 a reply hands the model markdown straight to markdown_text", async () => {
   const { runtime, calls } = harness({ handlers: { "chat.postMessage": { ok: true, ts: "1792559000.000003" } } });
   const answer = "```json\n{\"a\":1}\n```\n\n**粗** 与 | a | b |";
   await runtime.reply(progressCtx(), answer);
-  assert.equal(calls[0][1].text, answer);
-  assert.deepEqual(calls[0][1].blocks, [{ type: "markdown", text: answer }]);
+  assert.equal(calls[0][1].markdown_text, answer);
+  assert.equal(calls[0][1].text, undefined, "markdown_text 与 text 互斥");
+  assert.equal(calls[0][1].blocks, undefined, "markdown_text 与 blocks 互斥");
 });
 
-test("TC-14 a rejected block set is resent as plain text instead of failing the reply", async () => {
+test("TC-14 a rejected markdown body is resent as plain text instead of failing the reply", async () => {
   const { runtime, calls, logs } = harness({
     handlers: {
-      "chat.postMessage": (params) => (params.blocks ? { ok: false, error: "invalid_blocks" } : { ok: true, ts: "1792559000.000004" }),
+      "chat.postMessage": (params) => (params.markdown_text ? { ok: false, error: "invalid_arguments" } : { ok: true, ts: "1792559000.000004" }),
     },
   });
   const sent = await runtime.reply(progressCtx(), "答案");
   assert.deepEqual(sent, { messageId: "1792559000.000004" });
   assert.equal(calls.length, 2);
-  assert.equal(calls[1][1].blocks, undefined);
+  assert.equal(calls[1][1].markdown_text, undefined);
   assert.equal(calls[1][1].text, "答案");
-  assert.deepEqual(logs, [["warn", "blocks-rejected", "chat.postMessage", "invalid_blocks"]]);
+  assert.deepEqual(logs, [["warn", "markdown-rejected", "chat.postMessage", "invalid_arguments"]]);
 });
 
-test("TC-15 an oversized markdown block is resent as plain text too", async () => {
+test("TC-15 an oversized markdown body is resent as plain text too", async () => {
   const { runtime, calls, logs } = harness({
     handlers: {
-      "chat.update": (params) => (params.blocks ? { ok: false, error: "msg_too_long" } : { ok: true }),
+      "chat.update": (params) => (params.markdown_text ? { ok: false, error: "msg_too_long" } : { ok: true }),
     },
   });
   assert.equal(await runtime.edit(progressCtx(), "1792559000.000005", "很长的答案"), true);
   assert.equal(calls.length, 2);
-  assert.equal(calls[1][1].blocks, undefined);
-  assert.deepEqual(logs, [["warn", "blocks-rejected", "chat.update", "msg_too_long"]]);
+  assert.equal(calls[1][1].markdown_text, undefined);
+  assert.deepEqual(logs, [["warn", "markdown-rejected", "chat.update", "msg_too_long"]]);
 });
 
 test("TC-15 a non-block rejection keeps the existing failure path", async () => {
   const { runtime, calls, sent } = harness({ handlers: { "chat.postMessage": { ok: false, error: "not_in_channel" } } });
   assert.equal(await runtime.reply(progressCtx(), "答案"), null);
-  assert.equal(calls.length, 1, "只有一次 API 调用，不重试 blocks");
+  assert.equal(calls.length, 1, "只有一次 API 调用，不重试纯文本");
   assert.deepEqual(sent, [["1792558469.808939", "答案"]]);
 });
 
 test("AC-4 editing updates the existing message", async () => {
   const { runtime, calls } = harness({ handlers: { "chat.update": { ok: true } } });
   assert.equal(await runtime.edit(progressCtx(), "1792559000.000002", "改过的答案"), true);
-  assert.deepEqual(calls[0], ["chat.update", { channel: "CTESTCHANNEL", ts: "1792559000.000002", text: "改过的答案", blocks: markdownBlocks("改过的答案") }]);
+  assert.deepEqual(calls[0], ["chat.update", { channel: "CTESTCHANNEL", ts: "1792559000.000002", markdown_text: "改过的答案" }]);
 });
 
 test("AC-4 a failed edit reports false instead of throwing", async () => {
@@ -600,18 +601,10 @@ test("TC-MEDIA4 a transient upload failure is rethrown so the job retries it", a
   assert.equal(posts.length, 3, "the ticket, the bytes and the failing complete are all attempted");
 });
 
-test("TC-17 a markdown table becomes a native table block instead of visible pipes", () => {
-  const blocks = markdownBlocks(["前", "", "| 字段 | 值 |", "| --- | --- |", "| **协议** | UDP |", "", "后"].join("\n"));
-  assert.deepEqual(blocks, [
-    { type: "markdown", text: "前" },
-    {
-      type: "table",
-      rows: [
-        [{ type: "raw_text", text: "字段" }, { type: "raw_text", text: "值" }],
-        [{ type: "raw_text", text: "协议" }, { type: "raw_text", text: "UDP" }],
-      ],
-    },
-    { type: "markdown", text: "后" },
-  ]);
-  assert.deepEqual(markdownBlocks("没有表格"), [{ type: "markdown", text: "没有表格" }]);
+test("TC-17 a markdown table travels untouched inside the one markdown_text string", async () => {
+  const { runtime, calls } = harness({ handlers: { "chat.postMessage": { ok: true, ts: "1792559000.000006" } } });
+  const answer = ["前", "", "| 字段 | 值 |", "| --- | --- |", "| **协议** | UDP |", "", "后"].join("\n");
+  await runtime.reply(progressCtx(), answer);
+  assert.equal(calls[0][1].markdown_text, answer, "表格不被拆分、格内加粗不被拍平");
+  assert.equal(calls[0][1].blocks, undefined);
 });

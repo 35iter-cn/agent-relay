@@ -2,7 +2,6 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chunkText } from "../shared/chunk.mjs";
-import { flattenTables, splitTables, tableBullet } from "../shared/markdown.mjs";
 import { relayEnv } from "../shared/env.mjs";
 import { ensurePrivateDir } from "../shared/fs.mjs";
 import { createRootCache } from "./shared/root-cache.mjs";
@@ -87,55 +86,20 @@ export function createMediaUploader({ channel, token, log = () => {}, reply, fet
   };
 }
 
-const BLOCK_REJECTED = new Set(["invalid_blocks", "msg_too_long"]);
-const TABLE_CELL_LIMIT = 10_000;
-const TABLE_TEXT_LIMIT = 2_000;
+const MARKDOWN_REJECTED = new Set(["msg_too_long", "invalid_arguments", "invalid_blocks", "invalid_blocks_format", "msg_blocks_too_long"]);
 
-export function markdownBlocks(text) {
-  const blocks = [];
-  for (const segment of splitTables(text)) {
-    if (segment.type !== "table") {
-      if (segment.text) blocks.push({ type: "markdown", text: segment.text });
-      continue;
-    }
-    const cells = segment.rows.flat().join("");
-    if (cells.length > TABLE_CELL_LIMIT) {
-      blocks.push({ type: "markdown", text: segment.rows.slice(1).map(tableBullet).filter(Boolean).join("\n") });
-      continue;
-    }
-    blocks.push(tableBlock(segment.rows));
-  }
-  return blocks.length ? blocks : [{ type: "markdown", text }];
-}
-
-export function tableCell(cell) {
-  const text = String(cell ?? "")
-    .replace(/\*\*(.+?)\*\*/g, "$1")
-    .replace(/~~(.+?)~~/g, "$1")
-    .replace(/`([^`]+)`/g, "$1")
-    .replace(/\[([^\]]+)\]\(([^)]+)\)/g, "$1 ($2)")
-    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1$2")
-    .trim();
-  return { type: "raw_text", text: text.slice(0, TABLE_TEXT_LIMIT) };
-}
-
-export function tableBlock(rows) {
-  return { type: "table", rows: rows.map((row) => row.map(tableCell)) };
-}
-
-export async function sendWithBlocks(api, method, params, log = () => {}) {
-  const source = params.text ?? "";
-  const plain = flattenTables(source);
-  const res = await api(method, { ...params, text: plain, blocks: markdownBlocks(source) });
-  if (res.ok || !BLOCK_REJECTED.has(res.error)) return res;
-  log("warn", "blocks-rejected", method, res.error);
-  return api(method, { ...params, text: plain });
+export async function sendMarkdown(api, method, { text, ...rest }, log = () => {}) {
+  const source = String(text ?? "");
+  const res = await api(method, { ...rest, markdown_text: source });
+  if (res.ok || !MARKDOWN_REJECTED.has(res.error)) return res;
+  log("warn", "markdown-rejected", method, res.error);
+  return api(method, { ...rest, text: source });
 }
 
 export function createRuntime({ api, log, channel, post, emoji = PROGRESS_EMOJI }) {
   async function postMessage(ctx, text) {
     const params = { channel, text, ...(ctx.replyTo ? { thread_ts: ctx.replyTo } : {}) };
-    const res = await sendWithBlocks(api, "chat.postMessage", params, log);
+    const res = await sendMarkdown(api, "chat.postMessage", params, log);
     if (!res.ok) throw new Error(`postMessage ${res.error}`);
     return { messageId: res.ts };
   }
@@ -148,7 +112,7 @@ export function createRuntime({ api, log, channel, post, emoji = PROGRESS_EMOJI 
       }
       const entry = ctx.progress;
       if (entry?.mode === "placeholder" && entry.messageId && entry.pending) {
-        const patched = await sendWithBlocks(api, "chat.update", { channel, ts: entry.messageId, text }, log);
+        const patched = await sendMarkdown(api, "chat.update", { channel, ts: entry.messageId, text }, log);
         if (patched.ok) {
           entry.pending = false;
           return { messageId: entry.messageId, patched: true };
@@ -167,7 +131,7 @@ export function createRuntime({ api, log, channel, post, emoji = PROGRESS_EMOJI 
 
     async edit(ctx, messageId, text) {
       if (!api || !messageId) return false;
-      const res = await sendWithBlocks(api, "chat.update", { channel, ts: messageId, text }, log);
+      const res = await sendMarkdown(api, "chat.update", { channel, ts: messageId, text }, log);
       if (res.ok) return true;
       log("warn", "edit", res.error);
       return false;
@@ -713,7 +677,7 @@ export function createPlatform({ config, log: baseLog }) {
       }
       let last = null;
       for (const part of chunkText(text, CHUNK_LIMIT)) {
-        const res = await sendWithBlocks(api, "chat.postMessage", { channel, text: part }, log);
+        const res = await sendMarkdown(api, "chat.postMessage", { channel, text: part }, log);
         if (!res.ok) throw new Error(`postNotice ${res.error}`);
         last = res.ts ?? last;
       }
