@@ -16,7 +16,7 @@ export function usage(stream = process.stderr) {
   stream.write(
     [
       "usage:",
-      "  agent-relay serve <discord|feishu|slack|telegram>",
+      "  agent-relay serve <discord|feishu|mattermost|slack|telegram>",
       "  agent-relay notice emit --platform <p> (--text <text> | --text-file <path>) [--prompt <text> | --prompt-file <path>]",
       "  agent-relay notify <platform> <text>",
       "  agent-relay stall <platform> <cancel|restart> <key> [text]",
