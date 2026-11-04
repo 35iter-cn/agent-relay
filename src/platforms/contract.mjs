@@ -1,4 +1,4 @@
-export const PLATFORMS = ["discord", "feishu", "slack", "telegram"];
+export const PLATFORMS = ["discord", "feishu", "mattermost", "slack", "telegram"];
 
 const REQUIRED = { name: "string", start: "function", reply: "function", sessionFor: "function" };
 const OPTIONAL = ["postNotice", "postMedia", "notify", "edit", "onProgress", "onProgressDone", "buildWorker", "prune"];

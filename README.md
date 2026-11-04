@@ -57,7 +57,7 @@ src/
 ├── runtime/                core loop, prompts, stall notice, instance lock
 ├── notices/                notice service (emit / match / prune)
 ├── prompts/                prompt sections (one file per block) + stall fragments
-└── platforms/              discord | feishu | slack | telegram adapters + shared helpers
+└── platforms/              discord | feishu | mattermost | slack | telegram adapters + shared helpers
 ```
 
 Design rules:
@@ -87,6 +87,7 @@ Design rules:
 | --- | --- | --- |
 | discord | Gateway WebSocket (heartbeat + resume) | one thread per conversation: a message in the parent channel opens a thread, everything said inside it continues that conversation |
 | feishu | Lark WS long connection | `parent_id` / `root_id` |
+| mattermost | WebSocket events (`posted`) | `root_id` — the thread is the conversation |
 | slack | Socket Mode | `thread_ts` |
 | telegram | long polling | `reply_to_message.message_id` — a reply joins the conversation it answers |
 

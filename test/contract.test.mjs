@@ -3,8 +3,9 @@ import { readFileSync } from "node:fs";
 import assert from "node:assert/strict";
 import { definePlatform, isPlatform, PLATFORMS } from "../src/platforms/contract.mjs";
 
-test("four platforms are registered", () => {
-  assert.deepEqual(PLATFORMS, ["discord", "feishu", "slack", "telegram"]);
+test("five platforms are registered", () => {
+  assert.deepEqual(PLATFORMS, ["discord", "feishu", "mattermost", "slack", "telegram"]);
+  assert.equal(isPlatform("mattermost"), true);
   assert.equal(isPlatform("discord"), true);
   assert.equal(isPlatform("slack"), true);
   assert.equal(isPlatform("matrix"), false);
@@ -22,7 +23,7 @@ test("a complete platform passes and is returned as-is", () => {
 });
 
 test("TC-28 adapters keep no cross-call reply state", () => {
-  for (const name of ["discord", "feishu", "slack", "telegram"]) {
+  for (const name of ["discord", "feishu", "mattermost", "slack", "telegram"]) {
     const source = readFileSync(new URL(`../src/platforms/${name}.mjs`, import.meta.url), "utf8");
     if (name === "feishu") assert.ok(source.includes("defaultClientFactory"));
     assert.doesNotMatch(source, /new WeakMap\(\)/, `${name} must not hold a WeakMap across calls`);
