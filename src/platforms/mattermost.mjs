@@ -11,7 +11,9 @@ const CHUNK_LIMIT = 12_000;
 const MESSAGE_INDEX_RETENTION_MS = 30 * 86_400_000;
 const MESSAGE_INDEX_MAX = 5_000;
 const TYPING_REFRESH_MS = 4_000;
-const IDLE_RECONNECT_MS = 240_000;
+const KEEPALIVE_IDLE_MS = 90_000;
+const PONG_TIMEOUT_MS = 15_000;
+const KEEPALIVE_TICK_MS = 30_000;
 const ALERT_COOLDOWN_MS = 30 * 60_000;
 
 export function sessionFor(key) {
@@ -89,6 +91,11 @@ export function replyIdsFor(post) {
   return [post?.root_id, post?.id].filter(Boolean).map(String);
 }
 
+export function keepaliveAction({ now, lastSeen, pendingPingAt, idleMs = KEEPALIVE_IDLE_MS, pongTimeoutMs = PONG_TIMEOUT_MS }) {
+  if (pendingPingAt) return now - pendingPingAt > pongTimeoutMs ? "reconnect" : null;
+  return now - lastSeen >= idleMs ? "ping" : null;
+}
+
 export function alertAllowed(alerts, kind, now, cooldownMs = ALERT_COOLDOWN_MS) {
   const last = Date.parse(alerts?.[kind] ?? "");
   return !Number.isFinite(last) || now - last > cooldownMs;
@@ -109,6 +116,8 @@ export function createPlatform({ config, log: baseLog }) {
   let socket = null;
   let closed = false;
   let lastSeen = Date.now();
+  let pendingPingAt = 0;
+  let seq = 0;
   let dispatchMessage = null;
   let announced = false;
 
@@ -297,6 +306,7 @@ export function createPlatform({ config, log: baseLog }) {
       };
       ws.onmessage = (event) => {
         lastSeen = Date.now();
+        pendingPingAt = 0;
         const raw = typeof event.data === "string" ? event.data : String(event.data);
         if (!authed && raw.includes('"status":"OK"')) {
           authed = true;
@@ -314,16 +324,24 @@ export function createPlatform({ config, log: baseLog }) {
         log("info", "ws-close", String(event?.code ?? ""));
         resolve();
       };
-      const idle = setInterval(() => {
-        if (Date.now() - lastSeen < IDLE_RECONNECT_MS) return;
-        log("info", "ws-idle", "reconnecting");
-        clearInterval(idle);
-        try {
-          ws.close();
-        } catch {}
-        resolve();
-      }, 30_000);
-      ws.addEventListener("close", () => clearInterval(idle));
+      const keepalive = setInterval(() => {
+        if (ws.readyState !== WebSocket.OPEN) return;
+        const now = Date.now();
+        const action = keepaliveAction({ now, lastSeen, pendingPingAt });
+        if (action === "reconnect") {
+          log("warn", "ws-dead", "no pong, reconnecting");
+          clearInterval(keepalive);
+          try {
+            ws.close();
+          } catch {}
+          resolve();
+          return;
+        }
+        if (action !== "ping") return;
+        pendingPingAt = now;
+        ws.send(JSON.stringify({ seq: ++seq, action: "ping" }));
+      }, KEEPALIVE_TICK_MS);
+      ws.addEventListener("close", () => clearInterval(keepalive));
     });
   }
 

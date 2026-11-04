@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   alertAllowed,
+  keepaliveAction,
   authChallenge,
   createPlatform,
   parsePosted,
@@ -96,4 +97,17 @@ test("TC-MM11 the reconnect alert is throttled to one per cooldown", () => {
   assert.equal(alertAllowed({}, "ws", now), true);
   assert.equal(alertAllowed({ ws: new Date(now - 60_000).toISOString() }, "ws", now), false);
   assert.equal(alertAllowed({ ws: new Date(now - 31 * 60_000).toISOString() }, "ws", now), true);
+});
+
+test("TC-MM12 a quiet socket is kept alive by a ping instead of being dropped", () => {
+  const now = 1_000_000;
+  assert.equal(keepaliveAction({ now, lastSeen: now - 10_000, pendingPingAt: 0 }), null);
+  assert.equal(keepaliveAction({ now, lastSeen: now - 90_000, pendingPingAt: 0 }), "ping");
+  assert.equal(keepaliveAction({ now, lastSeen: now - 90_000, pendingPingAt: now - 1_000 }), null);
+});
+
+test("TC-MM13 an unanswered ping is what triggers a reconnect, after the pong window", () => {
+  const now = 1_000_000;
+  assert.equal(keepaliveAction({ now, lastSeen: now - 300_000, pendingPingAt: now - 15_000 }), null);
+  assert.equal(keepaliveAction({ now, lastSeen: now - 300_000, pendingPingAt: now - 15_001 }), "reconnect");
 });
