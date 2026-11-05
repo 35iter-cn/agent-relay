@@ -93,7 +93,7 @@ export function precheckJob(stateFile, { key, dedupe, brief } = {}) {
     return "no-state";
   }
   if (!state?.convs?.[key]) return "unknown-key";
-  if (state.seen?.[dedupe] || state.jobs?.[state.seen?.[dedupe] ?? ""]) return "duplicate";
+  if (state.seen?.[dedupe]) return "duplicate";
   return null;
 }
 
