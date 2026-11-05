@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ACTION_NAMES, parseFlags, sendCommand, textFlag } from "../src/cli.mjs";
+import { ACTION_NAMES, dueFrom, durationMs, parseFlags, precheckJob, sendCommand, textFlag } from "../src/cli.mjs";
 import { readEnvFile } from "../src/config.mjs";
 
 test("readEnv parses KEY=value lines and ignores comments", () => {
@@ -56,4 +56,32 @@ test("textFlag reads a file before an inline value and trims both", () => {
   assert.equal(textFlag({ "prompt-file": file }, "prompt"), "文件里的 prompt");
   assert.equal(textFlag({ prompt: "  行内  " }, "prompt"), "行内");
   assert.equal(textFlag({}, "prompt"), "");
+});
+
+test("TC-SJ15 durations and due times parse into absolute stamps", () => {
+  const nowMs = Date.parse("2026-11-05T20:00:00+08:00");
+  assert.equal(durationMs("30m", 0), 1_800_000);
+  assert.equal(durationMs("2h", 0), 7_200_000);
+  assert.equal(durationMs("45s", 0), 45_000);
+  assert.equal(durationMs("1d", 0), 86_400_000);
+  assert.equal(durationMs("nonsense", 42), 42);
+  assert.equal(durationMs(undefined, 42), 42);
+  assert.equal(dueFrom({}, nowMs), null);
+  assert.equal(dueFrom({ in: "30m" }, nowMs), new Date(nowMs + 1_800_000).toISOString());
+  assert.equal(dueFrom({ at: "2026-11-06T03:00:00+08:00" }, nowMs), new Date("2026-11-06T03:00:00+08:00").toISOString());
+  assert.equal(dueFrom({ at: "not-a-date" }, nowMs), null);
+  assert.equal(dueFrom({ in: "soon" }, nowMs), null);
+});
+
+test("TC-SJ16 the local precheck refuses a bad job before writing any command", () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-precheck-"));
+  const file = join(dir, "relay-fake.json");
+  writeFileSync(file, JSON.stringify({ convs: { "th-1": { session: "fs-th-1" } }, seen: { "dup-1": "job-3" }, jobs: {} }));
+  assert.equal(precheckJob(file, { key: "th-1", dedupe: "new", brief: "看一下" }), null);
+  assert.equal(precheckJob(file, { key: "th-2", dedupe: "new", brief: "看一下" }), "unknown-key");
+  assert.equal(precheckJob(file, { key: "th-1", dedupe: "dup-1", brief: "看一下" }), "duplicate");
+  assert.equal(precheckJob(file, { key: "th-1", dedupe: "new", brief: "  " }), "empty");
+  assert.equal(precheckJob(file, { key: "th-1", dedupe: "new", brief: "x".repeat(8 * 1024 + 1) }), "too-long");
+  assert.equal(precheckJob(join(dir, "missing.json"), { key: "th-1", dedupe: "new", brief: "看一下" }), "no-state");
+  assert.deepEqual(readdirSync(dir), ["relay-fake.json"]);
 });

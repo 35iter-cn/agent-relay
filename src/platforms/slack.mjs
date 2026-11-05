@@ -531,6 +531,8 @@ export function createPlatform({ config, log: baseLog }) {
     piBin: config.workerBin,
     sessionFor,
 
+    selfContext: (key) => ({ chatId: channel, threadId: null, replyTo: key }),
+
     async start({ onMessage, onReady, core }) {
       coreRef = core;
       state = core.state;

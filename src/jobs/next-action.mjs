@@ -3,6 +3,8 @@ import { isLeaseAlive, readProcStartTicks } from "./lease.mjs";
 
 export function nextAction(job, { canEdit = false, chunkLimit, media = null, readStartTicks = readProcStartTicks, probeAlive } = {}) {
   switch (job.status) {
+    case "scheduled":
+      return { type: "none" };
     case "queued":
       return { type: "rerun" };
     case "running":

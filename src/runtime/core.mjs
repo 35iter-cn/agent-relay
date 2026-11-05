@@ -28,7 +28,11 @@ const MAX_SEEN = 5000;
 const COMMAND_TTL_MS = 10 * 60_000;
 const INTERRUPT_NOTICE = "⏸ 这一轮被 relay 重启打断：还在跑的进程已终止，会话与已完成的改动都保留，被打断那轮没发出来的输出不补发。直接回复这条消息就会接着之前的会话继续。";
 const ACTION_KINDS = { cancel: true, restart: true };
-const STATUS_TEXT = { done: "完成", failed: "失败", cancelled: "取消", interrupted: "被打断", queued: "排队" };
+const STATUS_TEXT = { done: "完成", failed: "失败", cancelled: "取消", interrupted: "被打断", queued: "排队", scheduled: "排定中" };
+const BRIEF_MAX_BYTES = 8 * 1024;
+const DEFAULT_GRACE_MS = 6 * 3_600_000;
+const RUNAWAY_PER_HOUR = relayEnv("RUNAWAY_PER_HOUR", 12);
+const SELF_TIMEOUT_MS = 15 * 60_000;
 const REAP_POLL_MS = 50;
 const MAX_DELIVERY_ATTEMPTS = 3;
 const DELIVERY_RETRY_MS = 1_500;
@@ -276,6 +280,12 @@ export function createCore({ adapter, config, deps = {} }) {
       try {
         if (command.op === "emit") {
           await notices.emit({ text: command.text, prompt: command.prompt ?? "" });
+        } else if (command.op === "schedule") {
+          const outcome = scheduleJob(command);
+          appendLog({ event: "command-schedule", ...outcome, key: String(command.key ?? "") });
+        } else if (command.op === "cancel") {
+          const outcome = cancelScheduled(command);
+          appendLog({ event: "command-cancel", ...outcome, dedupe: String(command.dedupe ?? "") });
         } else {
           await applyAction(command);
         }
@@ -328,10 +338,25 @@ export function createCore({ adapter, config, deps = {} }) {
       .map((item) => ({ label: item.label }));
   }
 
+  function isScheduled(job) {
+    return job.origin === "self" || job.origin === "external";
+  }
+
   function buildPrompt(job, entry) {
     const inbound = runtimeInbound(job);
     const root = entry.rootText || inbound.text;
     const base = { platform: adapter.name, adapter, inbound, root, running: runningJobs() };
+    if (isScheduled(job)) {
+      return prompts.selfJob({
+        ...base,
+        brief: inbound.text,
+        origin: job.origin,
+        chain: job.chain ?? 0,
+        dueAt: job.dueAt ?? null,
+        deliveredAt: isoAt(job.startedAt ?? now()),
+        lateMs: job.lateMs ?? 0,
+      });
+    }
     if (job.noticeId) {
       const notice = notices.get(job.noticeId);
       if (notice) return prompts.noticeReply({ ...base, notice });
@@ -342,6 +367,11 @@ export function createCore({ adapter, config, deps = {} }) {
   function execute(job, entry) {
     const inbound = runtimeInbound(job);
     const full = !hasSession(entry.session);
+    if (isScheduled(job)) {
+      const built = buildPrompt(job, entry);
+      const render = (prompt) => spawnWorker(job, entry, inbound, prompt, false);
+      return typeof built?.then === "function" ? built.then(render) : render(built);
+    }
     if (!full) return spawnWorker(job, entry, inbound, inbound.text, false);
     const built = buildPrompt(job, entry);
     const run = (prompt) => {
@@ -363,6 +393,7 @@ export function createCore({ adapter, config, deps = {} }) {
     const bin = adapter.worker === "stub" ? process.execPath : adapter.piBin;
     const command = adapter.buildWorker ? adapter.buildWorker({ prompt, full, session: entry.session }) : { bin, args };
     const started = now();
+    const timeoutMs = isScheduled(job) ? Math.min(adapter.timeoutMs, SELF_TIMEOUT_MS) : adapter.timeoutMs;
     appendLog({ event: "dispatch", job: job.id, key: inbound.key, session: entry.session, full });
 
     return new Promise((resolve) => {
@@ -370,6 +401,7 @@ export function createCore({ adapter, config, deps = {} }) {
         cwd: config.cwd,
         detached: true,
         stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, AGENT_RELAY_SELF_CHAIN: String(job.chain ?? 0) },
       });
       let stdout = "";
       let stderr = "";
@@ -386,7 +418,7 @@ export function createCore({ adapter, config, deps = {} }) {
       const timer = setTimeout(() => {
         killed = true;
         terminate(inbound.key, "").catch((error) => log("warn", "timeout-stop", String(error?.message ?? error)));
-      }, adapter.timeoutMs);
+      }, timeoutMs);
       const progressPromise = Promise.resolve(adapter.onProgress?.(ctxOf(job))).then((progress) => {
         if (!progress) return;
         job.progress = progress;
@@ -405,10 +437,21 @@ export function createCore({ adapter, config, deps = {} }) {
         const body = stdout.trim();
         const note = notes.get(inbound.key);
         notes.delete(inbound.key);
+        if (isScheduled(job) && !note && !killed && code === 0 && !body) {
+          job.answer = null;
+          job.status = "done";
+          job.lease = null;
+          job.updatedAt = isoNow();
+          save();
+          appendLog({ event: "job-empty", job: job.id, key: inbound.key });
+          runtimeInbounds.delete(job.id);
+          resolve();
+          return;
+        }
         const text = note
           ? note
           : killed
-            ? `已终止：本轮超过 ${Math.round(adapter.timeoutMs / 60_000)} 分钟未结束。回复「继续」可以接着做，前面已完成的改动都在。\n\n${body.slice(-1500)}`.trim()
+            ? `已终止：本轮超过 ${Math.round(timeoutMs / 60_000)} 分钟未结束。回复「继续」可以接着做，前面已完成的改动都在。\n\n${body.slice(-1500)}`.trim()
             : body || `[无输出] exit=${code}\n${stderr.trim().split("\n").slice(-10).join("\n")}`;
         job.answer = text;
         job.status = note ? "cancelled" : killed || code !== 0 ? "failed" : "answered";
@@ -619,6 +662,9 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   async function interrupt(job) {
+    if (!job.noticeSent && isScheduled(job)) {
+      job.noticeSent = true;
+    }
     if (!job.noticeSent) {
       try {
         await adapter.reply(ctxOf(job), INTERRUPT_NOTICE);
@@ -632,7 +678,8 @@ export function createCore({ adapter, config, deps = {} }) {
       }
       job.noticeSent = true;
     }
-    job.status = "interrupted";
+    job.status = isScheduled(job) ? "cancelled" : "interrupted";
+    job.error = isScheduled(job) ? "interrupted" : job.error;
     job.lease = null;
     job.answer = undefined;
     job.progress = null;
@@ -650,6 +697,7 @@ export function createCore({ adapter, config, deps = {} }) {
         continue;
       }
       const action = nextAction(job, { canEdit, chunkLimit: adapter.chunkLimit, media: mediaFor(job), readStartTicks, probeAlive });
+      if (action.type === "none") continue;
       if (action.type === "rerun") {
         if (!state.inbox.includes(job.id)) state.inbox.push(job.id);
         touched += 1;
@@ -716,6 +764,123 @@ export function createCore({ adapter, config, deps = {} }) {
     save();
     appendLog({ event: "accepted", job: job.id, key: job.key, session: job.session, notice: notice?.id ?? null });
     return job;
+  }
+
+  function callerChain() {
+    const inside = process.env.AGENT_RELAY_SELF_CHAIN;
+    return { inside: inside !== undefined, depth: Number(inside ?? 0) + 1 };
+  }
+
+  function recentlyScheduled(key) {
+    const since = now() - 3_600_000;
+    return Object.values(state.jobs ?? {}).filter((job) => job.key === key && job.origin !== "user" && Date.parse(job.createdAt ?? "") > since).length;
+  }
+
+  function findJobByDedupe(dedupe) {
+    const id = state.seen?.[dedupe];
+    if (id && state.jobs[id]) return state.jobs[id];
+    return Object.values(state.jobs ?? {}).find((job) => job.inbound?.dedupeId === dedupe) ?? null;
+  }
+
+  function scheduleJob({ key, dedupe, brief, dueAt, graceMs = DEFAULT_GRACE_MS } = {}) {
+    if (typeof adapter.selfContext !== "function") return { rejected: "platform" };
+    if (!state.convs[key]) return { rejected: "unknown-key" };
+    if (state.seen[dedupe]) return { rejected: "duplicate" };
+    const body = String(brief ?? "").trim();
+    if (!body) return { rejected: "empty" };
+    if (Buffer.byteLength(body) > BRIEF_MAX_BYTES) return { rejected: "too-long" };
+    if (recentlyScheduled(key) >= RUNAWAY_PER_HOUR) return { rejected: "runaway" };
+    const parsed = Date.parse(dueAt ?? "");
+    const at = Number.isFinite(parsed) ? parsed : now();
+    const context = adapter.selfContext(key);
+    if (!context) return { rejected: "platform" };
+    const inbound = {
+      key,
+      session: adapter.sessionFor(key),
+      dedupeId: dedupe,
+      text: body,
+      rootText: state.convs[key]?.rootText ?? body,
+      authorId: "self",
+      messageId: null,
+      ...context,
+    };
+
+    const caller = callerChain();
+    if (at <= now()) {
+      if (running.size >= adapter.maxWorkers && state.inbox.length >= adapter.queueDepth) return { rejected: "queue-full" };
+      const started = acceptJob(inbound);
+      started.origin = caller.inside ? "self" : "external";
+      started.chain = caller.depth;
+      started.dueAt = isoAt(at);
+      started.expiresAt = isoAt(at + graceMs);
+      save();
+      appendLog({ event: "job-started", job: started.id, key, chain: started.chain });
+      drainInbox();
+      return { job: started.id };
+    }
+
+    const job = createJob(state, inbound, isoNow);
+    job.origin = caller.inside ? "self" : "external";
+    job.chain = caller.depth;
+    job.dueAt = isoAt(at);
+    job.expiresAt = isoAt(at + graceMs);
+    job.status = "scheduled";
+    state.jobs[job.id] = job;
+    state.seen[dedupe] = job.id;
+    const entry = state.convs[key] ?? { session: job.session, rootText: job.inbound.rootText, lastMsgTs: null, activeJob: null };
+    if (!entry.rootText) entry.rootText = job.inbound.rootText;
+    state.convs[key] = entry;
+    pruneSeen();
+    save();
+    appendLog({ event: "job-scheduled", job: job.id, key, due: job.dueAt, chain: job.chain });
+    return { job: job.id };
+  }
+
+  function cancelScheduled({ dedupe } = {}) {
+    const job = findJobByDedupe(dedupe);
+    if (!job) return { rejected: "unknown" };
+    if (job.status !== "scheduled") return { rejected: "not-scheduled", job: job.id, status: job.status };
+    job.status = "cancelled";
+    job.error = "cancelled";
+    job.updatedAt = isoNow();
+    save();
+    appendLog({ event: "job-cancelled", job: job.id, key: job.key, dedupe });
+    return { job: job.id };
+  }
+
+  function startDueJobs() {
+    let touched = 0;
+    for (const job of Object.values(state.jobs ?? {})) {
+      if (job.status !== "scheduled") continue;
+      const due = Date.parse(job.dueAt ?? "");
+      if (!Number.isFinite(due) || due > now()) continue;
+      if (Date.parse(job.expiresAt ?? "") < now()) {
+        job.status = "cancelled";
+        job.error = "expired";
+        job.updatedAt = isoNow();
+        appendLog({ event: "job-expired", job: job.id, key: job.key, due: job.dueAt });
+        touched += 1;
+        continue;
+      }
+      if (keyIsBusy(job.key)) {
+        if (!job.waitLoggedAt) {
+          job.waitLoggedAt = isoNow();
+          appendLog({ event: "job-waiting-key", job: job.id, key: job.key, lateMs: now() - due });
+          touched += 1;
+        }
+        continue;
+      }
+      job.status = "queued";
+      job.lateMs = now() - due;
+      job.waitLoggedAt = undefined;
+      job.updatedAt = isoNow();
+      if (!state.inbox.includes(job.id)) state.inbox.push(job.id);
+      appendLog({ event: "job-due", job: job.id, key: job.key, lateMs: job.lateMs, chain: job.chain });
+      touched += 1;
+    }
+    if (touched) save();
+    drainInbox();
+    return touched;
   }
 
   async function handleNoticeReply(inbound, notice) {
@@ -868,6 +1033,9 @@ export function createCore({ adapter, config, deps = {} }) {
     applyAction,
     drainCommands,
     checkStall,
+    scheduleJob,
+    cancelScheduled,
+    startDueJobs,
     notices,
     prompts,
     stats: () => ({ running: running.size, pending: state.inbox.length }),

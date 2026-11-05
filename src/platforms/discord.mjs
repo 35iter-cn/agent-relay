@@ -625,6 +625,12 @@ export function createPlatform({ config, log: baseLog }) {
     piBin: config.workerBin,
     sessionFor,
 
+    selfContext: (key) => {
+      const value = String(key ?? "");
+      const threadId = value.startsWith("t") ? value.slice(1) : "";
+      return threadId ? { chatId: threadId, threadId, replyTo: null } : null;
+    },
+
     async start({ onMessage, onReady, core }) {
       coreRef = core;
       state = core.state;

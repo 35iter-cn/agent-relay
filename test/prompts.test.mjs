@@ -59,7 +59,7 @@ const stubSections = {
 test("TC-P1 every built-in section file carries a number prefix and a name", () => {
   const prompts = builtinPrompts();
   const sections = prompts.listSections();
-  assert.equal(sections.length, 16);
+  assert.equal(sections.length, 17);
   assert.deepEqual(sections.map((section) => section.order), [...sections.map((section) => section.order)].sort((a, b) => a - b));
   assert.equal(new Set(sections.map((section) => section.name)).size, sections.length);
 });
@@ -79,7 +79,7 @@ test("TC-P3 the boundary section holds exactly three rules and no relay-state or
   const bullets = text.split("\n").filter((line) => line.startsWith("- "));
   assert.equal(bullets.length, 3);
   assert.equal(bullets.filter((line) => line.includes("Slack")).length, 1);
-  assert.equal(bullets.filter((line) => /再发一遍/.test(line)).length, 1);
+  assert.equal(bullets.filter((line) => /再发一遍/.test(line)).length, 0);
   assert.equal(bullets.filter((line) => /回退点/.test(line)).length, 1);
   assert.equal(bullets.filter((line) => /git status/.test(line)).length, 1);
   assert.doesNotMatch(text, /systemd|relay-\{\{platform\}\}\.json/);
@@ -140,10 +140,10 @@ test("TC-P10 stallSection keeps the caller's order for several jobs", () => {
   assert.match(text, /agent-relay stall telegram cancel\|restart <key>/);
 });
 
-test("TC-P11 the built-in first-turn prompt stays within 1500 characters with no running job", () => {
+test("TC-P11 the built-in first-turn prompt stays within 1650 characters with no running job", () => {
   for (const platform of ["slack", "discord"]) {
     const text = render(builtinPrompts(), platform);
-    assert.ok(text.length <= 1500, `${platform} rendered ${text.length} characters`);
+    assert.ok(text.length <= 1650, `${platform} rendered ${text.length} characters`);
     assert.match(text, /## 处置卡住的 job/);
     assert.match(text, /单独一行写 `!\[\]\(\/绝对路径\.png\)`/);
     assert.doesNotMatch(text, /\{\{/);
