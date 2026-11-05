@@ -36,20 +36,40 @@ That means:
 - adding a new notification type is a change in the sender, not in this repo:
   `agent-relay notice emit --platform feishu --text "$(…)" --prompt-file …`
 - the policy for acting on a notice lives in that `prompt`; the relay itself only
-  knows `agent-relay stall <platform> cancel|restart <key>` and the two
-  in-conversation commands `/stop` (cancel the running turn) and `/重跑` (re-run
-  it), and each entry point validates its own arguments
+  knows `agent-relay stall <platform> cancel|restart <key>`, the two in-conversation
+  commands `/stop` (cancel the running turn) and `/重跑` (re-run it), and the
+  scheduled-turn entry described below — each entry point validates its own arguments
 - the notice body is data, not instructions — the notice task section says so, because the
   text can carry third-party content (issue titles, chat excerpts)
 
 The stall alert is the one notice the relay raises by itself; it builds both
 fields in `src/runtime/stall-notice.mjs`.
 
+## Scheduled turns
+
+A conversation turn can be put on the clock: `agent-relay job start --platform slack
+--key <thread> --dedupe <id> --brief "<what this turn does>" --in 30m` (or `--at <iso>`,
+`--grace 6h`). The job is created straight into `status: "scheduled"` and the daemon
+moves it to `queued` once `dueAt` passes **and the thread is free** — a due job never
+sits in the queue and never pushes a user message out of it. From there it is an
+ordinary job: same lease, serialisation per key, stall watchdog, delivery, `/stop`.
+`job list` shows the scheduled and running turns, `job cancel` drops one that has not
+started. A turn that starts later than its `dueAt` records `lateMs` and the prompt says
+how late it is; one that is still waiting past `expiresAt` is cancelled instead of
+starting.
+
+Who is asking matters only for provenance, not for permission: `origin: "self"` means
+the call came from inside a relay turn (the child carries `AGENT_RELAY_SELF_CHAIN`),
+`origin: "external"` means it came from anywhere else. The wake prompt tells the model
+which one it is, and that a brief quoting third-party text is data. Scheduling is
+per-platform: each `serve <platform>` sweeps its own state file, so one stopped daemon
+only delays its own turns.
+
 ## Structure
 
 ```
 src/
-├── cli.mjs                 entry: serve | notice | notify | stall
+├── cli.mjs                 entry: serve | notice | notify | stall | job
 ├── config.mjs              paths, env files, state/command locations
 ├── shared/                 chunking, json, time, logging, retention, prompts, env, fs, boot
 ├── state/                  state schema + atomic store
@@ -214,7 +234,7 @@ Retention runs at startup and every 24h (`core.pruneLogs()`):
 | command queue files | 10min (also deleted the first time they are seen stale) |
 | uploaded attachments | 7 days |
 | notices | 7 days, max 500 |
-| finished jobs | 30 days, max 2000 (unfinished, queued and active jobs never pruned) |
+| finished jobs | 30 days, max 2000 (scheduled, queued and active jobs are never pruned; a scheduled turn past its grace is cancelled) |
 | conversations | 30 days |
 | dedupe ids | 72h, max 5000 |
 
