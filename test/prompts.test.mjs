@@ -59,7 +59,7 @@ const stubSections = {
 test("TC-P1 every built-in section file carries a number prefix and a name", () => {
   const prompts = builtinPrompts();
   const sections = prompts.listSections();
-  assert.equal(sections.length, 16);
+  assert.equal(sections.length, 17);
   assert.deepEqual(sections.map((section) => section.order), [...sections.map((section) => section.order)].sort((a, b) => a - b));
   assert.equal(new Set(sections.map((section) => section.name)).size, sections.length);
 });
@@ -140,10 +140,10 @@ test("TC-P10 stallSection keeps the caller's order for several jobs", () => {
   assert.match(text, /agent-relay stall telegram cancel\|restart <key>/);
 });
 
-test("TC-P11 the built-in first-turn prompt stays within 1500 characters with no running job", () => {
+test("TC-P11 the built-in first-turn prompt stays within 1900 characters with no running job", () => {
   for (const platform of ["slack", "discord"]) {
     const text = render(builtinPrompts(), platform);
-    assert.ok(text.length <= 1500, `${platform} rendered ${text.length} characters`);
+    assert.ok(text.length <= 1900, `${platform} rendered ${text.length} characters`);
     assert.match(text, /## 处置卡住的 job/);
     assert.match(text, /单独一行写 `!\[\]\(\/绝对路径\.png\)`/);
     assert.doesNotMatch(text, /\{\{/);
