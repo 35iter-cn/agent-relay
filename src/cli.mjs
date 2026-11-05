@@ -20,6 +20,9 @@ export function usage(stream = process.stderr) {
       "  agent-relay notice emit --platform <p> (--text <text> | --text-file <path>) [--prompt <text> | --prompt-file <path>]",
       "  agent-relay notify <platform> <text>",
       "  agent-relay stall <platform> <cancel|restart> <key> [text]",
+      "  agent-relay job start --platform <p> --key <k> --dedupe <id> (--brief <text> | --brief-file <path>) [--in 30m | --at <iso>] [--grace 6h]",
+      "  agent-relay job cancel --platform <p> <dedupe>",
+      "  agent-relay job list --platform <p> [--key <k>]",
     ].join("\n") + "\n",
   );
   process.exit(2);
@@ -54,6 +57,62 @@ export async function sendCommand(config, platform, command, { waitMs = COMMAND_
   const deadline = Date.now() + waitMs;
   while (Date.now() < deadline && existsSync(file)) await sleep(COMMAND_POLL_MS);
   return { delivered: !existsSync(file), file };
+}
+
+export const BRIEF_MAX_BYTES = 8 * 1024;
+export const DEFAULT_GRACE_MS = 6 * 3_600_000;
+const DURATION_UNITS = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 };
+
+export function durationMs(value, fallback) {
+  if (value === undefined || value === null || value === "") return fallback;
+  const text = String(value).trim();
+  const match = /^(\d+(?:\.\d+)?)([smhd])$/.exec(text);
+  if (!match) return fallback;
+  return Math.round(Number(match[1]) * DURATION_UNITS[match[2]]);
+}
+
+export function dueFrom(flags, nowMs = Date.now()) {
+  if (typeof flags.at === "string") {
+    const at = Date.parse(flags.at);
+    return Number.isFinite(at) ? new Date(at).toISOString() : null;
+  }
+  if (flags.in !== undefined) {
+    const ms = durationMs(flags.in, null);
+    return ms === null ? null : new Date(nowMs + ms).toISOString();
+  }
+  return null;
+}
+
+export function precheckJob(stateFile, { key, dedupe, brief } = {}) {
+  if (!brief || !String(brief).trim()) return "empty";
+  if (Buffer.byteLength(String(brief)) > BRIEF_MAX_BYTES) return "too-long";
+  let state = null;
+  try {
+    state = JSON.parse(readFileSync(stateFile, "utf8"));
+  } catch {
+    return "no-state";
+  }
+  if (!state?.convs?.[key]) return "unknown-key";
+  if (state.seen?.[dedupe] || state.jobs?.[state.seen?.[dedupe] ?? ""]) return "duplicate";
+  return null;
+}
+
+function firstLine(text) {
+  return String(text ?? "").split("\n")[0].slice(0, 60);
+}
+
+function listJobs(stateFile, key) {
+  let state = null;
+  try {
+    state = JSON.parse(readFileSync(stateFile, "utf8"));
+  } catch {
+    return [];
+  }
+  return Object.values(state?.jobs ?? {})
+    .filter((job) => job.status === "scheduled" || job.status === "running")
+    .filter((job) => !key || job.key === key)
+    .sort((a, b) => String(a.dueAt ?? "").localeCompare(String(b.dueAt ?? "")))
+    .map((job) => `${job.status}\t${job.dueAt ?? "-"}\t${job.dedupeId ?? "-"}\t${firstLine(job.inbound?.text)}`);
 }
 
 export function textFlag(flags, name) {
@@ -140,6 +199,49 @@ export async function main(argv = process.argv.slice(2)) {
     if (!isPlatform(platform) || !ACTION_NAMES.has(action) || !key) usage();
     const result = await sendCommand(config, platform, { op: "action", action, key, text: words.join(" ").trim() });
     process.stdout.write(`${result.delivered ? "delivered" : "pending"}\n`);
+    return;
+  }
+  if (mode === "job") {
+    const [verb, ...args] = rest;
+    if (!["start", "cancel", "list"].includes(verb)) usage();
+    const { flags } = parseFlags(args);
+    const platform = flags.platform;
+    if (!isPlatform(platform)) usage();
+    if (verb === "list") {
+      const lines = listJobs(config.stateFile(platform), typeof flags.key === "string" ? flags.key : null);
+      process.stdout.write(`${lines.join("\n")}${lines.length ? "\n" : ""}`);
+      return;
+    }
+    if (verb === "cancel") {
+      const dedupe = typeof flags.dedupe === "string" ? flags.dedupe : rest[0];
+      if (!dedupe) usage();
+      const sent = await sendCommand(config, platform, { op: "cancel", dedupe });
+      process.stdout.write(`${sent.delivered ? "cancelled" : "pending"}\n`);
+      process.exitCode = sent.delivered ? 0 : 1;
+      return;
+    }
+    const key = typeof flags.key === "string" ? flags.key : "";
+    const dedupe = typeof flags.dedupe === "string" ? flags.dedupe : "";
+    const brief = textFlag(flags, "brief");
+    if (!key || !dedupe || !brief) usage();
+    const dueAt = dueFrom(flags);
+    if ((flags.at !== undefined || flags.in !== undefined) && !dueAt) usage();
+    const refused = precheckJob(config.stateFile(platform), { key, dedupe, brief });
+    if (refused) {
+      process.stderr.write(`refused: ${refused}\n`);
+      process.exitCode = 3;
+      return;
+    }
+    const sent = await sendCommand(config, platform, {
+      op: "schedule",
+      key,
+      dedupe,
+      brief,
+      dueAt,
+      graceMs: durationMs(flags.grace, DEFAULT_GRACE_MS),
+    });
+    process.stdout.write(`${sent.delivered ? (dueAt ? "scheduled" : "started") : "pending"}\n`);
+    process.exitCode = sent.delivered ? 0 : 1;
     return;
   }
   if (mode === "platforms") {
