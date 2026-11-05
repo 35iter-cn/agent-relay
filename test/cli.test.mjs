@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ACTION_NAMES, dueFrom, durationMs, parseFlags, precheckJob, sendCommand, textFlag } from "../src/cli.mjs";
+import { ACTION_NAMES, dueFrom, durationMs, listJobs, parseFlags, precheckJob, sendCommand, textFlag } from "../src/cli.mjs";
 import { readEnvFile } from "../src/config.mjs";
 
 test("readEnv parses KEY=value lines and ignores comments", () => {
@@ -84,4 +84,25 @@ test("TC-SJ16 the local precheck refuses a bad job before writing any command", 
   assert.equal(precheckJob(file, { key: "th-1", dedupe: "new", brief: "x".repeat(8 * 1024 + 1) }), "too-long");
   assert.equal(precheckJob(join(dir, "missing.json"), { key: "th-1", dedupe: "new", brief: "看一下" }), "no-state");
   assert.deepEqual(readdirSync(dir), ["relay-fake.json"]);
+});
+
+test("TC-SJ17 job list prints the dedupe id, the due time and the brief head", () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-list-"));
+  const file = join(dir, "relay-fake.json");
+  writeFileSync(
+    file,
+    JSON.stringify({
+      convs: {},
+      seen: {},
+      jobs: {
+        "job-1": { id: "job-1", key: "th-1", status: "scheduled", dueAt: "2026-11-05T21:00:00+08:00", inbound: { dedupeId: "d-later", text: "看进度\n第二行" } },
+        "job-2": { id: "job-2", key: "th-1", status: "done", inbound: { dedupeId: "d-done", text: "旧的一轮" } },
+        "job-3": { id: "job-3", key: "th-2", status: "running", dueAt: null, inbound: { dedupeId: "d-now", text: "本轮" } },
+      },
+    }),
+  );
+  const lines = listJobs(file, "th-1");
+  assert.deepEqual(lines, ["scheduled\t2026-11-05T21:00:00+08:00\td-later\t看进度"]);
+  assert.equal(listJobs(file, null).length, 2);
+  assert.deepEqual(listJobs(join(dir, "missing.json"), null), []);
 });

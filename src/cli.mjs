@@ -101,7 +101,7 @@ function firstLine(text) {
   return String(text ?? "").split("\n")[0].slice(0, 60);
 }
 
-function listJobs(stateFile, key) {
+export function listJobs(stateFile, key) {
   let state = null;
   try {
     state = JSON.parse(readFileSync(stateFile, "utf8"));
@@ -112,7 +112,7 @@ function listJobs(stateFile, key) {
     .filter((job) => job.status === "scheduled" || job.status === "running")
     .filter((job) => !key || job.key === key)
     .sort((a, b) => String(a.dueAt ?? "").localeCompare(String(b.dueAt ?? "")))
-    .map((job) => `${job.status}\t${job.dueAt ?? "-"}\t${job.dedupeId ?? "-"}\t${firstLine(job.inbound?.text)}`);
+    .map((job) => `${job.status}\t${job.dueAt ?? "-"}\t${job.inbound?.dedupeId ?? "-"}\t${firstLine(job.inbound?.text)}`);
 }
 
 export function textFlag(flags, name) {
