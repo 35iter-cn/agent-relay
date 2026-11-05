@@ -338,10 +338,25 @@ export function createCore({ adapter, config, deps = {} }) {
       .map((item) => ({ label: item.label }));
   }
 
+  function isScheduled(job) {
+    return job.origin === "self" || job.origin === "external";
+  }
+
   function buildPrompt(job, entry) {
     const inbound = runtimeInbound(job);
     const root = entry.rootText || inbound.text;
     const base = { platform: adapter.name, adapter, inbound, root, running: runningJobs() };
+    if (isScheduled(job)) {
+      return prompts.selfJob({
+        ...base,
+        brief: inbound.text,
+        origin: job.origin,
+        chain: job.chain ?? 0,
+        dueAt: job.dueAt ?? null,
+        deliveredAt: isoAt(job.startedAt ?? now()),
+        lateMs: job.lateMs ?? 0,
+      });
+    }
     if (job.noticeId) {
       const notice = notices.get(job.noticeId);
       if (notice) return prompts.noticeReply({ ...base, notice });
@@ -352,6 +367,11 @@ export function createCore({ adapter, config, deps = {} }) {
   function execute(job, entry) {
     const inbound = runtimeInbound(job);
     const full = !hasSession(entry.session);
+    if (isScheduled(job)) {
+      const built = buildPrompt(job, entry);
+      const render = (prompt) => spawnWorker(job, entry, inbound, prompt, false);
+      return typeof built?.then === "function" ? built.then(render) : render(built);
+    }
     if (!full) return spawnWorker(job, entry, inbound, inbound.text, false);
     const built = buildPrompt(job, entry);
     const run = (prompt) => {
@@ -373,6 +393,7 @@ export function createCore({ adapter, config, deps = {} }) {
     const bin = adapter.worker === "stub" ? process.execPath : adapter.piBin;
     const command = adapter.buildWorker ? adapter.buildWorker({ prompt, full, session: entry.session }) : { bin, args };
     const started = now();
+    const timeoutMs = isScheduled(job) ? Math.min(adapter.timeoutMs, SELF_TIMEOUT_MS) : adapter.timeoutMs;
     appendLog({ event: "dispatch", job: job.id, key: inbound.key, session: entry.session, full });
 
     return new Promise((resolve) => {
@@ -380,6 +401,7 @@ export function createCore({ adapter, config, deps = {} }) {
         cwd: config.cwd,
         detached: true,
         stdio: ["ignore", "pipe", "pipe"],
+        env: isScheduled(job) ? { ...process.env, AGENT_RELAY_SELF_CHAIN: String(job.chain ?? 0) } : process.env,
       });
       let stdout = "";
       let stderr = "";
@@ -396,7 +418,7 @@ export function createCore({ adapter, config, deps = {} }) {
       const timer = setTimeout(() => {
         killed = true;
         terminate(inbound.key, "").catch((error) => log("warn", "timeout-stop", String(error?.message ?? error)));
-      }, adapter.timeoutMs);
+      }, timeoutMs);
       const progressPromise = Promise.resolve(adapter.onProgress?.(ctxOf(job))).then((progress) => {
         if (!progress) return;
         job.progress = progress;
@@ -415,10 +437,21 @@ export function createCore({ adapter, config, deps = {} }) {
         const body = stdout.trim();
         const note = notes.get(inbound.key);
         notes.delete(inbound.key);
+        if (isScheduled(job) && !note && !killed && !body) {
+          job.answer = null;
+          job.status = "done";
+          job.lease = null;
+          job.updatedAt = isoNow();
+          save();
+          appendLog({ event: "job-empty", job: job.id, key: inbound.key });
+          runtimeInbounds.delete(job.id);
+          resolve();
+          return;
+        }
         const text = note
           ? note
           : killed
-            ? `已终止：本轮超过 ${Math.round(adapter.timeoutMs / 60_000)} 分钟未结束。回复「继续」可以接着做，前面已完成的改动都在。\n\n${body.slice(-1500)}`.trim()
+            ? `已终止：本轮超过 ${Math.round(timeoutMs / 60_000)} 分钟未结束。回复「继续」可以接着做，前面已完成的改动都在。\n\n${body.slice(-1500)}`.trim()
             : body || `[无输出] exit=${code}\n${stderr.trim().split("\n").slice(-10).join("\n")}`;
         job.answer = text;
         job.status = note ? "cancelled" : killed || code !== 0 ? "failed" : "answered";
@@ -629,6 +662,9 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   async function interrupt(job) {
+    if (!job.noticeSent && isScheduled(job)) {
+      job.noticeSent = true;
+    }
     if (!job.noticeSent) {
       try {
         await adapter.reply(ctxOf(job), INTERRUPT_NOTICE);
@@ -642,7 +678,8 @@ export function createCore({ adapter, config, deps = {} }) {
       }
       job.noticeSent = true;
     }
-    job.status = "interrupted";
+    job.status = isScheduled(job) ? "cancelled" : "interrupted";
+    job.error = isScheduled(job) ? "interrupted" : job.error;
     job.lease = null;
     job.answer = undefined;
     job.progress = null;
