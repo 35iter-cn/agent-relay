@@ -152,8 +152,12 @@ async function serve(platform, config, log) {
   const core = createCore({ adapter, config });
   core.pruneLogs();
   setInterval(() => core.pruneLogs(), 86_400_000).unref();
-  core.drainCommands().catch((error) => log("error", "command", String(error?.stack ?? error)));
-  setInterval(() => core.drainCommands().catch((error) => log("error", "command", String(error?.stack ?? error))), 15_000).unref();
+  const tick = () =>
+    core.drainCommands()
+      .then(() => core.startDueJobs())
+      .catch((error) => log("error", "command", String(error?.stack ?? error)));
+  tick();
+  setInterval(tick, 15_000).unref();
   await adapter.start({
     onMessage: (inbound) => core.handle(inbound),
     onReady: () => {
