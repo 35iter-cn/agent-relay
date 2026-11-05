@@ -650,6 +650,7 @@ export function createCore({ adapter, config, deps = {} }) {
         continue;
       }
       const action = nextAction(job, { canEdit, chunkLimit: adapter.chunkLimit, media: mediaFor(job), readStartTicks, probeAlive });
+      if (action.type === "none") continue;
       if (action.type === "rerun") {
         if (!state.inbox.includes(job.id)) state.inbox.push(job.id);
         touched += 1;
