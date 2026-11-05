@@ -401,7 +401,7 @@ export function createCore({ adapter, config, deps = {} }) {
         cwd: config.cwd,
         detached: true,
         stdio: ["ignore", "pipe", "pipe"],
-        env: isScheduled(job) ? { ...process.env, AGENT_RELAY_SELF_CHAIN: String(job.chain ?? 0) } : process.env,
+        env: { ...process.env, AGENT_RELAY_SELF_CHAIN: String(job.chain ?? 0) },
       });
       let stdout = "";
       let stderr = "";
@@ -437,7 +437,7 @@ export function createCore({ adapter, config, deps = {} }) {
         const body = stdout.trim();
         const note = notes.get(inbound.key);
         notes.delete(inbound.key);
-        if (isScheduled(job) && !note && !killed && !body) {
+        if (isScheduled(job) && !note && !killed && code === 0 && !body) {
           job.answer = null;
           job.status = "done";
           job.lease = null;
@@ -766,8 +766,9 @@ export function createCore({ adapter, config, deps = {} }) {
     return job;
   }
 
-  function chainOf() {
-    return Number(process.env.AGENT_RELAY_SELF_CHAIN ?? 0);
+  function callerChain() {
+    const inside = process.env.AGENT_RELAY_SELF_CHAIN;
+    return { inside: inside !== undefined, depth: Number(inside ?? 0) + 1 };
   }
 
   function recentlyScheduled(key) {
@@ -788,7 +789,7 @@ export function createCore({ adapter, config, deps = {} }) {
     const body = String(brief ?? "").trim();
     if (!body) return { rejected: "empty" };
     if (Buffer.byteLength(body) > BRIEF_MAX_BYTES) return { rejected: "too-long" };
-    if (recentlyScheduled(key) > RUNAWAY_PER_HOUR) return { rejected: "runaway" };
+    if (recentlyScheduled(key) >= RUNAWAY_PER_HOUR) return { rejected: "runaway" };
     const parsed = Date.parse(dueAt ?? "");
     const at = Number.isFinite(parsed) ? parsed : now();
     const context = adapter.selfContext(key);
@@ -804,11 +805,12 @@ export function createCore({ adapter, config, deps = {} }) {
       ...context,
     };
 
+    const caller = callerChain();
     if (at <= now()) {
       if (running.size >= adapter.maxWorkers && state.inbox.length >= adapter.queueDepth) return { rejected: "queue-full" };
       const started = acceptJob(inbound);
-      started.origin = chainOf() > 0 ? "self" : "external";
-      started.chain = chainOf();
+      started.origin = caller.inside ? "self" : "external";
+      started.chain = caller.depth;
       started.dueAt = isoAt(at);
       started.expiresAt = isoAt(at + graceMs);
       save();
@@ -818,8 +820,8 @@ export function createCore({ adapter, config, deps = {} }) {
     }
 
     const job = createJob(state, inbound, isoNow);
-    job.origin = chainOf() > 0 ? "self" : "external";
-    job.chain = chainOf();
+    job.origin = caller.inside ? "self" : "external";
+    job.chain = caller.depth;
     job.dueAt = isoAt(at);
     job.expiresAt = isoAt(at + graceMs);
     job.status = "scheduled";
@@ -1031,6 +1033,8 @@ export function createCore({ adapter, config, deps = {} }) {
     applyAction,
     drainCommands,
     checkStall,
+    scheduleJob,
+    cancelScheduled,
     startDueJobs,
     notices,
     prompts,
