@@ -10,7 +10,6 @@ export function emptyState() {
     inbox: [],
     notices: {},
     loops: {},
-    loopRuns: {},
     meta: { schemaVersion: SCHEMA_VERSION, jobSeq: 0, noticeSeq: 0, loopRoundStamps: [] },
   };
 }
@@ -25,7 +24,6 @@ export function upgradeState(state) {
   next.inbox = next.inbox ?? [];
   next.notices = next.notices ?? {};
   next.loops = next.loops ?? {};
-  next.loopRuns = next.loopRuns ?? {};
   next.meta.loopRoundStamps = next.meta.loopRoundStamps ?? [];
   if (next.meta.schemaVersion !== SCHEMA_VERSION) {
     for (const [dedupeId, value] of Object.entries(next.seen)) {

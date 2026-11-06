@@ -76,7 +76,9 @@ agent-relay loop run loop-slack-1  # start one round right now
 agent-relay loop log loop-slack-1  # runId / time / trigger / outcome
 ```
 
-Every round is a **fresh session**: the round's conversation key is `<loopId>-r<round>`, so nothing from the previous round leaks in. The round's stdout is posted to the platform's configured channel as one ordinary message, and that message's id is recorded in `state.loopRuns`. Replying to it — or, on discord, talking inside the thread opened under it — lands on the same key and therefore the same session: the agent continues with the round's context instead of starting over.
+Every round is a **fresh session**: the round's conversation key is `<loopId>-r<round>`, so nothing from the previous round leaks in. The round's output goes out through the **notice entry** with a conversation binding (`reply: { mode: "conversation", key }`), which is the one deliberate difference to an ordinary notice: a reply to it continues *that round's* session instead of opening a `notice-<id>` conversation. On discord the round message additionally gets a thread, and talking inside it lands on the same key.
+
+A notice is never pruned on its own. A bound notice stores only its binding, not the body — the round's text already lives in the history file, and keeping a copy in the state file would mean rewriting it on every job change.
 
 The old round history lives in `~/.config/agent-relay/loops/<loopId>.jsonl` (last 50 rounds, 90 days); a round never receives the previous output — it is told to read it with `loop log` / `loop show-run`.
 

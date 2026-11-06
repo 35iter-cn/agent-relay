@@ -12,7 +12,8 @@ is not repeated here.
 - **`bun test` green before a push.** `bun run e2e` green when the change touches
   stall handling or termination.
 
-- **A loop round is delivered by `finishRound`, not by `notices.emit`.** A notice reply resolves to the conversation key `notice-<id>` (`src/runtime/core.mjs`), so delivering a round through the notice service would silently break "reply continues that round's session". Keep the round's message id in `state.loopRuns` and let `matchRound` bind the reply.
+- **Anything the relay says on its own initiative goes through the notice entry**, and the notice says how a reply is handled: `reply: { mode: "conversation", key }` continues that conversation's session, everything else (`mode: "prompt"`, or no binding at all) keeps the `notice-<id>` behaviour. A loop round is a bound notice — delivering it any other way either loses the reply binding or hands the reply to the wrong session.
+- **Notices are not pruned, and a bound notice carries no payload.** `emit` stores `text`/`prompt` only for prompt-mode notices; a bound one keeps `{messageId, reply}` alone, because the state file is rewritten on every job change and the body already exists elsewhere.
 
 ## Tests
 

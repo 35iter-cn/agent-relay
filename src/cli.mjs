@@ -23,7 +23,7 @@ export function usage(stream = process.stderr) {
     [
       "usage:",
       "  agent-relay serve <discord|feishu|mattermost|slack|telegram>",
-      "  agent-relay notice emit --platform <p> (--text <text> | --text-file <path>) [--prompt <text> | --prompt-file <path>]",
+      "  agent-relay notice emit --platform <p> (--text <text> | --text-file <path>) [--prompt <text> | --prompt-file <path>] [--reply-mode conversation --reply-key <key>]",
       "  agent-relay notify <platform> <text>",
       "  agent-relay stall <platform> <cancel|restart> <key> [text]",
       "  agent-relay job start --platform <p> --key <k> --dedupe <id> (--brief <text> | --brief-file <path>) [--in 30m | --at <iso>] [--grace 6h]",
@@ -137,8 +137,8 @@ export function textFlag(flags, name) {
   return typeof flags[name] === "string" ? flags[name].trim() : "";
 }
 
-export async function emitNotice(config, platform, text, prompt = "", log = createLog()) {
-  const sent = await sendCommand(config, platform, { op: "emit", text, prompt }).catch((error) => {
+export async function emitNotice(config, platform, text, prompt = "", log = createLog(), reply = null) {
+  const sent = await sendCommand(config, platform, { op: "emit", text, prompt, reply }).catch((error) => {
     log("warn", "notice-command", String(error?.message ?? error));
     return { delivered: false };
   });
@@ -385,7 +385,10 @@ export async function main(argv = process.argv.slice(2)) {
     const text = textFlag(flags, "text");
     const prompt = textFlag(flags, "prompt");
     if (!isPlatform(platform) || !text) usage();
-    const result = await emitNotice(config, platform, text, prompt, log);
+    const replyMode = typeof flags["reply-mode"] === "string" ? flags["reply-mode"] : "";
+    const replyKey = typeof flags["reply-key"] === "string" ? flags["reply-key"] : "";
+    const reply = replyMode ? { mode: replyMode, key: replyKey || undefined } : null;
+    const result = await emitNotice(config, platform, text, prompt, log, reply);
     process.stdout.write(`${result.delivered ? "delivered" : `sent ${result.messageId ? 1 : 0}`}\n`);
     return;
   }

@@ -15,7 +15,7 @@ import {
   validateSchedule,
 } from "../src/loops/model.mjs";
 import { loopDueAt, loopLateMs, roundSkipReason, roundsInLastHour } from "../src/loops/schedule.mjs";
-import { matchRound, pruneRounds, roundKeyFor, roundTitle, truncateOutput } from "../src/loops/round.mjs";
+import { roundKeyFor, roundTitle, truncateOutput } from "../src/loops/round.mjs";
 import { appendRound, findRound, listRounds, loopHistoryFile, pruneHistory, readRoundLines } from "../src/loops/history.mjs";
 
 const nowIso = () => new Date().toISOString();
@@ -88,18 +88,6 @@ test("TC-LP7 a round key is derived from the loop id and the round number", () =
   assert.equal(truncateOutput("abc"), "abc");
   const big = "轮".repeat(20_000);
   assert.ok(Buffer.byteLength(truncateOutput(big)) <= 32 * 1024);
-});
-
-test("TC-LP8 the round index matches every reply id and prunes by age", () => {
-  const runs = {
-    "m-1": { loopId: "loop-slack-1", runId: "loop-slack-1-r1", key: "loop-slack-1-r1", at: "2026-11-06T00:00:00.000Z" },
-    "m-2": { loopId: "loop-slack-1", runId: "loop-slack-1-r2", key: "loop-slack-1-r2", at: "2026-11-06T00:10:00.000Z" },
-  };
-  assert.equal(matchRound(runs, ["m-2", "x"]).runId, "loop-slack-1-r2");
-  assert.equal(matchRound(runs, ["nope"]), null);
-  assert.equal(matchRound(runs, []), null);
-  assert.equal(pruneRounds(runs, Date.parse("2026-12-10T00:00:00.000Z")), 2);
-  assert.deepEqual(runs, {});
 });
 
 test("TC-LP9 history appends, reads back newest first, finds a run and keeps the tail only", () => {

@@ -73,8 +73,9 @@ function harness({ state, adapterOverrides = {}, spawn = () => fakeChild(), sect
       return { messageId };
     },
     postNotice: async (text) => {
-      replies.push({ key: "notice", text });
-      return { messageId: `n-${replies.length}` };
+      const messageId = `n-${replies.length + 1}`;
+      replies.push({ key: "notice", text, messageId });
+      return { messageId };
     },
     ...adapterOverrides,
   };
@@ -124,11 +125,14 @@ test("TC-LR1 a due loop starts a round in a fresh session and posts it to the ch
   assert.equal(core.state.loops["loop-fake-1"].lastRound, 1);
   assert.equal(core.state.loops["loop-fake-1"].lastOutcome, "ok");
   assert.equal(replies.length, 1);
-  assert.equal(replies[0].key, "loop-fake-1-r1");
+  assert.equal(replies[0].key, "notice");
   assert.equal(replies[0].text, "轮次输出");
-  const run = core.state.loopRuns[replies[0].messageId];
-  assert.equal(run.runId, "loop-fake-1-r1");
-  assert.equal(run.key, "loop-fake-1-r1");
+  const notice = core.state.notices[Object.keys(core.state.notices)[0]];
+  assert.equal(notice.messageId, replies[0].messageId);
+  assert.deepEqual(notice.reply, { mode: "conversation", key: "loop-fake-1-r1" });
+  assert.equal(notice.text, undefined, "a bound notice keeps no copy of the round output");
+  assert.equal(notice.prompt, undefined);
+  assert.equal(core.state.loops["loop-fake-1"].lastMessageId, replies[0].messageId);
 });
 
 test("TC-LR2 the round prompt carries the loop prompt and the previous outcome but never the previous output", async () => {
@@ -209,21 +213,21 @@ test("TC-LR5 three failed rounds pause the loop and raise one notice", async () 
   const loop = core.state.loops["loop-fake-1"];
   assert.equal(loop.failStreak, 3);
   assert.equal(loop.state, "paused");
-  assert.equal(replies.filter((item) => item.key === "notice").length, 1);
-  assert.match(replies.find((item) => item.key === "notice").text, /连续 3 轮失败/);
+  const pauseNotices = Object.values(core.state.notices).filter((notice) => /连续 3 轮失败/.test(notice.text ?? ""));
+  assert.equal(pauseNotices.length, 1);
 });
 
-test("TC-LR6 a round without a delivered message id is failed and never indexed", async () => {
+test("TC-LR6 a round whose notice has no message id is failed and never bound", async () => {
   const { core } = harness({
     state: { loops: { "loop-fake-1": seededLoop() } },
-    adapterOverrides: { reply: async () => null },
+    adapterOverrides: { postNotice: async () => ({}) },
   });
   await core.startDueLoops();
   await settle();
   const loop = core.state.loops["loop-fake-1"];
   assert.equal(loop.lastOutcome, "failed");
   assert.equal(loop.failStreak, 1);
-  assert.deepEqual(core.state.loopRuns, {});
+  assert.equal(loop.lastMessageId, null);
 });
 
 test("TC-LR7 the hourly round budget skips the tick and warns once", async () => {
@@ -245,7 +249,7 @@ test("TC-LR8 the thread hook receives the round key and is optional", async () =
   await settle();
   assert.equal(calls.length, 1);
   assert.equal(calls[0].key, "loop-fake-1-r1");
-  assert.equal(calls[0].messageId, "m-1");
+  assert.equal(calls[0].messageId, "n-1");
   assert.match(calls[0].name, /loop-fake-1 第 1 轮/);
 
   const plain = harness({ state: { loops: { "loop-fake-1": seededLoop({ thread: false }) } }, adapterOverrides: { openRoundThread: async (args) => (calls.push(args), null) } });

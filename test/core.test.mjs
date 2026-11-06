@@ -190,7 +190,7 @@ test("TC-6 state writes are atomic and leave no temp files behind", async () => 
   await tick();
   const leftovers = readdirSync(dir).filter((name) => name.includes(".tmp-"));
   assert.deepEqual(leftovers, []);
-  assert.deepEqual(Object.keys(readJson(stateFile, {})), ["cursor", "seen", "convs", "alerts", "jobs", "inbox", "notices", "loops", "loopRuns", "meta"]);
+  assert.deepEqual(Object.keys(readJson(stateFile, {})), ["cursor", "seen", "convs", "alerts", "jobs", "inbox", "notices", "loops", "meta"]);
 });
 
 test("TC-7b pruneLogs drops stale commands, old finished jobs and asks the platform to prune", async () => {

@@ -20,7 +20,7 @@ import { RESTART_PROMPT, stallNoticePrompt, stallNoticeText } from "./stall-noti
 import { createPrompts } from "./prompts.mjs";
 import { activeLoopCount, createLoop, isLoopId, nextLoopId, platformOfLoopId, validateLoopChange, validatePrompt, validateSchedule } from "../loops/model.mjs";
 import { LOOP_ROUNDS_PER_HOUR, LOOP_TIMEOUT_MS, loopLateMs, roundSkipReason, roundsInLastHour } from "../loops/schedule.mjs";
-import { matchRound, pruneRounds, roundKeyFor, roundTitle, truncateOutput } from "../loops/round.mjs";
+import { roundKeyFor, roundTitle, truncateOutput } from "../loops/round.mjs";
 import { appendRound, findRound, listRounds, pruneHistory } from "../loops/history.mjs";
 
 const STALL_MS = relayEnv("STALL_MS", 10 * 60_000);
@@ -284,7 +284,7 @@ export function createCore({ adapter, config, deps = {} }) {
       if (!Number.isFinite(writtenAt) || now() - writtenAt > COMMAND_TTL_MS) continue;
       try {
         if (command.op === "emit") {
-          await notices.emit({ text: command.text, prompt: command.prompt ?? "" });
+          await notices.emit({ text: command.text, prompt: command.prompt ?? "", reply: command.reply ?? null });
         } else if (command.op === "schedule") {
           const outcome = scheduleJob(command);
           appendLog({ event: "command-schedule", ...outcome, key: String(command.key ?? "") });
@@ -389,6 +389,7 @@ export function createCore({ adapter, config, deps = {} }) {
           appendLog({ event: "empty-prompt", job: job.id, key: inbound.key });
           job.status = "failed";
           job.error = "empty-prompt";
+          job.loopRoundStatus = "failed";
           job.updatedAt = isoNow();
           save();
           return finishRound(job);
@@ -482,9 +483,13 @@ export function createCore({ adapter, config, deps = {} }) {
         job.status = note ? "cancelled" : killed || code !== 0 ? "failed" : "answered";
         job.lease = null;
         job.updatedAt = isoNow();
-        if (job.origin === "loop") job.loopOutput = text;
+        if (job.origin === "loop") {
+          job.loopOutput = text;
+          job.loopRoundStatus = job.status;
+        }
         save();
-        await deliver(job);
+        if (job.origin === "loop") await deliverRound(job);
+        else await deliver(job);
         if (job.origin === "loop") await finishRound(job);
         runtimeInbounds.delete(job.id);
         resolve();
@@ -923,16 +928,40 @@ export function createCore({ adapter, config, deps = {} }) {
     return job;
   }
 
+  async function deliverRound(job) {
+    const text = String(job.answer ?? "").trim() || "[无输出]";
+    for (let attempt = 1; attempt <= MAX_DELIVERY_ATTEMPTS; attempt += 1) {
+      try {
+        const notice = await notices.emit({ text, reply: { mode: "conversation", key: job.key } });
+        job.noticeId = notice.id;
+        job.parts = [{ i: 0, messageId: notice.messageId ?? null, hash: hashOf(text), sentAt: isoNow() }];
+        job.status = "done";
+        job.answer = undefined;
+        job.updatedAt = isoNow();
+        save();
+        return job.status;
+      } catch (error) {
+        log("warn", "round-deliver", `attempt=${attempt}`, String(error?.message ?? error));
+        job.deliveryAttempts = attempt;
+        job.deliveryFailedAt = isoNow();
+        if (attempt < MAX_DELIVERY_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, deliveryRetryMs));
+      }
+    }
+    job.status = "failed";
+    job.error = job.error ?? "reply-failed";
+    job.updatedAt = isoNow();
+    save();
+    return job.status;
+  }
+
   async function finishRound(job) {
     const loop = state.loops?.[job.loop?.id];
     const runId = roundKeyFor(job.loop.id, job.loop.round);
     const messageId = job.parts?.[0]?.messageId ?? null;
-    const delivered = job.status === "done" || job.status === "answered";
-    const outcome = delivered && messageId ? "ok" : "failed";
-    if (outcome === "failed" && !job.error) job.error = delivered ? "no-message-id" : job.status;
-    if (messageId) {
-      state.loopRuns[messageId] = { loopId: job.loop.id, runId, key: job.key, rootText: job.inbound.rootText, at: isoNow() };
-    }
+    const delivered = job.status === "done";
+    const roundOk = job.loopRoundStatus !== "failed";
+    const outcome = roundOk && delivered && messageId ? "ok" : "failed";
+    if (outcome === "failed" && !job.error) job.error = roundOk ? (delivered ? "no-message-id" : "reply-failed") : job.loopRoundStatus ?? "failed";
     if (loop) {
       loop.lastMessageId = messageId;
       loop.lastOutcome = outcome;
@@ -974,8 +1003,8 @@ export function createCore({ adapter, config, deps = {} }) {
     }
   }
 
-  function handleRoundReply(inbound, round) {
-    const keyed = { ...inbound, key: round.key, session: adapter.sessionFor(round.key), rootText: round.rootText ?? inbound.text };
+  function handleBoundReply(inbound, key) {
+    const keyed = { ...inbound, key, session: adapter.sessionFor(key), rootText: state.convs[key]?.rootText ?? inbound.text };
     const job = acceptJob(keyed);
     if (running.size >= adapter.maxWorkers && state.inbox.length > adapter.queueDepth) {
       state.inbox = state.inbox.filter((id) => id !== job.id);
@@ -987,7 +1016,7 @@ export function createCore({ adapter, config, deps = {} }) {
       log("ignore", "queue-full", job.id);
       return "busy";
     }
-    appendLog({ event: "loop-reply", loop: round.loopId, runId: round.runId, job: job.id, key: round.key });
+    appendLog({ event: "bound-reply", job: job.id, key });
     drainInbox();
     return "accepted";
   }
@@ -1122,6 +1151,7 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   async function handleNoticeReply(inbound, notice) {
+    if (notice.reply?.mode === "conversation" && notice.reply.key) return handleBoundReply(inbound, notice.reply.key);
     const key = `notice-${notice.id}`;
     const keyed = {
       ...inbound,
@@ -1179,8 +1209,6 @@ export function createCore({ adapter, config, deps = {} }) {
       return "duplicate";
     }
     if (notice) return handleNoticeReply(inbound, notice);
-    const round = matchRound(state.loopRuns, inbound.replyIds ?? []);
-    if (round) return handleRoundReply(inbound, round);
 
     const job = acceptJob(inbound);
     if (running.size >= adapter.maxWorkers && state.inbox.length > adapter.queueDepth) {
@@ -1283,10 +1311,7 @@ export function createCore({ adapter, config, deps = {} }) {
     pruneLogs: () => {
       const logs = pruneOldFiles(logDir, RETENTION_MS, now());
       pruneOldFiles(commandDir, COMMAND_TTL_MS, now());
-      notices.prune();
-      const rounds = pruneRounds(state.loopRuns, now());
       const roundsHistory = pruneHistory(loopHistoryDir, now());
-      if (rounds) save();
       const jobs = pruneState(state, now());
       if (jobs) save();
       try {
@@ -1295,7 +1320,7 @@ export function createCore({ adapter, config, deps = {} }) {
       } catch (error) {
         log("warn", "prune", String(error?.message ?? error));
       }
-      return { logs, jobs, rounds, roundsHistory };
+      return { logs, jobs, roundsHistory };
     },
     log,
   };
