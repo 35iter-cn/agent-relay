@@ -12,10 +12,14 @@ is not repeated here.
 - **`bun test` green before a push.** `bun run e2e` green when the change touches
   stall handling or termination.
 
+- **Anything the relay says on its own initiative goes through the notice entry**, and the notice says how a reply is handled: `reply: { mode: "conversation", key }` continues that conversation's session, everything else (`mode: "prompt"`, or no binding at all) keeps the `notice-<id>` behaviour. A loop round is a bound notice — delivering it any other way either loses the reply binding or hands the reply to the wrong session.
+- **Notices are not pruned, and a bound notice carries no payload.** `emit` stores `text`/`prompt` only for prompt-mode notices; a bound one keeps `{messageId, reply}` alone, because the state file is rewritten on every job change and the body already exists elsewhere.
+
 ## Tests
 
 `bun test` runs `test/<module>.test.mjs`, one file per module. Name cases
-`TC-<group><n>` — `TC-ST16` for stall, `TC-V3` for prompt variants. Ids are stable and get
+`TC-<group><n>` — `TC-ST16` for stall, `TC-V3` for prompt variants, `TC-LP<n>` /
+`TC-LR<n>` / `TC-LC<n>` for loop records, loop rounds and the loop CLI. Ids are stable and get
 reused in PR notes; never renumber them.
 
 Assert the behaviour, not the existence. When a fix involves a number a user will
@@ -25,6 +29,8 @@ nothing.
 `bun run e2e` runs `test/e2e/*.e2e.mjs`: real child processes, real state, event
 and event files, real command queue — only the IM delivery is faked. It is not
 part of `bun test`, because it takes seconds instead of milliseconds.
+
+- **The first-turn prompt has a budget** (`test/prompts.test.mjs` `FIRST_TURN_PROMPT_BUDGET`). Adding a capability the model must know about means raising the number on purpose and saying why in the PR, never letting the guard be the thing that decides.
 
 ## Deploying
 

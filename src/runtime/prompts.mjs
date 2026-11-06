@@ -10,6 +10,7 @@ export const SECTION_FILE = /^(\d{2})-(.+)\.md$/;
 export const ENTRY_SECTIONS = {
   conversation: ["header-conversation", "task", "record", "reply", "surface", "situation", "stall", "self-wake", "boundary"],
   notice: ["header-notice", "notice-task", "record", "reply", "situation", "self-wake", "boundary"],
+  loop: ["header-loop", "loop-task", "record", "reply", "surface", "situation", "stall", "boundary"],
 };
 
 export function rootSectionText(root, message) {
@@ -142,7 +143,7 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
     };
   }
 
-  function buildPrompt({ entry, platform, adapter, inbound, root, notice = null, running = [], variant = null }) {
+  function buildPrompt({ entry, platform, adapter, inbound, root, notice = null, loop = null, running = [], variant = null }) {
     const sections = listSections();
     audit(sections);
     const resolved = variant ?? promptVariant(root);
@@ -153,6 +154,10 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
       ...baseValues({ platform, adapter, inbound, root, running }),
       notice_id: notice?.id ?? "",
       notice_prompt: String(notice?.prompt ?? "").trim() || "没有额外说明，按用户本轮消息处理。",
+      loop_id: loop?.id ?? "",
+      loop_round: String(loop?.round ?? ""),
+      loop_prompt: String(loop?.prompt ?? "").trim(),
+      loop_last: loop?.last ?? "这是第一轮。",
     };
     const text = renderPrompt(bodies.join("\n\n"), values);
     if (text.includes("{{")) log("warn", "prompt", entry, "rendered prompt still holds an unresolved placeholder");
@@ -195,5 +200,6 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
     provenanceFor,
     conversation: (args) => buildPrompt({ ...args, entry: "conversation" }),
     noticeReply: (args) => buildPrompt({ ...args, entry: "notice" }),
+    loopRound: (args) => buildPrompt({ ...args, entry: "loop" }),
   };
 }

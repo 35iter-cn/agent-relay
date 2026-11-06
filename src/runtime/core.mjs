@@ -18,6 +18,10 @@ import { createStateStore } from "../state/store.mjs";
 import { createNoticeService } from "../notices/service.mjs";
 import { RESTART_PROMPT, stallNoticePrompt, stallNoticeText } from "./stall-notice.mjs";
 import { createPrompts } from "./prompts.mjs";
+import { activeLoopCount, createLoop, isLoopId, nextLoopId, platformOfLoopId, validateLoopChange, validatePrompt, validateSchedule } from "../loops/model.mjs";
+import { LOOP_ROUNDS_PER_HOUR, LOOP_TIMEOUT_MS, loopLateMs, roundSkipReason, roundsInLastHour } from "../loops/schedule.mjs";
+import { roundKeyFor, roundTitle, truncateOutput } from "../loops/round.mjs";
+import { appendRound, findRound, listRounds, pruneHistory } from "../loops/history.mjs";
 
 const STALL_MS = relayEnv("STALL_MS", 10 * 60_000);
 const TOOL_STALL_MS = relayEnv("TOOL_STALL_MS", 10 * 60_000);
@@ -56,6 +60,7 @@ export function createCore({ adapter, config, deps = {} }) {
   const stallGraceMs = deps.stallGraceMs ?? 5_000;
   const deliveryRetryMs = deps.deliveryRetryMs ?? DELIVERY_RETRY_MS;
   const store = deps.store ?? createStateStore({ file: config.stateFile(adapter.name), log });
+  const loopHistoryDir = config.loopHistoryDir ?? join(config.configDir, "loops");
   const state = store.state;
   const save = store.save;
   const notices = deps.notices ?? createNoticeService({ state, save, adapter, now, log });
@@ -279,13 +284,16 @@ export function createCore({ adapter, config, deps = {} }) {
       if (!Number.isFinite(writtenAt) || now() - writtenAt > COMMAND_TTL_MS) continue;
       try {
         if (command.op === "emit") {
-          await notices.emit({ text: command.text, prompt: command.prompt ?? "" });
+          await notices.emit({ text: command.text, prompt: command.prompt ?? "", reply: command.reply ?? null });
         } else if (command.op === "schedule") {
           const outcome = scheduleJob(command);
           appendLog({ event: "command-schedule", ...outcome, key: String(command.key ?? "") });
         } else if (command.op === "cancel") {
           const outcome = cancelScheduled(command);
           appendLog({ event: "command-cancel", ...outcome, dedupe: String(command.dedupe ?? "") });
+        } else if (String(command.op ?? "").startsWith("loop-")) {
+          const outcome = await applyLoopCommand(command);
+          appendLog({ event: command.op, ...outcome });
         } else {
           await applyAction(command);
         }
@@ -342,10 +350,17 @@ export function createCore({ adapter, config, deps = {} }) {
     return job.origin === "self" || job.origin === "external";
   }
 
+  function jobTimeoutMs(job) {
+    if (job.origin === "loop") return Math.min(adapter.timeoutMs, LOOP_TIMEOUT_MS);
+    if (isScheduled(job)) return Math.min(adapter.timeoutMs, SELF_TIMEOUT_MS);
+    return adapter.timeoutMs;
+  }
+
   function buildPrompt(job, entry) {
     const inbound = runtimeInbound(job);
     const root = entry.rootText || inbound.text;
     const base = { platform: adapter.name, adapter, inbound, root, running: runningJobs() };
+    if (job.origin === "loop" && job.loop) return prompts.loopRound({ ...base, loop: job.loop });
     if (isScheduled(job)) {
       return prompts.selfJob({
         ...base,
@@ -367,9 +382,20 @@ export function createCore({ adapter, config, deps = {} }) {
   function execute(job, entry) {
     const inbound = runtimeInbound(job);
     const full = !hasSession(entry.session);
-    if (isScheduled(job)) {
+    if (isScheduled(job) || job.origin === "loop") {
       const built = buildPrompt(job, entry);
-      const render = (prompt) => spawnWorker(job, entry, inbound, prompt, false);
+      const render = (prompt) => {
+        if (job.origin === "loop" && !String(prompt ?? "").trim()) {
+          appendLog({ event: "empty-prompt", job: job.id, key: inbound.key });
+          job.status = "failed";
+          job.error = "empty-prompt";
+          job.loopRoundStatus = "failed";
+          job.updatedAt = isoNow();
+          save();
+          return finishRound(job);
+        }
+        return spawnWorker(job, entry, inbound, prompt, false);
+      };
       return typeof built?.then === "function" ? built.then(render) : render(built);
     }
     if (!full) return spawnWorker(job, entry, inbound, inbound.text, false);
@@ -393,7 +419,7 @@ export function createCore({ adapter, config, deps = {} }) {
     const bin = adapter.worker === "stub" ? process.execPath : adapter.piBin;
     const command = adapter.buildWorker ? adapter.buildWorker({ prompt, full, session: entry.session }) : { bin, args };
     const started = now();
-    const timeoutMs = isScheduled(job) ? Math.min(adapter.timeoutMs, SELF_TIMEOUT_MS) : adapter.timeoutMs;
+    const timeoutMs = jobTimeoutMs(job);
     appendLog({ event: "dispatch", job: job.id, key: inbound.key, session: entry.session, full });
 
     return new Promise((resolve) => {
@@ -457,8 +483,14 @@ export function createCore({ adapter, config, deps = {} }) {
         job.status = note ? "cancelled" : killed || code !== 0 ? "failed" : "answered";
         job.lease = null;
         job.updatedAt = isoNow();
+        if (job.origin === "loop") {
+          job.loopOutput = text;
+          job.loopRoundStatus = job.status;
+        }
         save();
-        await deliver(job);
+        if (job.origin === "loop") await deliverRound(job);
+        else await deliver(job);
+        if (job.origin === "loop") await finishRound(job);
         runtimeInbounds.delete(job.id);
         resolve();
       });
@@ -848,6 +880,256 @@ export function createCore({ adapter, config, deps = {} }) {
     return { job: job.id };
   }
 
+  function loopLastLine(loop) {
+    const at = Date.parse(loop.lastRunAt ?? "");
+    if (!Number.isFinite(at)) return "这是第一轮。";
+    return `${localStamp(at)} ${loop.lastOutcome ?? "-"}（${loop.lastRunId ?? "-"}）`;
+  }
+
+  function openRoundJob(loop) {
+    const jobId = state.seen?.[loop.lastRunId];
+    if (!jobId || jobId === "legacy") return null;
+    const job = state.jobs?.[jobId];
+    return job && !isFinished(job) ? job : null;
+  }
+
+  async function runLoopRound(loop, { trigger = "tick" } = {}) {
+    const at = now();
+    const round = Number(loop.lastRound ?? 0) + 1;
+    const runId = roundKeyFor(loop.id, round);
+    const header = roundTitle(loop, round);
+    const lateMs = loopLateMs(loop, at);
+    const job = acceptJob({
+      key: runId,
+      session: adapter.sessionFor(runId),
+      dedupeId: runId,
+      text: header,
+      rootText: header,
+      chatId: null,
+      messageId: null,
+      threadId: null,
+      replyTo: null,
+      attachments: [],
+    });
+    job.origin = "loop";
+    job.chain = 0;
+    job.dueAt = isoAt(at - lateMs);
+    job.lateMs = lateMs;
+    job.loop = { id: loop.id, round, prompt: loop.prompt, last: loopLastLine(loop), trigger, lateMs };
+    loop.lastRound = round;
+    loop.lastRunId = runId;
+    loop.lastRunAt = isoAt(at);
+    loop.lastOutcome = null;
+    if (loop.at) loop.state = "done";
+    state.meta.loopRoundStamps = [...(state.meta.loopRoundStamps ?? []), isoAt(at)].slice(-400);
+    save();
+    appendLog({ event: "loop-round", loop: loop.id, runId, job: job.id, trigger, lateMs });
+    drainInbox();
+    return job;
+  }
+
+  function isNoopRound(text) {
+    const first = String(text ?? "").trim().split("\n")[0]?.trim() ?? "";
+    return !first || first === "NOOP" || first.startsWith("[无输出]");
+  }
+
+  async function deliverRound(job) {
+    const text = String(job.answer ?? "").trim();
+    if (isNoopRound(text)) {
+      job.status = "done";
+      job.noop = true;
+      job.answer = undefined;
+      job.updatedAt = isoNow();
+      save();
+      appendLog({ event: "round-noop", job: job.id, key: job.key, bytes: Buffer.byteLength(text) });
+      return job.status;
+    }
+    for (let attempt = 1; attempt <= MAX_DELIVERY_ATTEMPTS; attempt += 1) {
+      try {
+        const notice = await notices.emit({ text, reply: { mode: "conversation", key: job.key } });
+        job.noticeId = notice.id;
+        job.parts = [{ i: 0, messageId: notice.messageId ?? null, hash: hashOf(text), sentAt: isoNow() }];
+        job.status = "done";
+        job.answer = undefined;
+        job.updatedAt = isoNow();
+        save();
+        return job.status;
+      } catch (error) {
+        log("warn", "round-deliver", `attempt=${attempt}`, String(error?.message ?? error));
+        job.deliveryAttempts = attempt;
+        job.deliveryFailedAt = isoNow();
+        if (attempt < MAX_DELIVERY_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, deliveryRetryMs));
+      }
+    }
+    job.status = "failed";
+    job.error = job.error ?? "reply-failed";
+    job.updatedAt = isoNow();
+    save();
+    return job.status;
+  }
+
+  async function finishRound(job) {
+    const loop = state.loops?.[job.loop?.id];
+    const runId = roundKeyFor(job.loop.id, job.loop.round);
+    const messageId = job.parts?.[0]?.messageId ?? null;
+    const roundOk = job.loopRoundStatus !== "failed";
+    const noop = Boolean(job.noop);
+    const delivered = job.status === "done" && !noop;
+    const outcome = noop && roundOk ? "noop" : roundOk && delivered && messageId ? "ok" : "failed";
+    if (outcome === "failed" && !job.error) job.error = roundOk ? (delivered ? "no-message-id" : "reply-failed") : job.loopRoundStatus ?? "failed";
+    if (loop) {
+      loop.lastMessageId = messageId;
+      loop.lastOutcome = outcome;
+      loop.failStreak = outcome === "failed" ? Number(loop.failStreak ?? 0) + 1 : 0;
+      if (loop.failStreak >= 3 && loop.state === "armed") {
+        loop.state = "paused";
+        notices
+          .emit({ text: `⏸ ${loop.id} 连续 ${loop.failStreak} 轮失败，已暂停：${job.error ?? outcome}` })
+          .catch((error) => log("warn", "loop-pause-notice", String(error?.message ?? error)));
+      }
+    }
+    appendRound(loopHistoryDir, job.loop.id, {
+      runId,
+      loopId: job.loop.id,
+      round: job.loop.round,
+      at: isoNow(),
+      trigger: job.loop.trigger,
+      jobId: job.id,
+      key: job.key,
+      messageId,
+      outcome,
+      error: job.error ?? null,
+      lateMs: job.loop.lateMs ?? 0,
+      output: truncateOutput(job.loopOutput ?? ""),
+    });
+    save();
+    await openRoundThread(job, messageId);
+  }
+
+  async function openRoundThread(job, messageId) {
+    const loop = state.loops?.[job.loop?.id];
+    if (!loop?.thread || !messageId) return;
+    if (typeof adapter.openRoundThread !== "function") return;
+    try {
+      const opened = await adapter.openRoundThread({ messageId, name: roundTitle(loop, job.loop.round), key: job.key });
+      if (opened?.threadId) appendLog({ event: "loop-thread", loop: loop.id, threadId: opened.threadId, key: job.key });
+    } catch (error) {
+      log("warn", "round-thread", String(error?.message ?? error));
+    }
+  }
+
+  function handleBoundReply(inbound, key) {
+    const keyed = { ...inbound, key, session: adapter.sessionFor(key), rootText: state.convs[key]?.rootText ?? inbound.text };
+    const job = acceptJob(keyed);
+    if (running.size >= adapter.maxWorkers && state.inbox.length > adapter.queueDepth) {
+      state.inbox = state.inbox.filter((id) => id !== job.id);
+      job.status = "failed";
+      job.error = "queue-full";
+      job.updatedAt = isoNow();
+      delete state.seen[keyed.dedupeId];
+      save();
+      log("ignore", "queue-full", job.id);
+      return "busy";
+    }
+    appendLog({ event: "bound-reply", job: job.id, key });
+    drainInbox();
+    return "accepted";
+  }
+
+  function throttleNotice() {
+    const at = Date.parse(state.meta.loopThrottleAt ?? "");
+    if (Number.isFinite(at) && now() - at < 3_600_000) return;
+    state.meta.loopThrottleAt = isoAt(now());
+    save();
+    notices
+      .emit({ text: `⏳ 本平台这一小时的 loop 轮数已到上限（${LOOP_ROUNDS_PER_HOUR}），后面的轮次跳过。` })
+      .catch((error) => log("warn", "loop-throttle-notice", String(error?.message ?? error)));
+  }
+
+  async function startDueLoops() {
+    const at = now();
+    let started = 0;
+    for (const loop of Object.values(state.loops ?? {})) {
+      const reason = roundSkipReason({
+        loop,
+        nowMs: at,
+        openJob: openRoundJob(loop),
+        running: running.size,
+        maxWorkers: adapter.maxWorkers,
+        roundsLastHour: roundsInLastHour(state.meta.loopRoundStamps, at) + started,
+        hourLimit: LOOP_ROUNDS_PER_HOUR,
+      });
+      if (reason === "throttled") {
+        throttleNotice();
+        continue;
+      }
+      if (reason) continue;
+      await runLoopRound(loop, { trigger: "tick" });
+      started += 1;
+    }
+    return started;
+  }
+
+  async function applyLoopCommand(command) {
+    const op = String(command.op ?? "");
+    const loops = state.loops;
+    const platform = platformOfLoopId(command.id);
+    if (op === "loop-create") {
+      const refused = validateSchedule({ every: command.every, at: command.loopAt }) ?? validatePrompt(command.prompt);
+      if (refused) return { op, refused };
+      const id = isLoopId(command.id) && platformOfLoopId(command.id) === adapter.name ? command.id : nextLoopId(loops, adapter.name);
+      if (loops[id]) return { op, refused: "duplicate", id };
+      if (activeLoopCount(loops) >= 20) return { op, refused: "too-many-loops" };
+      loops[id] = createLoop({
+        id,
+        prompt: command.prompt,
+        every: command.every ?? null,
+        at: command.loopAt ?? null,
+        thread: command.thread !== false,
+        createdBy: command.createdBy ?? null,
+        nowIso: isoNow(),
+      });
+      save();
+      return { op, id };
+    }
+    if (op === "loop-run") {
+      const loop = loops[command.id];
+      if (!loop) return { op, refused: "not-found" };
+      if (loop.state === "deleted") return { op, refused: "deleted" };
+      if (openRoundJob(loop)) return { op, refused: "busy" };
+      const job = await runLoopRound(loop, { trigger: "manual" });
+      return { op, id: loop.id, job: job.id };
+    }
+    const loop = loops[command.id];
+    if (!loop) return { op, refused: "not-found" };
+    if (op === "loop-state") {
+      const next = String(command.state ?? "");
+      if (!["armed", "paused", "deleted"].includes(next)) return { op, refused: "bad-state" };
+      loop.state = next;
+      if (next === "armed") loop.failStreak = 0;
+      save();
+      return { op, id: loop.id, state: loop.state };
+    }
+    if (op === "loop-update") {
+      if (command.every !== undefined || command.loopAt !== undefined) {
+        const refused = validateSchedule({ every: command.every ?? null, at: command.loopAt ?? null });
+        if (refused) return { op, refused };
+        loop.every = command.every ?? null;
+        loop.at = command.loopAt ?? null;
+        if (loop.at) loop.state = "armed";
+      }
+      if (command.prompt !== undefined) {
+        const refused = validatePrompt(command.prompt);
+        if (refused) return { op, refused };
+        loop.prompt = String(command.prompt).trim();
+      }
+      if (command.thread !== undefined) loop.thread = command.thread !== false;
+      save();
+      return { op, id: loop.id };
+    }
+    return { op, refused: "unknown-op" };
+  }
+
   function startDueJobs() {
     let touched = 0;
     for (const job of Object.values(state.jobs ?? {})) {
@@ -884,6 +1166,7 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   async function handleNoticeReply(inbound, notice) {
+    if (notice.reply?.mode === "conversation" && notice.reply.key) return handleBoundReply(inbound, notice.reply.key);
     const key = `notice-${notice.id}`;
     const keyed = {
       ...inbound,
@@ -1036,13 +1319,14 @@ export function createCore({ adapter, config, deps = {} }) {
     scheduleJob,
     cancelScheduled,
     startDueJobs,
+    startDueLoops,
     notices,
     prompts,
     stats: () => ({ running: running.size, pending: state.inbox.length }),
     pruneLogs: () => {
       const logs = pruneOldFiles(logDir, RETENTION_MS, now());
       pruneOldFiles(commandDir, COMMAND_TTL_MS, now());
-      notices.prune();
+      const roundsHistory = pruneHistory(loopHistoryDir, now());
       const jobs = pruneState(state, now());
       if (jobs) save();
       try {
@@ -1051,7 +1335,7 @@ export function createCore({ adapter, config, deps = {} }) {
       } catch (error) {
         log("warn", "prune", String(error?.message ?? error));
       }
-      return { logs, jobs };
+      return { logs, jobs, roundsHistory };
     },
     log,
   };

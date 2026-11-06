@@ -7,6 +7,12 @@ import { createLog } from "./shared/log.mjs";
 import { createCore } from "./runtime/core.mjs";
 import { acquireInstanceLock } from "./runtime/instance-lock.mjs";
 import { definePlatform, isPlatform, PLATFORMS } from "./platforms/contract.mjs";
+import { durationMs } from "./shared/duration.mjs";
+import { readJson } from "./shared/json.mjs";
+import { localStamp } from "./shared/time.mjs";
+import { MAX_LOOPS, MIN_EVERY_MS, nextLoopId, platformOfLoopId, validatePrompt, validateSchedule } from "./loops/model.mjs";
+import { loopDueAt } from "./loops/schedule.mjs";
+import { findRound, listRounds } from "./loops/history.mjs";
 
 export const ACTION_NAMES = new Set(["cancel", "restart"]);
 const COMMAND_WAIT_MS = 20_000;
@@ -17,12 +23,18 @@ export function usage(stream = process.stderr) {
     [
       "usage:",
       "  agent-relay serve <discord|feishu|mattermost|slack|telegram>",
-      "  agent-relay notice emit --platform <p> (--text <text> | --text-file <path>) [--prompt <text> | --prompt-file <path>]",
+      "  agent-relay notice emit --platform <p> (--text <text> | --text-file <path>) [--prompt <text> | --prompt-file <path>] [--reply-mode conversation --reply-key <key>]",
       "  agent-relay notify <platform> <text>",
       "  agent-relay stall <platform> <cancel|restart> <key> [text]",
       "  agent-relay job start --platform <p> --key <k> --dedupe <id> (--brief <text> | --brief-file <path>) [--in 30m | --at <iso>] [--grace 6h]",
       "  agent-relay job cancel --platform <p> <dedupe>",
       "  agent-relay job list --platform <p> [--key <k>]",
+      "  agent-relay loop create --platform <p> (--every 30m | --at <iso>) (--prompt <t> | --prompt-file <f>) [--no-thread]",
+      "  agent-relay loop list [--platform <p>] [--all]",
+      "  agent-relay loop show <id> | run <id> | pause <id> | resume <id> | delete <id>",
+      "  agent-relay loop update <id> [--every <d> | --at <iso> | --prompt <t> | --prompt-file <f> | --thread | --no-thread]",
+      "  agent-relay loop log <id> [--limit 20]",
+      "  agent-relay loop show-run <runId>",
     ].join("\n") + "\n",
   );
   process.exit(2);
@@ -72,15 +84,8 @@ export async function sendCommand(config, platform, command, { waitMs = COMMAND_
 
 export const BRIEF_MAX_BYTES = 8 * 1024;
 export const DEFAULT_GRACE_MS = 6 * 3_600_000;
-const DURATION_UNITS = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000 };
 
-export function durationMs(value, fallback) {
-  if (value === undefined || value === null || value === "") return fallback;
-  const text = String(value).trim();
-  const match = /^(\d+(?:\.\d+)?)([smhd])$/.exec(text);
-  if (!match) return fallback;
-  return Math.round(Number(match[1]) * DURATION_UNITS[match[2]]);
-}
+export { durationMs };
 
 export function dueFrom(flags, nowMs = Date.now()) {
   if (typeof flags.at === "string") {
@@ -132,8 +137,8 @@ export function textFlag(flags, name) {
   return typeof flags[name] === "string" ? flags[name].trim() : "";
 }
 
-export async function emitNotice(config, platform, text, prompt = "", log = createLog()) {
-  const sent = await sendCommand(config, platform, { op: "emit", text, prompt }).catch((error) => {
+export async function emitNotice(config, platform, text, prompt = "", log = createLog(), reply = null) {
+  const sent = await sendCommand(config, platform, { op: "emit", text, prompt, reply }).catch((error) => {
     log("warn", "notice-command", String(error?.message ?? error));
     return { delivered: false };
   });
@@ -141,6 +146,46 @@ export async function emitNotice(config, platform, text, prompt = "", log = crea
   const adapter = await loadPlatform(platform, config, log);
   const posted = await (adapter.postNotice ?? adapter.notify).call(adapter, text);
   return { delivered: false, messageId: posted?.messageId ?? null };
+}
+
+export function loopPlatform(flags, env = process.env) {
+  const explicit = typeof flags.platform === "string" ? flags.platform : "";
+  if (isPlatform(explicit)) return explicit;
+  return isPlatform(env.AGENT_RELAY_PLATFORM) ? env.AGENT_RELAY_PLATFORM : "";
+}
+
+export function readLoops(file) {
+  const state = readJson(file, null);
+  return state?.loops ?? {};
+}
+
+export function listLoopRows(config, platforms, { all = false, nowMs = Date.now() } = {}) {
+  const rows = [];
+  for (const platform of platforms) {
+    for (const loop of Object.values(readLoops(config.stateFile(platform)))) {
+      if (!all && loop.state === "deleted") continue;
+      const due = loopDueAt(loop);
+      rows.push({
+        platform,
+        id: loop.id,
+        state: loop.state,
+        schedule: loop.at ? `at ${loop.at}` : `every ${loop.every}`,
+        due,
+        overMs: loop.state === "armed" && Number.isFinite(due) ? Math.max(0, nowMs - due) : 0,
+        lastOutcome: loop.lastOutcome ?? "-",
+        prompt: String(loop.prompt ?? ""),
+      });
+    }
+  }
+  return rows.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+}
+
+export function formatLoopRows(rows) {
+  return rows.map((row) => {
+    const due = Number.isFinite(row.due) ? localStamp(row.due) : "-";
+    const late = row.overMs > 60_000 ? ` overdue ${Math.round(row.overMs / 60_000)}m` : "";
+    return `${row.id}\t${row.state}\t${row.schedule}\t${due}${late}\t${row.lastOutcome}\t${firstLine(row.prompt)}`;
+  });
 }
 
 async function serve(platform, config, log) {
@@ -166,6 +211,7 @@ async function serve(platform, config, log) {
   const tick = () =>
     core.drainCommands()
       .then(() => core.startDueJobs())
+      .then(() => core.startDueLoops())
       .catch((error) => log("error", "command", String(error?.stack ?? error)));
   tick();
   setInterval(tick, 15_000).unref();
@@ -177,6 +223,148 @@ async function serve(platform, config, log) {
     },
     core,
   });
+}
+
+export async function handleLoopCommand(rest, config, log, deps = {}) {
+  const [verb, ...args] = rest;
+  const { flags, rest: positional } = parseFlags(args);
+  const id = positional[0] ?? "";
+  const refuse = (reason) => {
+    process.stderr.write(`refused: ${reason}\n`);
+    process.exitCode = 3;
+  };
+  const dispatch = deps.sendCommand ?? sendCommand;
+  const send = async (command, platform) => {
+    const sent = await dispatch(config, platform, command);
+    process.stdout.write(`${sent.delivered ? "delivered" : "pending"}\n`);
+    process.exitCode = sent.delivered ? 0 : 1;
+  };
+  if (verb === "list") {
+    const platform = typeof flags.platform === "string" ? flags.platform : "";
+    const platforms = isPlatform(platform) ? [platform] : PLATFORMS;
+    const rows = listLoopRows(config, platforms, { all: Boolean(flags.all) });
+    const lines = formatLoopRows(rows);
+    process.stdout.write(`${lines.join("\n")}${lines.length ? "\n" : ""}`);
+    return;
+  }
+  if (verb === "log") {
+    const limit = Number(flags.limit ?? 20);
+    const rounds = listRounds(config.loopHistoryDir, id, { limit: Number.isFinite(limit) ? limit : 20 });
+    const lines = rounds.map(
+      (round) => `${round.runId}\t${localStamp(Date.parse(round.at))}\t${round.trigger}\t${round.outcome}\t${round.error ?? ""}`.trimEnd(),
+    );
+    process.stdout.write(`${lines.join("\n")}${lines.length ? "\n" : ""}`);
+    return;
+  }
+  if (verb === "show-run") {
+    const round = findRound(config.loopHistoryDir, id);
+    if (!round) {
+      refuse("not-found");
+      return;
+    }
+    process.stdout.write(`${round.runId}\t${round.trigger}\t${round.outcome}\t${round.messageId ?? "-"}\n${round.output ?? ""}\n`);
+    return;
+  }
+  if (verb === "create") {
+    const platform = loopPlatform(flags, deps.env ?? process.env);
+    if (!isPlatform(platform)) {
+      refuse("bad-platform");
+      return;
+    }
+    const loops = readLoops(config.stateFile(platform));
+    const prompt = textFlag(flags, "prompt");
+    const every = typeof flags.every === "string" ? flags.every : null;
+    const at = typeof flags.at === "string" ? flags.at : null;
+    const refused = validateSchedule({ every, at }) ?? validatePrompt(prompt);
+    if (refused) {
+      refuse(refused);
+      return;
+    }
+    const active = Object.values(loops).filter((loop) => loop.state !== "deleted").length;
+    if (active >= MAX_LOOPS) {
+      refuse("too-many-loops");
+      return;
+    }
+    await send(
+      {
+        op: "loop-create",
+        id: nextLoopId(loops, platform),
+        prompt,
+        every,
+        loopAt: at,
+        thread: !flags["no-thread"],
+        createdBy: process.env.AGENT_RELAY_KEY ?? null,
+      },
+      platform,
+    );
+    return;
+  }
+  if (!id) {
+    refuse("missing-id");
+    return;
+  }
+  const owner = platformOfLoopId(id);
+  if (!isPlatform(owner)) {
+    refuse("bad-loop-id");
+    return;
+  }
+  const target = readLoops(config.stateFile(owner))[id];
+  if (!target || target.state === "deleted") {
+    refuse("not-found");
+    return;
+  }
+  if (verb === "show") {
+    process.stdout.write(
+      [
+        `id: ${target.id}`,
+        `state: ${target.state}`,
+        `schedule: ${target.at ? `at ${target.at}` : `every ${target.every}`}`,
+        `due: ${Number.isFinite(loopDueAt(target)) ? localStamp(loopDueAt(target)) : "-"}`,
+        `thread: ${target.thread !== false}`,
+        `rounds: ${target.lastRound ?? 0}  last: ${target.lastOutcome ?? "-"}  streak: ${target.failStreak ?? 0}`,
+        `prompt:`,
+        target.prompt,
+        "",
+      ].join("\n"),
+    );
+    return;
+  }
+  if (verb === "run") {
+    await send({ op: "loop-run", id }, owner);
+    return;
+  }
+  if (verb === "pause" || verb === "resume" || verb === "delete") {
+    const state = verb === "pause" ? "paused" : verb === "resume" ? "armed" : "deleted";
+    await send({ op: "loop-state", id, state }, owner);
+    return;
+  }
+  if (verb === "update") {
+    const command = { op: "loop-update", id };
+    if (flags.every !== undefined || flags.at !== undefined) {
+      const every = typeof flags.every === "string" ? flags.every : null;
+      const at = typeof flags.at === "string" ? flags.at : null;
+      const refused = validateSchedule({ every, at });
+      if (refused) {
+        refuse(refused);
+        return;
+      }
+      command.every = every;
+      command.loopAt = at;
+    }
+    if (flags.prompt !== undefined || flags["prompt-file"] !== undefined) {
+      const prompt = textFlag(flags, "prompt");
+      const refused = validatePrompt(prompt);
+      if (refused) {
+        refuse(refused);
+        return;
+      }
+      command.prompt = prompt;
+    }
+    if (flags.thread !== undefined || flags["no-thread"] !== undefined) command.thread = !flags["no-thread"];
+    await send(command, owner);
+    return;
+  }
+  usage();
 }
 
 export async function main(argv = process.argv.slice(2)) {
@@ -197,7 +385,10 @@ export async function main(argv = process.argv.slice(2)) {
     const text = textFlag(flags, "text");
     const prompt = textFlag(flags, "prompt");
     if (!isPlatform(platform) || !text) usage();
-    const result = await emitNotice(config, platform, text, prompt, log);
+    const replyMode = typeof flags["reply-mode"] === "string" ? flags["reply-mode"] : "";
+    const replyKey = typeof flags["reply-key"] === "string" ? flags["reply-key"] : "";
+    const reply = replyMode ? { mode: replyMode, key: replyKey || undefined } : null;
+    const result = await emitNotice(config, platform, text, prompt, log, reply);
     process.stdout.write(`${result.delivered ? "delivered" : `sent ${result.messageId ? 1 : 0}`}\n`);
     return;
   }
@@ -256,6 +447,10 @@ export async function main(argv = process.argv.slice(2)) {
     });
     process.stdout.write(`${sent.delivered ? (dueAt ? "scheduled" : "started") : "pending"}\n`);
     process.exitCode = sent.delivered ? 0 : 1;
+    return;
+  }
+  if (mode === "loop") {
+    await handleLoopCommand(rest, config, log);
     return;
   }
   if (mode === "platforms") {

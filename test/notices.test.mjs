@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { createNoticeService, matchNotice, MAX_PROMPT_BYTES, pruneNotices, truncatePrompt } from "../src/notices/service.mjs";
+import { createNoticeService, matchNotice, MAX_PROMPT_BYTES, normalizeReply, truncatePrompt } from "../src/notices/service.mjs";
 import { emptyState } from "../src/state/schema.mjs";
 import { writeJsonAtomic } from "../src/shared/json.mjs";
 
@@ -23,12 +23,41 @@ test("matchNotice resolves a reply id to the newest matching notice only", () =>
   assert.equal(matchNotice(notices, "telegram", ["m-1"]), null);
 });
 
-test("pruneNotices drops expired and overflow entries", () => {
-  const notices = {};
-  for (let i = 1; i <= 5; i += 1) notices[`ntc-${i}`] = { id: `ntc-${i}`, sentAt: iso(now() - (10 - i) * 1000) };
-  notices["ntc-old"] = { id: "ntc-old", sentAt: "2020-01-01T00:00:00Z" };
-  assert.equal(pruneNotices(notices, now(), 7 * 86_400_000, 3), 3);
-  assert.deepEqual(Object.keys(notices).sort(), ["ntc-3", "ntc-4", "ntc-5"]);
+test("TC-NT3 a conversation binding keeps no text or prompt, a prompt notice keeps both", async () => {
+  const state = emptyState();
+  const posted = [];
+  const service = createNoticeService({
+    state,
+    save: () => {},
+    adapter: { name: "fake", postNotice: async (text) => (posted.push(text), { messageId: `m-${posted.length}` }) },
+    now: () => now(),
+  });
+  const bound = await service.emit({ text: "本轮检查完成", reply: { mode: "conversation", key: "loop-fake-1-r3" } });
+  assert.equal(posted[0], "本轮检查完成");
+  assert.equal(bound.messageId, "m-1");
+  assert.deepEqual(bound.reply, { mode: "conversation", key: "loop-fake-1-r3" });
+  assert.equal(bound.text, undefined);
+  assert.equal(bound.prompt, undefined);
+  const plain = await service.emit({ text: "⏸ 卡住了", prompt: "看情况", reply: { mode: "prompt" } });
+  assert.equal(plain.text, "⏸ 卡住了");
+  assert.equal(plain.prompt, "看情况");
+  assert.equal(plain.reply, undefined);
+  assert.equal(service.match(["m-1"]).id, bound.id);
+  assert.equal(service.match(["m-2"]).id, plain.id);
+  await assert.rejects(() => service.emit({ text: "  " }), /notice needs text/);
+});
+
+test("TC-NT4 a reply binding needs a mode and a key", () => {
+  assert.deepEqual(normalizeReply({ mode: "conversation", key: "k" }), { mode: "conversation", key: "k" });
+  assert.equal(normalizeReply({ mode: "conversation" }), null);
+  assert.equal(normalizeReply({ mode: "conversation", key: "  " }), null);
+  assert.deepEqual(normalizeReply({ mode: "prompt" }), { mode: "prompt" });
+  assert.equal(normalizeReply({ mode: "nope" }), null);
+  assert.equal(normalizeReply(undefined), null);
+});
+
+test("TC-NT5 notices are never pruned on their own", () => {
+  assert.equal(typeof createNoticeService({ state: emptyState(), save: () => {}, adapter: { name: "fake", postNotice: async () => ({}) } }).prune, "undefined");
 });
 
 test("a prompt over the limit is cut without splitting a multi-byte character", () => {

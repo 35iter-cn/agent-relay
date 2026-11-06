@@ -9,7 +9,8 @@ export function emptyState() {
     jobs: {},
     inbox: [],
     notices: {},
-    meta: { schemaVersion: SCHEMA_VERSION, jobSeq: 0, noticeSeq: 0 },
+    loops: {},
+    meta: { schemaVersion: SCHEMA_VERSION, jobSeq: 0, noticeSeq: 0, loopRoundStamps: [] },
   };
 }
 
@@ -22,6 +23,8 @@ export function upgradeState(state) {
   next.jobs = next.jobs ?? {};
   next.inbox = next.inbox ?? [];
   next.notices = next.notices ?? {};
+  next.loops = next.loops ?? {};
+  next.meta.loopRoundStamps = next.meta.loopRoundStamps ?? [];
   if (next.meta.schemaVersion !== SCHEMA_VERSION) {
     for (const [dedupeId, value] of Object.entries(next.seen)) {
       if (value !== "legacy" && !next.jobs[value]) next.seen[dedupeId] = "legacy";
