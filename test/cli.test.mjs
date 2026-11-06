@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ACTION_NAMES, dueFrom, durationMs, listJobs, parseFlags, precheckJob, sendCommand, textFlag } from "../src/cli.mjs";
+import { ACTION_NAMES, dueFrom, durationMs, jobArgs, jobCancelDedupe, listJobs, parseFlags, precheckJob, sendCommand, textFlag } from "../src/cli.mjs";
 import { readEnvFile } from "../src/config.mjs";
 
 test("readEnv parses KEY=value lines and ignores comments", () => {
@@ -27,6 +27,29 @@ test("parseFlags splits flags from positional words", () => {
     rest: ["job-stall"],
     flags: { platform: "feishu", text: "hi there" },
   });
+});
+
+test("TC-J1 job cancel reads the dedupe from the positional word, never the verb", () => {
+  const { flags, positional } = jobArgs(["cancel", "--platform", "discord", "abc-123"]);
+  assert.equal(jobCancelDedupe(flags, positional), "abc-123");
+});
+
+test("TC-J2 job cancel prefers --dedupe when both forms are given", () => {
+  const { flags, positional } = jobArgs(["cancel", "--platform", "discord", "--dedupe", "xyz", "abc"]);
+  assert.equal(jobCancelDedupe(flags, positional), "xyz");
+});
+
+test("TC-J3 job cancel has no target when the dedupe is missing", () => {
+  const { flags, positional } = jobArgs(["cancel", "--platform", "discord"]);
+  assert.equal(jobCancelDedupe(flags, positional), "");
+});
+
+test("TC-J4 job start keeps its flags out of the positional words", () => {
+  const { verb, flags, positional } = jobArgs(["start", "--platform", "slack", "--key", "k1", "--dedupe", "d1", "--brief", "go", "--in", "30m"]);
+  assert.equal(verb, "start");
+  assert.equal(flags.key, "k1");
+  assert.equal(flags.dedupe, "d1");
+  assert.deepEqual(positional, []);
 });
 
 test("sendCommand reports delivered only after the daemon consumed the file", async () => {
