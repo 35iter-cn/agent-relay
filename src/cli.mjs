@@ -50,6 +50,17 @@ export function parseFlags(args) {
   return { flags, rest };
 }
 
+export function jobArgs(rest) {
+  const [verb, ...args] = rest;
+  const { flags, rest: positional } = parseFlags(args);
+  return { verb, flags, positional };
+}
+
+export function jobCancelDedupe(flags, positional) {
+  if (typeof flags.dedupe === "string") return flags.dedupe;
+  return positional[0] ?? "";
+}
+
 export async function sendCommand(config, platform, command, { waitMs = COMMAND_WAIT_MS, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
   const dir = ensurePrivateDir(config.commandDir(platform));
   const file = join(dir, `${Date.now()}-${process.pid}.json`);
@@ -206,9 +217,8 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
   if (mode === "job") {
-    const [verb, ...args] = rest;
+    const { verb, flags, positional } = jobArgs(rest);
     if (!["start", "cancel", "list"].includes(verb)) usage();
-    const { flags } = parseFlags(args);
     const platform = flags.platform;
     if (!isPlatform(platform)) usage();
     if (verb === "list") {
@@ -217,7 +227,7 @@ export async function main(argv = process.argv.slice(2)) {
       return;
     }
     if (verb === "cancel") {
-      const dedupe = typeof flags.dedupe === "string" ? flags.dedupe : rest[0];
+      const dedupe = jobCancelDedupe(flags, positional);
       if (!dedupe) usage();
       const sent = await sendCommand(config, platform, { op: "cancel", dedupe });
       process.stdout.write(`${sent.delivered ? "cancelled" : "pending"}\n`);
