@@ -33,6 +33,7 @@ export function createConfig({ env = process.env } = {}) {
     promptsDir: join(SRC_DIR, "prompts"),
     userPromptsDir: join(configDir, "prompts"),
     uploadsDir: join(configDir, "uploads"),
+    loopHistoryDir: join(configDir, "loops"),
     cli: env.AGENT_RELAY_CLI ?? "agent-relay",
     workerBin: env.AGENT_RELAY_WORKER_BIN ?? "pi",
     readEnv: (file) => readEnvFile(file),
