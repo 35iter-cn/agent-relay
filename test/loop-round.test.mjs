@@ -319,3 +319,33 @@ test("TC-LR11 the command envelope timestamp never becomes the loop's own schedu
   assert.equal(core.state.loops["loop-fake-3"].at, "2026-12-01T00:00:00.000Z");
   assert.equal(core.state.loops["loop-fake-3"].every, null);
 });
+
+test("TC-LR12 a NOOP round posts nothing and still counts as a healthy round", async () => {
+  const { core, replies, config } = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    spawn: () => fakeChild({ stdout: "NOOP" }),
+  });
+  await core.startDueLoops();
+  await settle();
+  const loop = core.state.loops["loop-fake-1"];
+  assert.equal(replies.length, 0, `no message for a quiet round, got ${JSON.stringify(replies)}`);
+  assert.equal(loop.lastOutcome, "noop");
+  assert.equal(loop.lastMessageId, null);
+  assert.equal(loop.failStreak, 0);
+  const rounds = listRounds(config.loopHistoryDir, "loop-fake-1");
+  assert.equal(rounds[0].outcome, "noop");
+});
+
+test("TC-LR13 an empty round is quiet too, and a NOOP line above a body still posts", async () => {
+  const quiet = harness({ state: { loops: { "loop-fake-1": seededLoop() } }, spawn: () => fakeChild({ stdout: "   " }) });
+  await quiet.core.startDueLoops();
+  await settle();
+  assert.equal(quiet.replies.length, 0);
+  assert.equal(quiet.core.state.loops["loop-fake-1"].lastOutcome, "noop");
+
+  const loud = harness({ state: { loops: { "loop-fake-1": seededLoop() } }, spawn: () => fakeChild({ stdout: "今天有 2 个 PR 挂了\nNOOP" }) });
+  await loud.core.startDueLoops();
+  await settle();
+  assert.equal(loud.replies.length, 1);
+  assert.equal(loud.core.state.loops["loop-fake-1"].lastOutcome, "ok");
+});

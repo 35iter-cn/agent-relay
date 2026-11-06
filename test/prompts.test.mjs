@@ -11,6 +11,8 @@ const SECTIONS = join(HERE, "..", "src", "prompts", "sections");
 const readSection = (file) => readFileSync(join(SECTIONS, file), "utf8");
 const builtinPrompts = (configDir) => createPrompts({ dir: join(HERE, "..", "src", "prompts"), userDir: "/nonexistent-user-prompts", configDir });
 
+const FIRST_TURN_PROMPT_BUDGET = 1950;
+
 function render(prompts, platform, entry = "conversation", extra = {}) {
   const adapter = { surface: `本${platform}`, chunkLimit: 3500 };
   const inbound = { key: "th-1", chatId: "chat-1", text: "上游镜像 PR 被 force push 覆盖了，怎么恢复？" };
@@ -140,10 +142,10 @@ test("TC-P10 stallSection keeps the caller's order for several jobs", () => {
   assert.match(text, /agent-relay stall telegram cancel\|restart <key>/);
 });
 
-test("TC-P11 the built-in first-turn prompt stays within 1650 characters with no running job", () => {
+test("TC-P11 the built-in first-turn prompt stays within the first-turn budget with no running job", () => {
   for (const platform of ["slack", "discord"]) {
     const text = render(builtinPrompts(), platform);
-    assert.ok(text.length <= 1650, `${platform} rendered ${text.length} characters`);
+    assert.ok(text.length <= FIRST_TURN_PROMPT_BUDGET, `${platform} rendered ${text.length} characters`);
     assert.match(text, /## 处置卡住的 job/);
     assert.match(text, /单独一行写 `!\[\]\(\/绝对路径\.png\)`/);
     assert.doesNotMatch(text, /\{\{/);

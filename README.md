@@ -80,6 +80,8 @@ Every round is a **fresh session**: the round's conversation key is `<loopId>-r<
 
 A notice is never pruned on its own. A bound notice stores only its binding, not the body — the round's text already lives in the history file, and keeping a copy in the state file would mean rewriting it on every job change.
 
+A round whose output is only `NOOP` (or nothing at all) is a quiet round: nothing is posted, the round is recorded as `noop`, and the loop stays healthy. The model is told about this marker in its prompt (`src/prompts/sections/45-self-wake.md`), so "nothing to report" does not turn into one message per interval.
+
 The old round history lives in `~/.config/agent-relay/loops/<loopId>.jsonl` (last 50 rounds, 90 days); a round never receives the previous output — it is told to read it with `loop log` / `loop show-run`.
 
 Four gates keep automated rounds from running away: `every` never below 10 minutes, at most 20 loops per platform, at most `LOOP_ROUNDS_PER_HOUR` (20) rounds per platform per hour, and one round in flight per loop. Three consecutive failed rounds pause the loop and raise one notice — a loop that dies silently is indistinguishable from "nothing happened today".

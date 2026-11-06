@@ -30,6 +30,8 @@ nothing.
 and event files, real command queue — only the IM delivery is faked. It is not
 part of `bun test`, because it takes seconds instead of milliseconds.
 
+- **The first-turn prompt has a budget** (`test/prompts.test.mjs` `FIRST_TURN_PROMPT_BUDGET`). Adding a capability the model must know about means raising the number on purpose and saying why in the PR, never letting the guard be the thing that decides.
+
 ## Deploying
 
 Code changes do nothing until the daemon restarts:

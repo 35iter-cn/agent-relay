@@ -928,8 +928,22 @@ export function createCore({ adapter, config, deps = {} }) {
     return job;
   }
 
+  function isNoopRound(text) {
+    const first = String(text ?? "").trim().split("\n")[0]?.trim() ?? "";
+    return !first || first === "NOOP" || first.startsWith("[无输出]");
+  }
+
   async function deliverRound(job) {
-    const text = String(job.answer ?? "").trim() || "[无输出]";
+    const text = String(job.answer ?? "").trim();
+    if (isNoopRound(text)) {
+      job.status = "done";
+      job.noop = true;
+      job.answer = undefined;
+      job.updatedAt = isoNow();
+      save();
+      appendLog({ event: "round-noop", job: job.id, key: job.key, bytes: Buffer.byteLength(text) });
+      return job.status;
+    }
     for (let attempt = 1; attempt <= MAX_DELIVERY_ATTEMPTS; attempt += 1) {
       try {
         const notice = await notices.emit({ text, reply: { mode: "conversation", key: job.key } });
@@ -958,14 +972,15 @@ export function createCore({ adapter, config, deps = {} }) {
     const loop = state.loops?.[job.loop?.id];
     const runId = roundKeyFor(job.loop.id, job.loop.round);
     const messageId = job.parts?.[0]?.messageId ?? null;
-    const delivered = job.status === "done";
     const roundOk = job.loopRoundStatus !== "failed";
-    const outcome = roundOk && delivered && messageId ? "ok" : "failed";
+    const noop = Boolean(job.noop);
+    const delivered = job.status === "done" && !noop;
+    const outcome = noop && roundOk ? "noop" : roundOk && delivered && messageId ? "ok" : "failed";
     if (outcome === "failed" && !job.error) job.error = roundOk ? (delivered ? "no-message-id" : "reply-failed") : job.loopRoundStatus ?? "failed";
     if (loop) {
       loop.lastMessageId = messageId;
       loop.lastOutcome = outcome;
-      loop.failStreak = outcome === "ok" ? 0 : Number(loop.failStreak ?? 0) + 1;
+      loop.failStreak = outcome === "failed" ? Number(loop.failStreak ?? 0) + 1 : 0;
       if (loop.failStreak >= 3 && loop.state === "armed") {
         loop.state = "paused";
         notices
