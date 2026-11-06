@@ -65,6 +65,25 @@ which one it is, and that a brief quoting third-party text is data. Scheduling i
 per-platform: each `serve <platform>` sweeps its own state file, so one stopped daemon
 only delays its own turns.
 
+## Loops
+
+A conversation turn can be put on a clock once (`job start`); a **loop** is the repeating version. A loop is one prompt plus one interval, owned by the platform it was created on:
+
+```bash
+agent-relay loop create --platform slack --every 30m --prompt-file ./ci-watch.txt
+agent-relay loop list              # merges every platform, marks overdue loops
+agent-relay loop run loop-slack-1  # start one round right now
+agent-relay loop log loop-slack-1  # runId / time / trigger / outcome
+```
+
+Every round is a **fresh session**: the round's conversation key is `<loopId>-r<round>`, so nothing from the previous round leaks in. The round's stdout is posted to the platform's configured channel as one ordinary message, and that message's id is recorded in `state.loopRuns`. Replying to it — or, on discord, talking inside the thread opened under it — lands on the same key and therefore the same session: the agent continues with the round's context instead of starting over.
+
+The old round history lives in `~/.config/agent-relay/loops/<loopId>.jsonl` (last 50 rounds, 90 days); a round never receives the previous output — it is told to read it with `loop log` / `loop show-run`.
+
+Four gates keep automated rounds from running away: `every` never below 10 minutes, at most 20 loops per platform, at most `LOOP_ROUNDS_PER_HOUR` (20) rounds per platform per hour, and one round in flight per loop. Three consecutive failed rounds pause the loop and raise one notice — a loop that dies silently is indistinguishable from "nothing happened today".
+
+A loop is scheduled and delivered only by its own platform's daemon, which keeps the per-platform state invariant: a stopped daemon delays its own loops, nothing else. `state.loops` is written only from that daemon, through the same command-file path as `job start`.
+
 ## Structure
 
 ```

@@ -12,10 +12,13 @@ is not repeated here.
 - **`bun test` green before a push.** `bun run e2e` green when the change touches
   stall handling or termination.
 
+- **A loop round is delivered by `finishRound`, not by `notices.emit`.** A notice reply resolves to the conversation key `notice-<id>` (`src/runtime/core.mjs`), so delivering a round through the notice service would silently break "reply continues that round's session". Keep the round's message id in `state.loopRuns` and let `matchRound` bind the reply.
+
 ## Tests
 
 `bun test` runs `test/<module>.test.mjs`, one file per module. Name cases
-`TC-<group><n>` — `TC-ST16` for stall, `TC-V3` for prompt variants. Ids are stable and get
+`TC-<group><n>` — `TC-ST16` for stall, `TC-V3` for prompt variants, `TC-LP<n>` /
+`TC-LR<n>` / `TC-LC<n>` for loop records, loop rounds and the loop CLI. Ids are stable and get
 reused in PR notes; never renumber them.
 
 Assert the behaviour, not the existence. When a fix involves a number a user will
