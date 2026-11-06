@@ -291,7 +291,7 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
         id: nextLoopId(loops, platform),
         prompt,
         every,
-        at,
+        loopAt: at,
         thread: !flags["no-thread"],
         createdBy: process.env.AGENT_RELAY_KEY ?? null,
       },
@@ -349,7 +349,7 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
         return;
       }
       command.every = every;
-      command.at = at;
+      command.loopAt = at;
     }
     if (flags.prompt !== undefined || flags["prompt-file"] !== undefined) {
       const prompt = textFlag(flags, "prompt");

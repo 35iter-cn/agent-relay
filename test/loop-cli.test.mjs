@@ -90,6 +90,7 @@ test("TC-LC1 create validates before dispatch and routes to the requested platfo
   const noThread = await run(["create", "--platform", "slack", "--at", new Date(Date.now() + 60000).toISOString(), "--prompt", "p", "--no-thread"], config, sent);
   assert.equal(noThread.code, 0);
   assert.equal(sent.at(-1).command.thread, false);
+  assert.ok(sent.at(-1).command.loopAt, "the loop's own at never overwrites the command envelope timestamp");
   assert.equal(sent.length, 2);
 });
 
@@ -188,7 +189,7 @@ test("TC-LC7 run and update dispatch the right commands after validation", async
   assert.deepEqual(sent.at(-1).command, { op: "loop-run", id: "loop-slack-1" });
   const updated = await run(["update", "loop-slack-1", "--every", "2h", "--prompt", "新标准"], config, sent);
   assert.equal(updated.code, 0);
-  assert.deepEqual(sent.at(-1).command, { op: "loop-update", id: "loop-slack-1", every: "2h", at: null, prompt: "新标准" });
+  assert.deepEqual(sent.at(-1).command, { op: "loop-update", id: "loop-slack-1", every: "2h", loopAt: null, prompt: "新标准" });
   const bad = await run(["update", "loop-slack-1", "--every", "1m"], config, sent);
   assert.equal(bad.code, 3);
   assert.match(bad.out, /refused: every-too-small/);

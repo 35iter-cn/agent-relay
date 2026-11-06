@@ -284,3 +284,34 @@ test("TC-LR10 an empty loop prompt template fails the round instead of spawning 
   assert.equal(job.status, "failed");
   assert.equal(job.error, "empty-prompt");
 });
+
+test("TC-LR11 the command envelope timestamp never becomes the loop's own schedule", async () => {
+  const { core, config } = harness({ state: { loops: {} } });
+  mkdirSync(config.commandDir("fake"), { recursive: true });
+  writeJsonAtomic(join(config.commandDir("fake"), "2.json"), {
+    op: "loop-create",
+    id: "loop-fake-2",
+    prompt: "看 CI",
+    every: "10m",
+    loopAt: null,
+    thread: true,
+    at: new Date().toISOString(),
+  });
+  await core.drainCommands();
+  const created = core.state.loops["loop-fake-2"];
+  assert.ok(created, "the loop was created");
+  assert.equal(created.every, "10m");
+  assert.equal(created.at, null);
+
+  writeJsonAtomic(join(config.commandDir("fake"), "3.json"), {
+    op: "loop-create",
+    id: "loop-fake-3",
+    prompt: "一次性",
+    every: null,
+    loopAt: "2026-12-01T00:00:00.000Z",
+    at: new Date().toISOString(),
+  });
+  await core.drainCommands();
+  assert.equal(core.state.loops["loop-fake-3"].at, "2026-12-01T00:00:00.000Z");
+  assert.equal(core.state.loops["loop-fake-3"].every, null);
+});

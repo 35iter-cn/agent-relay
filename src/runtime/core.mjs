@@ -1031,7 +1031,7 @@ export function createCore({ adapter, config, deps = {} }) {
     const loops = state.loops;
     const platform = platformOfLoopId(command.id);
     if (op === "loop-create") {
-      const refused = validateSchedule(command) ?? validatePrompt(command.prompt);
+      const refused = validateSchedule({ every: command.every, at: command.loopAt }) ?? validatePrompt(command.prompt);
       if (refused) return { op, refused };
       const id = isLoopId(command.id) && platformOfLoopId(command.id) === adapter.name ? command.id : nextLoopId(loops, adapter.name);
       if (loops[id]) return { op, refused: "duplicate", id };
@@ -1040,7 +1040,7 @@ export function createCore({ adapter, config, deps = {} }) {
         id,
         prompt: command.prompt,
         every: command.every ?? null,
-        at: command.at ?? null,
+        at: command.loopAt ?? null,
         thread: command.thread !== false,
         createdBy: command.createdBy ?? null,
         nowIso: isoNow(),
@@ -1067,11 +1067,11 @@ export function createCore({ adapter, config, deps = {} }) {
       return { op, id: loop.id, state: loop.state };
     }
     if (op === "loop-update") {
-      if (command.every !== undefined || command.at !== undefined) {
-        const refused = validateSchedule({ every: command.every ?? null, at: command.at ?? null });
+      if (command.every !== undefined || command.loopAt !== undefined) {
+        const refused = validateSchedule({ every: command.every ?? null, at: command.loopAt ?? null });
         if (refused) return { op, refused };
         loop.every = command.every ?? null;
-        loop.at = command.at ?? null;
+        loop.at = command.loopAt ?? null;
         if (loop.at) loop.state = "armed";
       }
       if (command.prompt !== undefined) {
