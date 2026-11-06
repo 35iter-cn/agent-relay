@@ -332,6 +332,23 @@ export function createPlatform({ config, log: baseLog }) {
     }
   }
 
+  async function openRoundThread({ messageId, name, key }) {
+    if (!messageId) return null;
+    rest = rest ?? createRest(token);
+    const created = await rest(`/channels/${channelId}/messages/${messageId}/threads`, {
+      method: "POST",
+      body: { name: threadName(name), auto_archive_duration: 10_080 },
+    }).catch((error) => {
+      log("warn", "round-thread", String(error?.message ?? error));
+      return null;
+    });
+    const threadId = created?.id ? String(created.id) : null;
+    if (!threadId) return null;
+    rememberThread(threadId, key);
+    coreRef?.save();
+    return { threadId, key };
+  }
+
   async function downloadAttachments(message, chat) {
     const all = Array.isArray(message.attachments) ? message.attachments : [];
     const picked = all.slice(0, MAX_ATTACHMENTS);
@@ -678,6 +695,8 @@ export function createPlatform({ config, log: baseLog }) {
         return false;
       }
     },
+
+    openRoundThread,
 
     async onProgress(ctx) {
       const channel = ctx.threadId ? String(ctx.threadId) : String(channelId);

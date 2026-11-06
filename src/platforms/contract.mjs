@@ -1,7 +1,7 @@
 export const PLATFORMS = ["discord", "feishu", "mattermost", "slack", "telegram"];
 
 const REQUIRED = { name: "string", start: "function", reply: "function", sessionFor: "function" };
-const OPTIONAL = ["postNotice", "postMedia", "notify", "edit", "onProgress", "onProgressDone", "buildWorker", "prune", "selfContext"];
+const OPTIONAL = ["postNotice", "postMedia", "notify", "edit", "onProgress", "onProgressDone", "buildWorker", "prune", "selfContext", "openRoundThread"];
 
 export function definePlatform(platform) {
   const missing = [];
