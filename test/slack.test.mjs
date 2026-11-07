@@ -115,22 +115,16 @@ function fakeApi(handlers = {}) {
   return { api, calls };
 }
 
-function harness({ handlers, api, post, emoji } = {}) {
+function harness({ handlers, api, emoji } = {}) {
   const logs = [];
   const fake = api === undefined ? fakeApi(handlers) : { api, calls: [] };
-  const sent = [];
   const runtime = createRuntime({
     api: fake.api,
     log: (level, ...args) => logs.push([level, ...args]),
     channel: "CTESTCHANNEL",
-    post:
-      post ??
-      (async (thread, text) => {
-        sent.push([thread, text]);
-      }),
     emoji,
   });
-  return { runtime, calls: fake.calls, logs, sent };
+  return { runtime, calls: fake.calls, logs };
 }
 
 function progressCtx(over = {}) {
@@ -263,10 +257,10 @@ test("TC-15 an oversized markdown body is resent as plain text too", async () =>
 });
 
 test("TC-15 a non-block rejection keeps the existing failure path", async () => {
-  const { runtime, calls, sent } = harness({ handlers: { "chat.postMessage": { ok: false, error: "not_in_channel" } } });
+  const { runtime, calls, logs } = harness({ handlers: { "chat.postMessage": { ok: false, error: "not_in_channel" } } });
   assert.equal(await runtime.reply(progressCtx(), "答案"), null);
   assert.equal(calls.length, 1, "只有一次 API 调用，不重试纯文本");
-  assert.deepEqual(sent, [["1792558469.808939", "答案"]]);
+  assert.deepEqual(logs, [["warn", "postMessage", "postMessage not_in_channel"]]);
 });
 
 test("AC-4 editing updates the existing message", async () => {
@@ -281,21 +275,21 @@ test("AC-4 a failed edit reports false instead of throwing", async () => {
   assert.deepEqual(logs, [["warn", "edit", "message_not_found"]]);
 });
 
-test("AC-5 without a bot token the runtime stays webhook only", async () => {
-  const { runtime, sent, logs } = harness({ api: null });
+test("AC-5 without a bot token a reply is logged and dropped", async () => {
+  const { runtime, logs } = harness({ api: null });
   assert.equal(await runtime.onProgress(progressCtx()), null);
   assert.equal(await runtime.reply(progressCtx(), "答案"), null);
-  assert.deepEqual(sent, [["1792558469.808939", "答案"]]);
+  assert.deepEqual(logs, [["warn", "reply", "no SLACK_BOT_TOKEN"]]);
   assert.equal(await runtime.edit(progressCtx(), "1792559000.000002", "x"), false);
   await runtime.onProgressDone(progressCtx({ progress: { mode: "reaction", messageId: "m" } }));
-  assert.deepEqual(logs, []);
+  assert.equal(logs.length, 1);
 });
 
-test("AC-5 a failing postMessage still delivers through the webhook", async () => {
-  const { runtime, sent, logs } = harness({ handlers: { "chat.postMessage": { ok: false, error: "not_in_channel" } } });
+test("AC-5 a failing postMessage is logged and dropped, never retried elsewhere", async () => {
+  const { runtime, calls, logs } = harness({ handlers: { "chat.postMessage": { ok: false, error: "not_in_channel" } } });
   assert.equal(await runtime.reply(progressCtx(), "答案"), null);
-  assert.deepEqual(sent, [["1792558469.808939", "答案"]]);
-  assert.equal(logs[0][0], "warn");
+  assert.deepEqual(logs, [["warn", "postMessage", "postMessage not_in_channel"]]);
+  assert.equal(calls.filter(([method]) => method === "chat.postMessage").length, 1);
 });
 
 test("the progress emoji is configurable", async () => {

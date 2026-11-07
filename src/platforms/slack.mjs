@@ -18,7 +18,7 @@ const PASSING_SUBTYPES = ["thread_broadcast", "file_share"];
 const CHUNK_LIMIT = 8_000;
 const THREAD_RETENTION_MS = 30 * 86_400_000;
 const DOWNLOAD_TIMEOUT_MS = 15_000;
-export const FILES_ALERT = "relay: Slack 附件下载失败，检查 WALL-E 是否有 files:read 且已 Reinstall";
+export const FILES_ALERT = "relay: Slack 附件下载失败，检查 app 是否有 files:read 且已 Reinstall";
 
 export const PROGRESS_EMOJI = "thinking_face";
 const PLACEHOLDER_TEXT = "⏳ 正在处理…";
@@ -96,7 +96,7 @@ export async function sendMarkdown(api, method, { text, ...rest }, log = () => {
   return api(method, { ...rest, text: source });
 }
 
-export function createRuntime({ api, log, channel, post, emoji = PROGRESS_EMOJI }) {
+export function createRuntime({ api, log, channel, emoji = PROGRESS_EMOJI }) {
   async function postMessage(ctx, text) {
     const params = { channel, text, ...(ctx.replyTo ? { thread_ts: ctx.replyTo } : {}) };
     const res = await sendMarkdown(api, "chat.postMessage", params, log);
@@ -107,7 +107,7 @@ export function createRuntime({ api, log, channel, post, emoji = PROGRESS_EMOJI 
   return {
     async reply(ctx, text) {
       if (!api) {
-        await post(ctx.replyTo ?? null, text);
+        log("warn", "reply", "no SLACK_BOT_TOKEN");
         return null;
       }
       const entry = ctx.progress;
@@ -123,8 +123,6 @@ export function createRuntime({ api, log, channel, post, emoji = PROGRESS_EMOJI 
         return await postMessage(ctx, text);
       } catch (error) {
         log("warn", "postMessage", String(error?.message ?? error));
-        if (!post) throw error;
-        await post(ctx.replyTo ?? null, text);
         return null;
       }
     },
@@ -294,20 +292,12 @@ export function createPlatform({ config, log: baseLog }) {
   const typing = { timer: null, cursor: 0, busy: false, keys: new Set() };
   let state = null;
   let coreRef = null;
-  let webhookUrl = null;
   let cookies = null;
 
   function readCookies() {
     const lines = readFileSync(config.envFile(".slack-xoxc.tmp"), "utf8").split("\n").map((line) => line.trim()).filter(Boolean);
     if (lines.length < 2) throw new Error(".slack-xoxc.tmp needs two lines");
     return { xoxc: lines[0], xoxd: lines[1] };
-  }
-
-  async function post(thread, text) {
-    if (!webhookUrl) throw new Error("webhook.url missing");
-    const body = JSON.stringify(thread ? { text, thread_ts: thread } : { text });
-    const res = await fetch(webhookUrl, { method: "POST", headers: { "Content-Type": "application/json" }, body });
-    if (!res.ok) throw new Error(`webhook ${res.status} ${(await res.text()).slice(0, 200)}`);
   }
 
   function apiFor(token) {
@@ -351,8 +341,7 @@ export function createPlatform({ config, log: baseLog }) {
     if (!alertAllowed(state.alerts, kind, now)) return log("info", "alert-suppressed", kind);
     state.alerts[kind] = new Date(now).toISOString();
     coreRef?.save();
-    log("warn", "alert", kind);
-    post(null, text).catch((error) => log("error", "alert", String(error)));
+    log("warn", "alert", kind, text);
   }
 
   async function openSocket() {
@@ -499,7 +488,6 @@ export function createPlatform({ config, log: baseLog }) {
     api: botToken ? apiFor(botToken) : null,
     log,
     channel,
-    post,
     emoji: progressEmoji,
   });
 
@@ -549,12 +537,6 @@ export function createPlatform({ config, log: baseLog }) {
       } catch (error) {
         log("error", "missing-credential", config.envFile(".slack-xoxc.tmp"), String(error));
       }
-      try {
-        webhookUrl = readFileSync(config.envFile("webhook.url"), "utf8").trim();
-      } catch (error) {
-        log("error", "missing-credential", config.envFile("webhook.url"), String(error));
-      }
-
       const handle = async (event) => {
         const verdict = acceptsEvent(event, { channel, allowedUser, botUser });
         if (!verdict.ok) return log("ignore", verdict.why, event?.ts ?? "");
@@ -672,11 +654,8 @@ export function createPlatform({ config, log: baseLog }) {
     },
 
     async postNotice(text) {
-      const api = botToken ? apiFor(botToken) : null;
-      if (!api) {
-        await post(null, text);
-        return { messageId: null };
-      }
+      if (!botToken) throw new Error("postNotice: SLACK_BOT_TOKEN missing");
+      const api = apiFor(botToken);
       let last = null;
       for (const part of chunkText(text, CHUNK_LIMIT)) {
         const res = await sendMarkdown(api, "chat.postMessage", { channel, text: part }, log);
