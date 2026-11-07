@@ -11,7 +11,7 @@ export const LOOP_VERBS = [
       "  --at <iso>        一次性定点（2026-11-08T13:00:00+08:00），跑完 loop 变 done",
       '  --cron "<expr>"   5 字段（分 时 日 月 周），按 Asia/Shanghai 定点，如 "0 13 * * *" 是每天 13:00',
       "每轮是新会话，输出作为一条消息发出；只输出 NOOP（或什么都不输出）的轮次不发消息。",
-      "--no-thread 关掉 discord 的轮次 thread（默认开）。",
+      "--no-thread 不给轮次消息开 thread（默认开，平台支持才生效）。",
     ],
     example: 'agent-relay loop create --platform discord --cron "0 13 * * *" --prompt-file ./digest.txt',
   },
