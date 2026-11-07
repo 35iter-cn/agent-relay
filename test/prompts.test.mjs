@@ -11,7 +11,7 @@ const SECTIONS = join(HERE, "..", "src", "prompts", "sections");
 const readSection = (file) => readFileSync(join(SECTIONS, file), "utf8");
 const builtinPrompts = (configDir) => createPrompts({ dir: join(HERE, "..", "src", "prompts"), userDir: "/nonexistent-user-prompts", configDir });
 
-const FIRST_TURN_PROMPT_BUDGET = 1950;
+const FIRST_TURN_PROMPT_BUDGET = 1760;
 
 function render(prompts, platform, entry = "conversation", extra = {}) {
   const adapter = { surface: `本${platform}`, chunkLimit: 3500 };
@@ -149,7 +149,22 @@ test("TC-P11 the built-in first-turn prompt stays within the first-turn budget w
     assert.match(text, /## 处置卡住的 job/);
     assert.match(text, /单独一行写 `!\[\]\(\/绝对路径\.png\)`/);
     assert.doesNotMatch(text, /\{\{/);
+    assert.match(text, /agent-relay loop help/);
+    assert.match(text, /agent-relay job help/);
+    assert.doesNotMatch(text, /loop list|loop pause|loop update|loop log|job list|job cancel/);
+    assert.match(text, /NOOP/);
+    assert.match(text, /连续 3 轮失败会自动暂停/);
   }
+});
+
+test("TC-P14 the loop round sections point at loop help instead of repeating flags", () => {
+  const header = readSection("02-header-loop.md");
+  const task = readSection("12-loop-task.md");
+  assert.match(header, /loop log/);
+  assert.doesNotMatch(header, /--prompt-file|--every|--cron|--no-thread/);
+  assert.match(task, /loop help/);
+  assert.doesNotMatch(task, /--prompt-file|--every|--cron|--no-thread/);
+  assert.match(task, /NOOP/);
 });
 
 test("TC-P12 a notice reply never renders the stall, surface or candidate sections", () => {
