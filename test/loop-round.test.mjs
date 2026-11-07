@@ -8,7 +8,8 @@ import { createCore } from "../src/runtime/core.mjs";
 import { emptyState } from "../src/state/schema.mjs";
 import { writeJsonAtomic } from "../src/shared/json.mjs";
 import { listRounds } from "../src/loops/history.mjs";
-import { loopDueAt } from "../src/loops/schedule.mjs";
+import { loopDueAt, LOOP_ROUNDS_PER_HOUR } from "../src/loops/schedule.mjs";
+import { cronNext, parseCron } from "../src/loops/cron.mjs";
 
 function fakeChild({ stdout = "轮次输出", code = 0 } = {}) {
   const child = new EventEmitter();
@@ -410,4 +411,42 @@ test("TC-LR15 loop-update replaces the whole schedule and revives a done loop", 
   });
   await core.drainCommands();
   assert.equal(core.state.loops["loop-fake-1"].state, "armed", "a done loop comes back when its schedule changes");
+});
+
+test("TC-LR16 a cron loop catches up exactly once after a long stop and does not fire while busy", async () => {
+  const hanging = () => {
+    const child = new EventEmitter();
+    child.pid = 999999;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => {};
+    return child;
+  };
+  const busy = harness({
+    state: { loops: { "loop-fake-1": seededLoop({ every: null, cron: "* * * * *", createdAt: agoMinutes(5) }) } },
+    spawn: hanging,
+  });
+  assert.equal(await busy.core.startDueLoops(), 1);
+  const anchor = agoMinutes(30);
+  busy.core.state.loops["loop-fake-1"].lastRunAt = anchor;
+  assert.equal(await busy.core.startDueLoops(), 0, "the previous round is still in flight");
+  assert.equal(busy.core.state.loops["loop-fake-1"].lastRunAt, anchor, "a skipped tick never moves the anchor");
+
+  const stopped = harness({
+    state: { loops: { "loop-fake-1": seededLoop({ every: null, cron: "* * * * *", createdAt: agoMinutes(3 * 24 * 60) }) } },
+  });
+  assert.equal(await stopped.core.startDueLoops(), 1);
+  await settle();
+  assert.equal(await stopped.core.startDueLoops(), 0, "three days of missed minutes still start one round");
+  assert.equal(listRounds(stopped.config.loopHistoryDir, "loop-fake-1").length, 1);
+});
+
+test("TC-LR17 a dense cron expression stays under the hourly round budget", () => {
+  const parsed = parseCron("*/5 * * * *");
+  const start = Date.parse("2026-11-07T00:00:00+08:00");
+  let at = start;
+  let count = 0;
+  while ((at = cronNext(parsed, at)) <= start + 3_600_000) count += 1;
+  assert.equal(count, 12);
+  assert.ok(count < LOOP_ROUNDS_PER_HOUR);
 });
