@@ -29,10 +29,10 @@ export function usage(stream = process.stderr) {
       "  agent-relay job start --platform <p> --key <k> --dedupe <id> (--brief <text> | --brief-file <path>) [--in 30m | --at <iso>] [--grace 6h]",
       "  agent-relay job cancel --platform <p> <dedupe>",
       "  agent-relay job list --platform <p> [--key <k>]",
-      "  agent-relay loop create --platform <p> (--every 30m | --at <iso>) (--prompt <t> | --prompt-file <f>) [--no-thread]",
+      "  agent-relay loop create --platform <p> (--every 30m | --at <iso> | --cron \"<expr>\") (--prompt <t> | --prompt-file <f>) [--no-thread]",
       "  agent-relay loop list [--platform <p>] [--all]",
       "  agent-relay loop show <id> | run <id> | pause <id> | resume <id> | delete <id>",
-      "  agent-relay loop update <id> [--every <d> | --at <iso> | --prompt <t> | --prompt-file <f> | --thread | --no-thread]",
+      "  agent-relay loop update <id> [--every <d> | --at <iso> | --cron \"<expr>\" | --prompt <t> | --prompt-file <f> | --thread | --no-thread]",
       "  agent-relay loop log <id> [--limit 20]",
       "  agent-relay loop show-run <runId>",
     ].join("\n") + "\n",
@@ -169,7 +169,7 @@ export function listLoopRows(config, platforms, { all = false, nowMs = Date.now(
         platform,
         id: loop.id,
         state: loop.state,
-        schedule: loop.at ? `at ${loop.at}` : `every ${loop.every}`,
+        schedule: loop.at ? `at ${loop.at}` : loop.cron ? `cron ${loop.cron}` : `every ${loop.every}`,
         due,
         overMs: loop.state === "armed" && Number.isFinite(due) ? Math.max(0, nowMs - due) : 0,
         lastOutcome: loop.lastOutcome ?? "-",
@@ -275,7 +275,8 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
     const prompt = textFlag(flags, "prompt");
     const every = typeof flags.every === "string" ? flags.every : null;
     const at = typeof flags.at === "string" ? flags.at : null;
-    const refused = validateSchedule({ every, at }) ?? validatePrompt(prompt);
+    const cron = typeof flags.cron === "string" ? flags.cron : null;
+    const refused = validateSchedule({ every, at, cron }) ?? validatePrompt(prompt);
     if (refused) {
       refuse(refused);
       return;
@@ -292,6 +293,7 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
         prompt,
         every,
         loopAt: at,
+        cron,
         thread: !flags["no-thread"],
         createdBy: process.env.AGENT_RELAY_KEY ?? null,
       },
@@ -318,7 +320,7 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
       [
         `id: ${target.id}`,
         `state: ${target.state}`,
-        `schedule: ${target.at ? `at ${target.at}` : `every ${target.every}`}`,
+        `schedule: ${target.at ? `at ${target.at}` : target.cron ? `cron ${target.cron}` : `every ${target.every}`}`,
         `due: ${Number.isFinite(loopDueAt(target)) ? localStamp(loopDueAt(target)) : "-"}`,
         `thread: ${target.thread !== false}`,
         `rounds: ${target.lastRound ?? 0}  last: ${target.lastOutcome ?? "-"}  streak: ${target.failStreak ?? 0}`,
@@ -340,16 +342,18 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
   }
   if (verb === "update") {
     const command = { op: "loop-update", id };
-    if (flags.every !== undefined || flags.at !== undefined) {
+    if (flags.every !== undefined || flags.at !== undefined || flags.cron !== undefined) {
       const every = typeof flags.every === "string" ? flags.every : null;
       const at = typeof flags.at === "string" ? flags.at : null;
-      const refused = validateSchedule({ every, at });
+      const cron = typeof flags.cron === "string" ? flags.cron : null;
+      const refused = validateSchedule({ every, at, cron });
       if (refused) {
         refuse(refused);
         return;
       }
       command.every = every;
       command.loopAt = at;
+      if (cron) command.cron = cron;
     }
     if (flags.prompt !== undefined || flags["prompt-file"] !== undefined) {
       const prompt = textFlag(flags, "prompt");

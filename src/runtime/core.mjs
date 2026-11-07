@@ -1075,7 +1075,7 @@ export function createCore({ adapter, config, deps = {} }) {
     const loops = state.loops;
     const platform = platformOfLoopId(command.id);
     if (op === "loop-create") {
-      const refused = validateSchedule({ every: command.every, at: command.loopAt }) ?? validatePrompt(command.prompt);
+      const refused = validateSchedule({ every: command.every, at: command.loopAt, cron: command.cron }) ?? validatePrompt(command.prompt);
       if (refused) return { op, refused };
       const id = isLoopId(command.id) && platformOfLoopId(command.id) === adapter.name ? command.id : nextLoopId(loops, adapter.name);
       if (loops[id]) return { op, refused: "duplicate", id };
@@ -1085,6 +1085,7 @@ export function createCore({ adapter, config, deps = {} }) {
         prompt: command.prompt,
         every: command.every ?? null,
         at: command.loopAt ?? null,
+        cron: command.cron ?? null,
         thread: command.thread !== false,
         createdBy: command.createdBy ?? null,
         nowIso: isoNow(),
@@ -1111,12 +1112,13 @@ export function createCore({ adapter, config, deps = {} }) {
       return { op, id: loop.id, state: loop.state };
     }
     if (op === "loop-update") {
-      if (command.every !== undefined || command.loopAt !== undefined) {
-        const refused = validateSchedule({ every: command.every ?? null, at: command.loopAt ?? null });
+      if (command.every !== undefined || command.loopAt !== undefined || command.cron !== undefined) {
+        const refused = validateSchedule({ every: command.every ?? null, at: command.loopAt ?? null, cron: command.cron ?? null });
         if (refused) return { op, refused };
         loop.every = command.every ?? null;
         loop.at = command.loopAt ?? null;
-        if (loop.at) loop.state = "armed";
+        loop.cron = command.cron ?? null;
+        if (loop.state === "done") loop.state = "armed";
       }
       if (command.prompt !== undefined) {
         const refused = validatePrompt(command.prompt);

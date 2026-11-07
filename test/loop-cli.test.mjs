@@ -196,3 +196,36 @@ test("TC-LC7 run and update dispatch the right commands after validation", async
   const deleted = await run(["delete", "loop-slack-1"], config, sent);
   assert.deepEqual(sent.at(-1).command, { op: "loop-state", id: "loop-slack-1", state: "deleted" });
 });
+
+test("TC-LC8 a cron schedule validates, dispatches and shows up in list and show", async () => {
+  const config = makeConfig();
+  seed(config, "slack", {});
+  const sent = [];
+  const created = await run(["create", "--platform", "slack", "--cron", "0 13 * * *", "--prompt", "看 CI"], config, sent);
+  assert.equal(created.code, 0);
+  assert.equal(sent.at(-1).command.cron, "0 13 * * *");
+  assert.equal(sent.at(-1).command.every, null);
+  assert.equal(sent.at(-1).command.loopAt, null);
+
+  const bad = await run(["create", "--platform", "slack", "--cron", "0 13 * *", "--prompt", "p"], config, sent);
+  assert.equal(bad.code, 3);
+  assert.match(bad.out, /refused: bad-cron/);
+  const never = await run(["create", "--platform", "slack", "--cron", "0 0 30 2 *", "--prompt", "p"], config, sent);
+  assert.equal(never.code, 3);
+  assert.match(never.out, /refused: never-fires/);
+  const both = await run(["create", "--platform", "slack", "--every", "30m", "--cron", "0 13 * * *", "--prompt", "p"], config, sent);
+  assert.equal(both.code, 3);
+  assert.match(both.out, /refused: schedule-required/);
+
+  seed(config, "slack", { "loop-slack-1": loopOf({ id: "loop-slack-1", every: "30m" }) });
+  const updated = await run(["update", "loop-slack-1", "--cron", "*/10 * * * *"], config, sent);
+  assert.equal(updated.code, 0);
+  assert.deepEqual(sent.at(-1).command, { op: "loop-update", id: "loop-slack-1", every: null, loopAt: null, cron: "*/10 * * * *" });
+
+  seed(config, "slack", { "loop-slack-1": loopOf({ id: "loop-slack-1", every: null, cron: "0 13 * * *" }) });
+  const rows = listLoopRows(config, ["slack"]);
+  assert.equal(rows[0].schedule, "cron 0 13 * * *");
+  assert.ok(Number.isFinite(rows[0].due));
+  const definition = await run(["show", "loop-slack-1"], config, sent);
+  assert.match(definition.out, /schedule: cron 0 13 \* \* \*/);
+});
