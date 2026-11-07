@@ -193,7 +193,7 @@ Configuration lives in `~/.config/agent-relay/` (override with
 
 ```
 feishu.env | slack-app.env | telegram.env
-webhook.url, .slack-xoxc.tmp        # slack fallbacks (.slack-xoxc.tmp: root-text reads only)
+.slack-xoxc.tmp                     # slack root-text reads only
 relay-<platform>.json               # state: conversations, jobs, notices
 relay-<platform>.cmd/               # CLI → daemon command queue
 logs/<platform>/<day>.jsonl
