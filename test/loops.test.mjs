@@ -111,6 +111,11 @@ test("TC-LP11 a cron loop carries its expression and anchors the next match on t
   assert.equal(loopDueAt({ ...loop, cron: "not a cron" }), Number.POSITIVE_INFINITY);
   assert.equal(loopDueAt({ ...loop, every: "30m", cron: "0 13 * * *" }), Date.parse("2026-11-07T05:00:00.000Z"));
   assert.equal(loopDueAt({ ...loop, at: "2026-11-09T00:00:00.000Z", cron: "0 13 * * *" }), Date.parse("2026-11-09T00:00:00.000Z"));
+  assert.equal(
+    loopDueAt({ ...loop, cron: null, every: null, at: null }),
+    Number.POSITIVE_INFINITY,
+    "a loop a pre-cron daemon cannot read is never scheduled instead of running at a wrong time",
+  );
 });
 
 test("TC-LP9 history appends, reads back newest first, finds a run and keeps the tail only", () => {
