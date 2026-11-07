@@ -56,7 +56,8 @@ ordinary job: same lease, serialisation per key, stall watchdog, delivery, `/sto
 `job list` shows the scheduled and running turns, `job cancel` drops one that has not
 started. A turn that starts later than its `dueAt` records `lateMs` and the prompt says
 how late it is; one that is still waiting past `expiresAt` is cancelled instead of
-starting.
+starting. `agent-relay job help` prints every subcommand, the timing flags and the
+limits; the model is pointed at it instead of carrying the flags in its prompt.
 
 Who is asking matters only for provenance, not for permission: `origin: "self"` means
 the call came from inside a relay turn (the child carries `AGENT_RELAY_SELF_CHAIN`),
@@ -67,14 +68,18 @@ only delays its own turns.
 
 ## Loops
 
-A conversation turn can be put on a clock once (`job start`); a **loop** is the repeating version. A loop is one prompt plus one interval, owned by the platform it was created on:
+A conversation turn can be put on a clock once (`job start`); a **loop** is the repeating version. A loop is one prompt plus one schedule (`--every`, `--at` or `--cron`), owned by the platform it was created on:
 
 ```bash
 agent-relay loop create --platform slack --every 30m --prompt-file ./ci-watch.txt
+agent-relay loop create --platform slack --cron "0 13 * * *" --prompt-file ./digest.txt
 agent-relay loop list              # merges every platform, marks overdue loops
 agent-relay loop run loop-slack-1  # start one round right now
 agent-relay loop log loop-slack-1  # runId / time / trigger / outcome
+agent-relay loop help              # every subcommand, schedule and gate
 ```
+
+The three schedules answer different questions and none replaces another: `every` schedules one interval after the previous round **started** (any duration, and "wait 30m after it finishes"); `at` fires once and leaves the loop `done`; `cron "<5 fields>"` fires on wall-clock minutes in `Asia/Shanghai` (`0 13 * * *` is every day at 13:00). Only one is set at a time — updating one clears the other two — and a cron loop never becomes `done`.
 
 Every round is a **fresh session**: the round's conversation key is `<loopId>-r<round>`, so nothing from the previous round leaks in. The round's output goes out through the **notice entry** with a conversation binding (`reply: { mode: "conversation", key }`), which is the one deliberate difference to an ordinary notice: a reply to it continues *that round's* session instead of opening a `notice-<id>` conversation. On discord the round message additionally gets a thread, and talking inside it lands on the same key.
 
@@ -84,7 +89,7 @@ A round whose output is only `NOOP` (or nothing at all) is a quiet round: nothin
 
 The old round history lives in `~/.config/agent-relay/loops/<loopId>.jsonl` (last 50 rounds, 90 days); a round never receives the previous output — it is told to read it with `loop log` / `loop show-run`.
 
-Four gates keep automated rounds from running away: `every` never below 10 minutes, at most 20 loops per platform, at most `LOOP_ROUNDS_PER_HOUR` (20) rounds per platform per hour, and one round in flight per loop. Three consecutive failed rounds pause the loop and raise one notice — a loop that dies silently is indistinguishable from "nothing happened today".
+Four gates keep automated rounds from running away: `every` never below 10 minutes (`cron` is not held to that floor — a dense expression is bounded by the hourly budget instead), at most 20 loops per platform, at most `LOOP_ROUNDS_PER_HOUR` (20) rounds per platform per hour, and one round in flight per loop. Three consecutive failed rounds pause the loop and raise one notice — a loop that dies silently is indistinguishable from "nothing happened today".
 
 A loop is scheduled and delivered only by its own platform's daemon, which keeps the per-platform state invariant: a stopped daemon delays its own loops, nothing else. `state.loops` is written only from that daemon, through the same command-file path as `job start`.
 
@@ -92,11 +97,13 @@ A loop is scheduled and delivered only by its own platform's daemon, which keeps
 
 ```
 src/
-├── cli.mjs                 entry: serve | notice | notify | stall | job
+├── cli.mjs                 entry: serve | notice | notify | stall | job | loop
+├── help.mjs                subcommand help renderer shared by the command families
 ├── config.mjs              paths, env files, state/command locations
 ├── shared/                 chunking, json, time, logging, retention, prompts, env, fs, boot
 ├── state/                  state schema + atomic store
-├── jobs/                   job model, leases, delivery plan, worker signals, next action
+├── jobs/                   job model, leases, delivery plan, worker signals, next action, help
+├── loops/                  loop model, schedule (every / at / cron), rounds, history, help
 ├── runtime/                core loop, prompts, stall notice, instance lock
 ├── notices/                notice service (emit / match / prune)
 ├── prompts/                prompt sections (one file per block) + stall fragments
