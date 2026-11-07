@@ -90,6 +90,34 @@ test("TC-LP7 a round key is derived from the loop id and the round number", () =
   assert.ok(Buffer.byteLength(truncateOutput(big)) <= 32 * 1024);
 });
 
+test("TC-LP10 the schedule is exactly one of every, at and cron, and a cron expression must fire", () => {
+  assert.equal(validateSchedule({ cron: "0 13 * * *" }), null);
+  assert.equal(validateSchedule({ cron: "*/5 9-18 * * 1-5" }), null);
+  assert.equal(validateSchedule({ cron: "bad" }), "bad-cron");
+  assert.equal(validateSchedule({ cron: "0 0 30 2 *" }), "never-fires");
+  assert.equal(validateSchedule({ every: "30m", cron: "0 13 * * *" }), "schedule-required");
+  assert.equal(validateSchedule({ at: nowIso(), cron: "0 13 * * *" }), "schedule-required");
+  assert.equal(validateSchedule({ cron: "" }), "schedule-required");
+});
+
+test("TC-LP11 a cron loop carries its expression and anchors the next match on the last run", () => {
+  const loop = createLoop({ id: "loop-slack-1", prompt: "p", cron: "0 13 * * *", nowIso: "2026-11-06T05:00:00.000Z" });
+  assert.equal(loop.cron, "0 13 * * *");
+  assert.equal(loop.every, null);
+  assert.equal(loop.at, null);
+  assert.equal(loopDueAt(loop), Date.parse("2026-11-07T05:00:00.000Z"));
+  assert.equal(loopDueAt({ ...loop, lastRunAt: "2026-11-07T05:00:07.000Z" }), Date.parse("2026-11-08T05:00:00.000Z"));
+  assert.equal(loopDueAt({ ...loop, lastRunAt: "2026-11-07T02:00:00.000Z" }), Date.parse("2026-11-07T05:00:00.000Z"));
+  assert.equal(loopDueAt({ ...loop, cron: "not a cron" }), Number.POSITIVE_INFINITY);
+  assert.equal(loopDueAt({ ...loop, every: "30m", cron: "0 13 * * *" }), Date.parse("2026-11-07T05:00:00.000Z"));
+  assert.equal(loopDueAt({ ...loop, at: "2026-11-09T00:00:00.000Z", cron: "0 13 * * *" }), Date.parse("2026-11-09T00:00:00.000Z"));
+  assert.equal(
+    loopDueAt({ ...loop, cron: null, every: null, at: null }),
+    Number.POSITIVE_INFINITY,
+    "a loop a pre-cron daemon cannot read is never scheduled instead of running at a wrong time",
+  );
+});
+
 test("TC-LP9 history appends, reads back newest first, finds a run and keeps the tail only", () => {
   const dir = mkdtempSync(join(tmpdir(), "relay-loops-"));
   for (let round = 1; round <= 3; round += 1) {

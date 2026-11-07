@@ -1,4 +1,5 @@
 import { loopIntervalMs } from "./model.mjs";
+import { cronNext, parseCron } from "./cron.mjs";
 
 export const LOOP_ROUNDS_PER_HOUR = 20;
 export const LOOP_TIMEOUT_MS = 15 * 60_000;
@@ -7,8 +8,13 @@ export function loopDueAt(loop) {
   const at = Date.parse(loop?.at ?? "");
   if (Number.isFinite(at)) return at;
   const anchor = Date.parse(loop?.lastRunAt ?? loop?.createdAt ?? "");
+  if (!Number.isFinite(anchor)) return Number.POSITIVE_INFINITY;
+  if (loop?.cron) {
+    const parsed = parseCron(loop.cron);
+    return parsed ? cronNext(parsed, anchor) : Number.POSITIVE_INFINITY;
+  }
   const interval = loopIntervalMs(loop);
-  if (!Number.isFinite(anchor) || interval === null) return Number.POSITIVE_INFINITY;
+  if (interval === null) return Number.POSITIVE_INFINITY;
   return anchor + interval;
 }
 

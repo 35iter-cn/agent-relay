@@ -1,4 +1,5 @@
 import { parseDurationMs } from "../shared/duration.mjs";
+import { cronNext, parseCron } from "./cron.mjs";
 
 export const LOOP_STATES = new Set(["armed", "paused", "done", "deleted"]);
 export const MIN_EVERY_MS = 10 * 60_000;
@@ -32,11 +33,15 @@ export function activeLoopCount(loops) {
   return Object.values(loops ?? {}).filter((loop) => loop && loop.state !== "deleted").length;
 }
 
-export function validateSchedule({ every, at } = {}) {
-  const hasEvery = every !== undefined && every !== null && every !== "";
-  const hasAt = at !== undefined && at !== null && at !== "";
-  if (hasEvery === hasAt) return "schedule-required";
-  if (hasAt) return Number.isFinite(Date.parse(at)) ? null : "bad-at";
+export function validateSchedule({ every, at, cron } = {}) {
+  const given = [every, at, cron].filter((value) => value !== undefined && value !== null && value !== "");
+  if (given.length !== 1) return "schedule-required";
+  if (cron) {
+    const parsed = parseCron(cron);
+    if (!parsed) return "bad-cron";
+    return Number.isFinite(cronNext(parsed, Date.now())) ? null : "never-fires";
+  }
+  if (at) return Number.isFinite(Date.parse(at)) ? null : "bad-at";
   const ms = parseDurationMs(every);
   if (ms === null) return "bad-every";
   return ms < MIN_EVERY_MS ? "every-too-small" : null;
@@ -53,12 +58,13 @@ export function validateLoopChange(change = {}) {
   return refused ?? null;
 }
 
-export function createLoop({ id, prompt, every = null, at = null, thread = true, createdBy = null, nowIso }) {
+export function createLoop({ id, prompt, every = null, at = null, cron = null, thread = true, createdBy = null, nowIso }) {
   return {
     id,
     prompt: String(prompt).trim(),
     every: every ?? null,
     at: at ?? null,
+    cron: cron ?? null,
     thread: thread !== false,
     state: "armed",
     createdAt: nowIso,

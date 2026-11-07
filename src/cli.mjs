@@ -12,9 +12,13 @@ import { readJson } from "./shared/json.mjs";
 import { localStamp } from "./shared/time.mjs";
 import { MAX_LOOPS, MIN_EVERY_MS, nextLoopId, platformOfLoopId, validatePrompt, validateSchedule } from "./loops/model.mjs";
 import { loopDueAt } from "./loops/schedule.mjs";
+import { loopHelp } from "./loops/help.mjs";
+import { jobHelp } from "./jobs/help.mjs";
 import { findRound, listRounds } from "./loops/history.mjs";
 
 export const ACTION_NAMES = new Set(["cancel", "restart"]);
+export const LOOP_ACTIONS = new Set(["create", "list", "show", "update", "pause", "resume", "delete", "run", "log", "show-run"]);
+export const JOB_ACTIONS = new Set(["start", "cancel", "list"]);
 const COMMAND_WAIT_MS = 20_000;
 const COMMAND_POLL_MS = 500;
 
@@ -26,15 +30,8 @@ export function usage(stream = process.stderr) {
       "  agent-relay notice emit --platform <p> (--text <text> | --text-file <path>) [--prompt <text> | --prompt-file <path>] [--reply-mode conversation --reply-key <key>]",
       "  agent-relay notify <platform> <text>",
       "  agent-relay stall <platform> <cancel|restart> <key> [text]",
-      "  agent-relay job start --platform <p> --key <k> --dedupe <id> (--brief <text> | --brief-file <path>) [--in 30m | --at <iso>] [--grace 6h]",
-      "  agent-relay job cancel --platform <p> <dedupe>",
-      "  agent-relay job list --platform <p> [--key <k>]",
-      "  agent-relay loop create --platform <p> (--every 30m | --at <iso>) (--prompt <t> | --prompt-file <f>) [--no-thread]",
-      "  agent-relay loop list [--platform <p>] [--all]",
-      "  agent-relay loop show <id> | run <id> | pause <id> | resume <id> | delete <id>",
-      "  agent-relay loop update <id> [--every <d> | --at <iso> | --prompt <t> | --prompt-file <f> | --thread | --no-thread]",
-      "  agent-relay loop log <id> [--limit 20]",
-      "  agent-relay loop show-run <runId>",
+      "  agent-relay job help | agent-relay job start|cancel|list …",
+      "  agent-relay loop help | agent-relay loop create|list|show|update|pause|resume|delete|run|log|show-run …",
     ].join("\n") + "\n",
   );
   process.exit(2);
@@ -169,7 +166,7 @@ export function listLoopRows(config, platforms, { all = false, nowMs = Date.now(
         platform,
         id: loop.id,
         state: loop.state,
-        schedule: loop.at ? `at ${loop.at}` : `every ${loop.every}`,
+        schedule: loop.at ? `at ${loop.at}` : loop.cron ? `cron ${loop.cron}` : `every ${loop.every}`,
         due,
         overMs: loop.state === "armed" && Number.isFinite(due) ? Math.max(0, nowMs - due) : 0,
         lastOutcome: loop.lastOutcome ?? "-",
@@ -186,6 +183,64 @@ export function formatLoopRows(rows) {
     const late = row.overMs > 60_000 ? ` overdue ${Math.round(row.overMs / 60_000)}m` : "";
     return `${row.id}\t${row.state}\t${row.schedule}\t${due}${late}\t${row.lastOutcome}\t${firstLine(row.prompt)}`;
   });
+}
+
+export async function handleJobCommand(rest, config, log, deps = {}) {
+  const dispatch = deps.sendCommand ?? sendCommand;
+  const { verb, flags, positional } = jobArgs(rest);
+  if (!verb || verb === "help" || verb === "--help" || verb === "-h") {
+    const text = jobHelp(verb ? String(positional[0] ?? "") : "");
+    if (!text) {
+      process.stderr.write("refused: unknown-verb\n");
+      process.exitCode = 3;
+      return;
+    }
+    process.stdout.write(text);
+    process.exitCode = verb ? 0 : 2;
+    return;
+  }
+  if (!JOB_ACTIONS.has(verb)) {
+    process.stderr.write("refused: unknown-verb\n");
+    process.exitCode = 3;
+    return;
+  }
+  const platform = flags.platform;
+  if (!isPlatform(platform)) usage();
+  if (verb === "list") {
+    const lines = listJobs(config.stateFile(platform), typeof flags.key === "string" ? flags.key : null);
+    process.stdout.write(`${lines.join("\n")}${lines.length ? "\n" : ""}`);
+    return;
+  }
+  if (verb === "cancel") {
+    const dedupe = jobCancelDedupe(flags, positional);
+    if (!dedupe) usage();
+    const sent = await dispatch(config, platform, { op: "cancel", dedupe });
+    process.stdout.write(`${sent.delivered ? "cancelled" : "pending"}\n`);
+    process.exitCode = sent.delivered ? 0 : 1;
+    return;
+  }
+  const key = typeof flags.key === "string" ? flags.key : "";
+  const dedupe = typeof flags.dedupe === "string" ? flags.dedupe : "";
+  const brief = textFlag(flags, "brief");
+  if (!key || !dedupe || !brief) usage();
+  const dueAt = dueFrom(flags);
+  if ((flags.at !== undefined || flags.in !== undefined) && !dueAt) usage();
+  const refused = precheckJob(config.stateFile(platform), { key, dedupe, brief });
+  if (refused) {
+    process.stderr.write(`refused: ${refused}\n`);
+    process.exitCode = 3;
+    return;
+  }
+  const sent = await dispatch(config, platform, {
+    op: "schedule",
+    key,
+    dedupe,
+    brief,
+    dueAt,
+    graceMs: durationMs(flags.grace, DEFAULT_GRACE_MS),
+  });
+  process.stdout.write(`${sent.delivered ? (dueAt ? "scheduled" : "started") : "pending"}\n`);
+  process.exitCode = sent.delivered ? 0 : 1;
 }
 
 async function serve(platform, config, log) {
@@ -227,6 +282,22 @@ async function serve(platform, config, log) {
 
 export async function handleLoopCommand(rest, config, log, deps = {}) {
   const [verb, ...args] = rest;
+  if (!verb || verb === "help" || verb === "--help" || verb === "-h") {
+    const text = loopHelp(verb ? String(args[0] ?? "") : "");
+    if (!text) {
+      process.stderr.write("refused: unknown-verb\n");
+      process.exitCode = 3;
+      return;
+    }
+    process.stdout.write(text);
+    process.exitCode = verb ? 0 : 2;
+    return;
+  }
+  if (!LOOP_ACTIONS.has(verb)) {
+    process.stderr.write("refused: unknown-verb\n");
+    process.exitCode = 3;
+    return;
+  }
   const { flags, rest: positional } = parseFlags(args);
   const id = positional[0] ?? "";
   const refuse = (reason) => {
@@ -275,7 +346,8 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
     const prompt = textFlag(flags, "prompt");
     const every = typeof flags.every === "string" ? flags.every : null;
     const at = typeof flags.at === "string" ? flags.at : null;
-    const refused = validateSchedule({ every, at }) ?? validatePrompt(prompt);
+    const cron = typeof flags.cron === "string" ? flags.cron : null;
+    const refused = validateSchedule({ every, at, cron }) ?? validatePrompt(prompt);
     if (refused) {
       refuse(refused);
       return;
@@ -292,6 +364,7 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
         prompt,
         every,
         loopAt: at,
+        cron,
         thread: !flags["no-thread"],
         createdBy: process.env.AGENT_RELAY_KEY ?? null,
       },
@@ -318,7 +391,7 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
       [
         `id: ${target.id}`,
         `state: ${target.state}`,
-        `schedule: ${target.at ? `at ${target.at}` : `every ${target.every}`}`,
+        `schedule: ${target.at ? `at ${target.at}` : target.cron ? `cron ${target.cron}` : `every ${target.every}`}`,
         `due: ${Number.isFinite(loopDueAt(target)) ? localStamp(loopDueAt(target)) : "-"}`,
         `thread: ${target.thread !== false}`,
         `rounds: ${target.lastRound ?? 0}  last: ${target.lastOutcome ?? "-"}  streak: ${target.failStreak ?? 0}`,
@@ -340,16 +413,18 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
   }
   if (verb === "update") {
     const command = { op: "loop-update", id };
-    if (flags.every !== undefined || flags.at !== undefined) {
+    if (flags.every !== undefined || flags.at !== undefined || flags.cron !== undefined) {
       const every = typeof flags.every === "string" ? flags.every : null;
       const at = typeof flags.at === "string" ? flags.at : null;
-      const refused = validateSchedule({ every, at });
+      const cron = typeof flags.cron === "string" ? flags.cron : null;
+      const refused = validateSchedule({ every, at, cron });
       if (refused) {
         refuse(refused);
         return;
       }
       command.every = every;
       command.loopAt = at;
+      if (cron) command.cron = cron;
     }
     if (flags.prompt !== undefined || flags["prompt-file"] !== undefined) {
       const prompt = textFlag(flags, "prompt");
@@ -408,45 +483,7 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
   if (mode === "job") {
-    const { verb, flags, positional } = jobArgs(rest);
-    if (!["start", "cancel", "list"].includes(verb)) usage();
-    const platform = flags.platform;
-    if (!isPlatform(platform)) usage();
-    if (verb === "list") {
-      const lines = listJobs(config.stateFile(platform), typeof flags.key === "string" ? flags.key : null);
-      process.stdout.write(`${lines.join("\n")}${lines.length ? "\n" : ""}`);
-      return;
-    }
-    if (verb === "cancel") {
-      const dedupe = jobCancelDedupe(flags, positional);
-      if (!dedupe) usage();
-      const sent = await sendCommand(config, platform, { op: "cancel", dedupe });
-      process.stdout.write(`${sent.delivered ? "cancelled" : "pending"}\n`);
-      process.exitCode = sent.delivered ? 0 : 1;
-      return;
-    }
-    const key = typeof flags.key === "string" ? flags.key : "";
-    const dedupe = typeof flags.dedupe === "string" ? flags.dedupe : "";
-    const brief = textFlag(flags, "brief");
-    if (!key || !dedupe || !brief) usage();
-    const dueAt = dueFrom(flags);
-    if ((flags.at !== undefined || flags.in !== undefined) && !dueAt) usage();
-    const refused = precheckJob(config.stateFile(platform), { key, dedupe, brief });
-    if (refused) {
-      process.stderr.write(`refused: ${refused}\n`);
-      process.exitCode = 3;
-      return;
-    }
-    const sent = await sendCommand(config, platform, {
-      op: "schedule",
-      key,
-      dedupe,
-      brief,
-      dueAt,
-      graceMs: durationMs(flags.grace, DEFAULT_GRACE_MS),
-    });
-    process.stdout.write(`${sent.delivered ? (dueAt ? "scheduled" : "started") : "pending"}\n`);
-    process.exitCode = sent.delivered ? 0 : 1;
+    await handleJobCommand(rest, config, log);
     return;
   }
   if (mode === "loop") {

@@ -8,6 +8,8 @@ import { createCore } from "../src/runtime/core.mjs";
 import { emptyState } from "../src/state/schema.mjs";
 import { writeJsonAtomic } from "../src/shared/json.mjs";
 import { listRounds } from "../src/loops/history.mjs";
+import { loopDueAt, LOOP_ROUNDS_PER_HOUR } from "../src/loops/schedule.mjs";
+import { cronNext, parseCron } from "../src/loops/cron.mjs";
 
 function fakeChild({ stdout = "轮次输出", code = 0 } = {}) {
   const child = new EventEmitter();
@@ -348,4 +350,103 @@ test("TC-LR13 an empty round is quiet too, and a NOOP line above a body still po
   await settle();
   assert.equal(loud.replies.length, 1);
   assert.equal(loud.core.state.loops["loop-fake-1"].lastOutcome, "ok");
+});
+
+test("TC-LR14 a cron round leaves the loop armed and schedules the next cron match", async () => {
+  const { core, replies } = harness({
+    state: { loops: { "loop-fake-1": seededLoop({ every: null, cron: "* * * * *", createdAt: agoMinutes(5) }) } },
+  });
+  assert.equal(await core.startDueLoops(), 1);
+  await settle();
+  assert.equal(replies.length, 1);
+  const loop = core.state.loops["loop-fake-1"];
+  assert.equal(loop.lastOutcome, "ok");
+  assert.equal(loop.state, "armed", "a cron loop never becomes done");
+  assert.equal(await core.startDueLoops(), 0, "the next match is in the future");
+  const due = loopDueAt(loop);
+  assert.ok(Number.isFinite(due));
+  assert.equal(due % 60_000, 0, "the next round is scheduled on a whole minute");
+  assert.ok(due > Date.now());
+});
+
+test("TC-LR15 loop-update replaces the whole schedule and revives a done loop", async () => {
+  const { core, config } = harness({
+    state: { loops: { "loop-fake-1": seededLoop({ every: "10m", at: null, cron: null, state: "armed" }) } },
+  });
+  mkdirSync(config.commandDir("fake"), { recursive: true });
+  writeJsonAtomic(join(config.commandDir("fake"), "10.json"), {
+    op: "loop-update",
+    id: "loop-fake-1",
+    every: null,
+    loopAt: null,
+    cron: "0 13 * * *",
+    at: new Date().toISOString(),
+  });
+  await core.drainCommands();
+  const switched = core.state.loops["loop-fake-1"];
+  assert.equal(switched.cron, "0 13 * * *");
+  assert.equal(switched.every, null);
+  assert.equal(switched.at, null);
+
+  writeJsonAtomic(join(config.commandDir("fake"), "11.json"), {
+    op: "loop-update",
+    id: "loop-fake-1",
+    every: "2h",
+    loopAt: null,
+    at: new Date().toISOString(),
+  });
+  await core.drainCommands();
+  const back = core.state.loops["loop-fake-1"];
+  assert.equal(back.cron, null, "an every update clears the cron schedule");
+  assert.equal(back.every, "2h");
+
+  core.state.loops["loop-fake-1"].state = "done";
+  writeJsonAtomic(join(config.commandDir("fake"), "12.json"), {
+    op: "loop-update",
+    id: "loop-fake-1",
+    every: null,
+    loopAt: null,
+    cron: "*/30 * * * *",
+    at: new Date().toISOString(),
+  });
+  await core.drainCommands();
+  assert.equal(core.state.loops["loop-fake-1"].state, "armed", "a done loop comes back when its schedule changes");
+});
+
+test("TC-LR16 a cron loop catches up exactly once after a long stop and does not fire while busy", async () => {
+  const hanging = () => {
+    const child = new EventEmitter();
+    child.pid = 999999;
+    child.stdout = new EventEmitter();
+    child.stderr = new EventEmitter();
+    child.kill = () => {};
+    return child;
+  };
+  const busy = harness({
+    state: { loops: { "loop-fake-1": seededLoop({ every: null, cron: "* * * * *", createdAt: agoMinutes(5) }) } },
+    spawn: hanging,
+  });
+  assert.equal(await busy.core.startDueLoops(), 1);
+  const anchor = agoMinutes(30);
+  busy.core.state.loops["loop-fake-1"].lastRunAt = anchor;
+  assert.equal(await busy.core.startDueLoops(), 0, "the previous round is still in flight");
+  assert.equal(busy.core.state.loops["loop-fake-1"].lastRunAt, anchor, "a skipped tick never moves the anchor");
+
+  const stopped = harness({
+    state: { loops: { "loop-fake-1": seededLoop({ every: null, cron: "* * * * *", createdAt: agoMinutes(3 * 24 * 60) }) } },
+  });
+  assert.equal(await stopped.core.startDueLoops(), 1);
+  await settle();
+  assert.equal(await stopped.core.startDueLoops(), 0, "three days of missed minutes still start one round");
+  assert.equal(listRounds(stopped.config.loopHistoryDir, "loop-fake-1").length, 1);
+});
+
+test("TC-LR17 a dense cron expression stays under the hourly round budget", () => {
+  const parsed = parseCron("*/5 * * * *");
+  const start = Date.parse("2026-11-07T00:00:00+08:00");
+  let at = start;
+  let count = 0;
+  while ((at = cronNext(parsed, at)) <= start + 3_600_000) count += 1;
+  assert.equal(count, 12);
+  assert.ok(count < LOOP_ROUNDS_PER_HOUR);
 });
