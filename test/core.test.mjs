@@ -4,7 +4,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, 
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { EventEmitter } from "node:events";
-import { createCore } from "../src/runtime/core.mjs";
+import { createCore, DELIVERY_BACKOFF_MS } from "../src/runtime/core.mjs";
 import { emptyState } from "../src/state/schema.mjs";
 import { renderPrompt } from "../src/shared/prompt.mjs";
 import { pruneOldFiles } from "../src/shared/retention.mjs";
@@ -82,7 +82,7 @@ function harness({ spawn, replies = [], adapterOverrides = {}, state = emptyStat
     piBin: "/bin/true",
     replyRules: "RULES",
     sessionFor: (key) => `fs-${key}`,
-    reply: async (inbound, text) => replies.push({ key: inbound.key, text }),
+    reply: async (inbound, text) => (replies.push({ key: inbound.key, text }), { messageId: `m-${replies.length}` }),
     postNotice: async (text) => (replies.push({ key: "notice", text }), { messageId: `notice-${replies.length}` }),
     ...adapterOverrides,
   };
@@ -336,6 +336,7 @@ test("TC-20 a queued job walks queued → running → answered → done", async 
       reply: async () => {
         const job = Object.values(core.state.jobs)[0];
         observed.push({ status: job.status, answer: job.answer });
+        return { messageId: `m-${observed.length}` };
       },
     },
   });
@@ -449,6 +450,180 @@ test("TC-23 an adapter without edit never tries to patch", async () => {
   const job = core.state.jobs[core.state.seen.m1];
   assert.equal(job.status, "done");
   assert.equal(typeof core.state.jobs[core.state.seen.m1].answer, "undefined");
+});
+
+test("TC-DL1 a reply that returns no message id counts as a failure and is retried", async () => {
+  let calls = 0;
+  const { core } = harness({
+    spawn: () => fakeChild({ stdout: "答案" }),
+    deps: { deliveryRetryMs: 0 },
+    adapterOverrides: {
+      reply: async () => {
+        calls += 1;
+        return undefined;
+      },
+    },
+  });
+  await core.handle(inbound());
+  await tick();
+  const job = core.state.jobs[core.state.seen.m1];
+  assert.equal(calls, 3, "空返回不再算发送成功，三次都试过");
+  assert.equal(job.status, "failed");
+  assert.equal(job.error, "reply-failed");
+  assert.equal(job.answer, "答案", "内容留着，还能手动重发");
+  assert.equal(job.deliveryAttempts, 3);
+  assert.equal(job.deliveryError, "no-message-id: reply returned no messageId");
+  assert.deepEqual(job.parts, [], "没发出去的分片不留痕迹，否则重发会跳过它");
+});
+
+test("TC-DL2 a failure that cannot succeed on a retry is attempted exactly once", async () => {
+  let calls = 0;
+  const { core } = harness({
+    spawn: () => fakeChild({ stdout: "答案" }),
+    deps: { deliveryRetryMs: 0 },
+    adapterOverrides: {
+      reply: async () => {
+        calls += 1;
+        throw Object.assign(new Error("invalid_thread_ts"), { retryable: false, code: "invalid_thread_ts" });
+      },
+    },
+  });
+  await core.handle(inbound());
+  await tick();
+  const job = core.state.jobs[core.state.seen.m1];
+  assert.equal(calls, 1);
+  assert.equal(job.status, "failed");
+  assert.equal(job.deliveryAttempts, 1);
+  assert.equal(job.deliveryError, "invalid_thread_ts");
+});
+
+test("TC-DL3 a failed chunk is retried without resending the chunks before it", async () => {
+  const texts = [];
+  let failedOnce = false;
+  const answer = "a".repeat(20) + "b".repeat(20) + "c".repeat(5);
+  const { core } = harness({
+    spawn: () => fakeChild({ stdout: answer }),
+    deps: { deliveryRetryMs: 0 },
+    adapterOverrides: {
+      reply: async (ctx, text) => {
+        texts.push(text);
+        if (text.startsWith("b") && !failedOnce) {
+          failedOnce = true;
+          return null;
+        }
+        return { messageId: `m-${texts.length}` };
+      },
+    },
+  });
+  await core.handle(inbound());
+  await tick();
+  const job = core.state.jobs[core.state.seen.m1];
+  assert.equal(job.status, "done");
+  assert.deepEqual(job.parts.map((part) => part.i), [0, 1, 2]);
+  assert.equal(texts.length, 4, "第一个分片只发一次，第二个失败了重发一次，然后接着发第三个");
+  assert.equal(texts[0], "a".repeat(20));
+  assert.equal(texts[1], "b".repeat(20));
+  assert.equal(texts[2], "b".repeat(20));
+  assert.equal(texts[3], "c".repeat(5));
+});
+
+test("TC-DL4 the retry backoff grows instead of hammering the platform", async () => {
+  assert.deepEqual(DELIVERY_BACKOFF_MS, [1_500, 5_000, 15_000]);
+  const waits = [];
+  const { core } = harness({
+    spawn: () => fakeChild({ stdout: "答案" }),
+    deps: { deliveryBackoffMs: [0, 0, 0] },
+    adapterOverrides: {
+      reply: async () => {
+        waits.push(waits.length);
+        return null;
+      },
+    },
+  });
+  await core.handle(inbound());
+  await tick();
+  assert.equal(waits.length, 3, "三次尝试之间等两次，等多久由 DELIVERY_BACKOFF_MS 决定");
+});
+
+test("TC-DL5 a reply that landed despite the error is found, not sent twice", async () => {
+  const texts = [];
+  let located = 0;
+  const { core } = harness({
+    spawn: () => fakeChild({ stdout: "答案正文" }),
+    deps: { deliveryRetryMs: 0 },
+    adapterOverrides: {
+      reply: async (ctx, text) => {
+        texts.push(text);
+        return null;
+      },
+      locateReply: async () => {
+        located += 1;
+        return "m-located";
+      },
+    },
+  });
+  await core.handle(inbound());
+  await tick();
+  const job = core.state.jobs[core.state.seen.m1];
+  assert.equal(texts.length, 1, "只发过一次，第二次靠查重收下");
+  assert.equal(located, 1);
+  assert.equal(job.status, "done");
+  assert.equal(job.parts[0].messageId, "m-located");
+  assert.equal(job.parts[0].located, true);
+});
+
+test("TC-DL5b the lookup window is anchored to the first failure, not the last retry", async () => {
+  const windows = [];
+  const { core } = harness({
+    spawn: () => fakeChild({ stdout: "答案正文" }),
+    deps: { deliveryBackoffMs: [5, 5, 5] },
+    adapterOverrides: {
+      reply: async () => null,
+      locateReply: async (ctx, { since }) => {
+        windows.push(since);
+        return null;
+      },
+    },
+  });
+  await core.handle(inbound());
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(windows.length, 2, "查重只在重试时发生");
+  assert.equal(new Set(windows).size, 1, "两次查重都用第一次失败的时刻，否则上一次可能已落地的消息会落在窗口外");
+});
+
+test("TC-RD1 a failed delivery is resent by redeliver once the platform is back", async () => {
+  let broken = true;
+  const { core } = harness({
+    spawn: () => fakeChild({ stdout: "答案" }),
+    deps: { deliveryRetryMs: 0 },
+    adapterOverrides: {
+      reply: async () => {
+        if (broken) return null;
+        return { messageId: "m-redelivered" };
+      },
+    },
+  });
+  await core.handle(inbound());
+  await tick();
+  const jobId = core.state.seen.m1;
+  assert.equal(core.state.jobs[jobId].status, "failed");
+  broken = false;
+  const outcome = await core.redeliver({ job: jobId });
+  assert.equal(outcome.outcome, "done");
+  const job = core.state.jobs[jobId];
+  assert.equal(job.status, "done");
+  assert.equal(job.parts[0].messageId, "m-redelivered");
+  assert.equal(job.answer, undefined, "发出去之后正文才回收");
+});
+
+test("TC-RD2 redeliver refuses a job whose answer is already gone", async () => {
+  const { core } = harness({ spawn: () => fakeChild({ stdout: "答案" }) });
+  await core.handle(inbound());
+  await tick();
+  const jobId = core.state.seen.m1;
+  assert.equal(core.state.jobs[jobId].status, "done");
+  const outcome = await core.redeliver({ job: jobId });
+  assert.equal(outcome.outcome, "nothing-to-redeliver");
 });
 
 function jobState({ status = "running", lease = null, parts = [], answer = null } = {}) {

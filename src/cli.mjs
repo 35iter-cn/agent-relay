@@ -21,7 +21,7 @@ import { withTitle } from "./notices/title.mjs";
 
 export const ACTION_NAMES = new Set(["cancel", "restart"]);
 export const LOOP_ACTIONS = new Set(["create", "list", "show", "update", "pause", "resume", "delete", "run", "log", "show-run", "doctor"]);
-export const JOB_ACTIONS = new Set(["start", "cancel", "list"]);
+export const JOB_ACTIONS = new Set(["start", "cancel", "list", "redeliver"]);
 const COMMAND_WAIT_MS = 20_000;
 const COMMAND_POLL_MS = 500;
 
@@ -32,7 +32,7 @@ export function usage(stream = process.stderr) {
       "  agent-relay serve <discord|feishu|mattermost|slack|telegram>",
       "  agent-relay notice emit --platform <p> (--text <text> | --text-file <path>) [--title <text>] [--prompt <text> | --prompt-file <path>] [--reply-mode conversation --reply-key <key>]",
       "  agent-relay stall <platform> <cancel|restart> <key> [text]",
-      "  agent-relay job help | agent-relay job start|cancel|list …",
+      "  agent-relay job help | agent-relay job start|cancel|list|redeliver …",
       "  agent-relay loop help | agent-relay loop create|list|show|update|pause|resume|delete|run|log|show-run …",
     ].join("\n") + "\n",
   );
@@ -114,6 +114,23 @@ export function precheckJob(stateFile, { key, dedupe, brief } = {}) {
 
 function firstLine(text) {
   return String(text ?? "").split("\n")[0].slice(0, 60);
+}
+
+export function findRedeliverable(stateFile, query) {
+  let state = null;
+  try {
+    state = JSON.parse(readFileSync(stateFile, "utf8"));
+  } catch {
+    return null;
+  }
+  const jobs = Object.values(state?.jobs ?? {});
+  const wanted = String(query ?? "").trim();
+  if (!wanted) return null;
+  const direct = state?.jobs?.[wanted];
+  if (direct) return direct.answer ? direct : null;
+  return jobs
+    .filter((job) => job?.key === wanted && job.answer)
+    .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))[0] ?? null;
 }
 
 export function listJobs(stateFile, key) {
@@ -247,6 +264,20 @@ export async function handleJobCommand(rest, config, log, deps = {}) {
   if (verb === "list") {
     const lines = listJobs(config.stateFile(platform), typeof flags.key === "string" ? flags.key : null);
     process.stdout.write(`${lines.join("\n")}${lines.length ? "\n" : ""}`);
+    return;
+  }
+  if (verb === "redeliver") {
+    const target = typeof flags.key === "string" ? flags.key : positional[0] ?? "";
+    if (!target) usage();
+    const job = findRedeliverable(config.stateFile(platform), target);
+    if (!job) {
+      process.stderr.write("refused: nothing-to-redeliver\n");
+      process.exitCode = 3;
+      return;
+    }
+    const sent = await dispatch(config, platform, { op: "redeliver", job: job.id, key: job.key });
+    process.stdout.write(`${sent.delivered ? "redelivered" : "pending"}\n`);
+    process.exitCode = sent.delivered ? 0 : 1;
     return;
   }
   if (verb === "cancel") {

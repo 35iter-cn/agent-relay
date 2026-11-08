@@ -18,6 +18,7 @@ export const JOB_VERBS = [
   },
   { verb: "cancel", usage: "job cancel --platform <p> <dedupe>", detail: ["取消一条还没开始的定时轮；已经开始的不受影响（用 `agent-relay stall <p> cancel <key>`）。"] },
   { verb: "list", usage: "job list --platform <p> [--key <k>]", detail: ["列出 scheduled 与 running 的轮次。"] },
+  { verb: "redeliver", usage: "job redeliver --platform <p> <key|job-id>", detail: ["把一条投递失败、内容还在的回复再发一次；已发出去的分片会跳过。", "任务已经成功的不需要它；内容已被回收会报 refused:nothing-to-redeliver。"] },
   { verb: "help", usage: "job help [<verb>]", detail: ["不带 <verb> 时列全部子命令；带时只看那一条。"] },
 ];
 
@@ -30,7 +31,7 @@ const SECTIONS = [
       "命令信封 10 分钟内有效，过期的命令文件被丢弃",
     ],
   },
-  { heading: "exit", lines: ["0 已受理（scheduled / started / cancelled）；1 daemon 没在跑；3 refused:<reason>"] },
+  { heading: "exit", lines: ["0 已受理（scheduled / started / cancelled / redelivered）；1 daemon 没在跑；3 refused:<reason>"] },
 ];
 
 const SUMMARY = [

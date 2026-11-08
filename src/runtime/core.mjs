@@ -10,7 +10,7 @@ import { pruneState } from "../state/prune.mjs";
 import { bootNoticeText, readBootId, shouldAnnounceBoot } from "../shared/boot.mjs";
 import { createJob, ctxOf, isFinished } from "../jobs/model.mjs";
 import { readProcStartTicks } from "../jobs/lease.mjs";
-import { hashOf, planParts } from "../jobs/delivery.mjs";
+import { deliveryError, hashOf, isRetryable, planParts } from "../jobs/delivery.mjs";
 import { extractMedia } from "../jobs/media.mjs";
 import { declaredTimeoutMs, readSessionSignal, TOOL_GRACE_MS } from "../jobs/signals.mjs";
 import { nextAction } from "../jobs/next-action.mjs";
@@ -41,7 +41,7 @@ const RUNAWAY_PER_HOUR = relayEnv("RUNAWAY_PER_HOUR", 12);
 const SELF_TIMEOUT_MS = 15 * 60_000;
 const REAP_POLL_MS = 50;
 const MAX_DELIVERY_ATTEMPTS = 3;
-const DELIVERY_RETRY_MS = 1_500;
+export const DELIVERY_BACKOFF_MS = [1_500, 5_000, 15_000];
 
 export function createCore({ adapter, config, deps = {} }) {
   const now = deps.now ?? (() => Date.now());
@@ -60,7 +60,11 @@ export function createCore({ adapter, config, deps = {} }) {
   });
   const log = deps.log ?? createLog();
   const stallGraceMs = deps.stallGraceMs ?? 5_000;
-  const deliveryRetryMs = deps.deliveryRetryMs ?? DELIVERY_RETRY_MS;
+  const deliveryBackoff = Number.isFinite(deps.deliveryRetryMs)
+    ? DELIVERY_BACKOFF_MS.map(() => deps.deliveryRetryMs)
+    : Array.isArray(deps.deliveryBackoffMs)
+      ? deps.deliveryBackoffMs
+      : DELIVERY_BACKOFF_MS;
   const store = deps.store ?? createStateStore({ file: config.stateFile(adapter.name), log });
   const loopHistoryDir = config.loopHistoryDir ?? join(config.configDir, "loops");
   const state = store.state;
@@ -180,6 +184,18 @@ export function createCore({ adapter, config, deps = {} }) {
     }
   }
 
+  async function redeliver({ job: jobId = null, key = "" } = {}) {
+    const target = (jobId ? state.jobs[jobId] : null) ?? latestJobFor(String(key || jobId || ""));
+    if (!target || !target.answer) return { job: target?.id ?? null, key: String(key || jobId || ""), outcome: "nothing-to-redeliver" };
+    target.status = "answered";
+    target.error = undefined;
+    target.deliveryAttempts = 0;
+    target.updatedAt = isoNow();
+    save();
+    const status = await deliver(target);
+    return { job: target.id, key: target.key, outcome: status };
+  }
+
   function dropQueued(key) {
     const dropped = [];
     for (const [id, job] of Object.entries(state.jobs)) {
@@ -294,6 +310,9 @@ export function createCore({ adapter, config, deps = {} }) {
         } else if (command.op === "cancel") {
           const outcome = cancelScheduled(command);
           appendLog({ event: "command-cancel", ...outcome, dedupe: String(command.dedupe ?? "") });
+        } else if (command.op === "redeliver") {
+          const outcome = await redeliver(command);
+          appendLog({ event: "command-redeliver", ...outcome });
         } else if (String(command.op ?? "").startsWith("loop-")) {
           const outcome = await applyLoopCommand(command);
           appendLog({ event: command.op, ...outcome });
@@ -500,12 +519,18 @@ export function createCore({ adapter, config, deps = {} }) {
     });
   }
 
+  function describeDeliveryFailure(error) {
+    const message = String(error?.message ?? error ?? "reply-failed");
+    return error?.code && !message.includes(String(error.code)) ? `${error.code}: ${message}` : message;
+  }
+
   function mediaFor(job) {
     return typeof adapter.postMedia === "function" ? extractMedia(job.answer ?? "") : null;
   }
 
-  async function deliverParts(job) {
+  async function deliverParts(job, uncertain = new Map()) {
     const canEdit = typeof adapter.edit === "function";
+    const canLocate = typeof adapter.locateReply === "function";
     const media = mediaFor(job);
     const plan = planParts({ answer: media ? media.text : job.answer ?? "", parts: job.parts, chunkLimit: adapter.chunkLimit, canEdit, media });
     for (const step of plan) {
@@ -522,31 +547,57 @@ export function createCore({ adapter, config, deps = {} }) {
           }
           job.parts = [...job.parts.filter((part) => part.i !== step.i), { i: step.i, messageId: step.messageId, hash: hashOf(step.text), sentAt: isoNow() }];
         } else {
+          const since = uncertain.get(step.i);
+          if (since && canLocate) {
+            const located = await adapter.locateReply(ctxOf(job), { text: step.text, since });
+            if (located) {
+              job.parts = [...job.parts.filter((part) => part.i !== step.i), { i: step.i, messageId: String(located), hash: hashOf(step.text), sentAt: isoNow(), located: true }];
+              job.updatedAt = isoNow();
+              save();
+              appendLog({ event: "delivery-located", job: job.id, key: job.key, part: step.i, messageId: String(located) });
+              continue;
+            }
+          }
           const sent = await adapter.reply(ctxOf(job), step.text);
-          job.parts = [...job.parts.filter((part) => part.i !== step.i), { i: step.i, messageId: sent?.messageId ?? null, hash: hashOf(step.text), sentAt: isoNow() }];
+          if (!sent?.messageId) throw deliveryError("reply returned no messageId", { code: "no-message-id" });
+          job.parts = [...job.parts.filter((part) => part.i !== step.i), { i: step.i, messageId: String(sent.messageId), hash: hashOf(step.text), sentAt: isoNow() }];
         }
         job.updatedAt = isoNow();
         save();
       } catch (error) {
+        if (!uncertain.has(step.i)) uncertain.set(step.i, now());
         log("error", "reply", String(error?.message ?? error));
-        return false;
+        throw error;
       }
     }
     return true;
   }
 
   async function deliver(job) {
-    let failed = true;
+    const uncertain = new Map();
+    let failure = null;
     for (let attempt = 1; attempt <= MAX_DELIVERY_ATTEMPTS; attempt += 1) {
-      failed = !(await deliverParts(job));
-      if (!failed) break;
-      job.deliveryAttempts = (job.deliveryAttempts ?? 0) + 1;
-      job.deliveryFailedAt = isoNow();
-      if (attempt < MAX_DELIVERY_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, deliveryRetryMs));
+      try {
+        await deliverParts(job, uncertain);
+        failure = null;
+        if (attempt > 1) appendLog({ event: "delivery-retried", job: job.id, key: job.key, attempts: attempt - 1 });
+        break;
+      } catch (error) {
+        failure = error;
+        job.deliveryAttempts = (job.deliveryAttempts ?? 0) + 1;
+        job.deliveryFailedAt = isoNow();
+        job.deliveryError = describeDeliveryFailure(error);
+        save();
+        appendLog({ event: "delivery-failed", job: job.id, key: job.key, attempt, part: uncertain.size ? Math.max(...uncertain.keys()) : null, retryable: isRetryable(error), error: String(error?.message ?? error) });
+        if (!isRetryable(error)) break;
+        if (attempt < MAX_DELIVERY_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, deliveryBackoff[Math.min(attempt - 1, deliveryBackoff.length - 1)] ?? 0));
+      }
     }
+    const failed = Boolean(failure);
     if (!failed) {
       job.deliveryAttempts = 0;
       job.deliveryFailedAt = undefined;
+      job.deliveryError = undefined;
     }
     try {
       await adapter.onProgressDone?.(ctxOf(job));
@@ -895,7 +946,7 @@ export function createCore({ adapter, config, deps = {} }) {
         log("warn", "round-deliver", `attempt=${attempt}`, String(error?.message ?? error));
         job.deliveryAttempts = attempt;
         job.deliveryFailedAt = isoNow();
-        if (attempt < MAX_DELIVERY_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, deliveryRetryMs));
+        if (attempt < MAX_DELIVERY_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, deliveryBackoff[Math.min(attempt - 1, deliveryBackoff.length - 1)] ?? 0));
       }
     }
     job.status = "failed";
@@ -1266,6 +1317,7 @@ export function createCore({ adapter, config, deps = {} }) {
     startDueLoops,
     notices,
     prompts,
+    redeliver,
     stats: () => ({ running: running.size, pending: state.inbox.length }),
     pruneLogs: () => {
       const logs = pruneOldFiles(logDir, RETENTION_MS, now());

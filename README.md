@@ -57,7 +57,8 @@ moves it to `queued` once `dueAt` passes **and the thread is free** — a due jo
 sits in the queue and never pushes a user message out of it. From there it is an
 ordinary job: same lease, serialisation per key, stall watchdog, delivery.
 `job list` shows the scheduled and running turns, `job cancel` drops one that has not
-started. A turn that starts later than its `dueAt` records `lateMs` and the prompt says
+started, `job redeliver <key|job-id>` resends the reply of a turn whose delivery failed
+while the answer is still in the state. A turn that starts later than its `dueAt` records `lateMs` and the prompt says
 how late it is; one that is still waiting past `expiresAt` is cancelled instead of
 starting. `agent-relay job help` prints every subcommand, the timing flags and the
 limits; the model is pointed at it instead of carrying the flags in its prompt.
@@ -164,8 +165,18 @@ for the application, otherwise the gateway delivers messages with empty content.
 
 Adapter contract (`src/platforms/contract.mjs`): `name`, `start`, `reply`,
 `sessionFor` are required; `postNotice`, `postMedia`, `edit`, `onProgress`,
-`onProgressDone`, `buildWorker`, `prune` are optional. `postNotice` must be callable
-before `start()` so the CLI can emit notices without a running daemon.
+`onProgressDone`, `buildWorker`, `prune`, `locateReply` are optional. `postNotice` must
+be callable before `start()` so the CLI can emit notices without a running daemon.
+
+`reply` resolves to `{ messageId }` or **throws** — a null result is read as "nothing was
+sent", so a platform that swallows its own error loses the answer. The thrown error
+carries `retryable: false` when a second attempt cannot succeed (`invalid_thread_ts`,
+`channel_not_found`, a missing token); everything else is retried three times with
+`DELIVERY_BACKOFF_MS` (1.5s / 5s / 15s). A retry of a chunk that may already have landed
+asks `locateReply(ctx, { text, since })` first and adopts the message it finds instead of
+posting a duplicate. When every attempt fails the job ends `failed` / `reply-failed`, the
+answer stays in the state, and `job redeliver` resends it: the parts already sent are
+skipped by their hash.
 
 Attachments: feishu downloads message resources through the SDK, slack downloads
 `url_private_download` with the bot token — that token needs the `files:read` scope,

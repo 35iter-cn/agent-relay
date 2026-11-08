@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import { stripMentions, sessionFor, acceptsEvent, heartbeatVerdict, refreshDelayMs, alertAllowed, pruneThreads, decideProgressMode, createRuntime, createPlatform, createAttachmentDownloader, createMediaUploader, composeText, shouldAlertFiles, FILES_ALERT, MEDIA_ALERT } from "../src/platforms/slack.mjs";
+import { stripMentions, sessionFor, acceptsEvent, heartbeatVerdict, refreshDelayMs, alertAllowed, pruneThreads, decideProgressMode, createRuntime, createPlatform, createAttachmentDownloader, createMediaUploader, composeText, shouldAlertFiles, createReplyLocator, FILES_ALERT, MEDIA_ALERT } from "../src/platforms/slack.mjs";
 import { uploadDirFor } from "../src/platforms/shared/uploads.mjs";
 import { planParts } from "../src/jobs/delivery.mjs";
 
@@ -256,11 +256,20 @@ test("TC-15 an oversized markdown body is resent as plain text too", async () =>
   assert.deepEqual(logs, [["warn", "markdown-rejected", "chat.update", "msg_too_long"]]);
 });
 
-test("TC-15 a non-block rejection keeps the existing failure path", async () => {
-  const { runtime, calls, logs } = harness({ handlers: { "chat.postMessage": { ok: false, error: "not_in_channel" } } });
-  assert.equal(await runtime.reply(progressCtx(), "答案"), null);
-  assert.equal(calls.length, 1, "只有一次 API 调用，不重试纯文本");
-  assert.deepEqual(logs, [["warn", "postMessage", "postMessage not_in_channel"]]);
+test("TC-15 a non-block rejection surfaces as a retryable failure", async () => {
+  const { runtime, calls, logs } = harness({ handlers: { "chat.postMessage": { ok: false, error: "ratelimited" } } });
+  const error = await runtime.reply(progressCtx(), "答案").catch((thrown) => thrown);
+  assert.equal(error.retryable, true, "限流是暂时性错误，值得重试");
+  assert.equal(error.code, "ratelimited");
+  assert.equal(calls.length, 1, "只有一次 API 调用，重试由投递层做");
+  assert.deepEqual(logs, [["warn", "postMessage", "postMessage ratelimited"]]);
+});
+
+test("TC-15 an error that cannot succeed on a retry is marked permanent", async () => {
+  const { runtime } = harness({ handlers: { "chat.postMessage": { ok: false, error: "invalid_thread_ts" } } });
+  const error = await runtime.reply(progressCtx(), "答案").catch((thrown) => thrown);
+  assert.equal(error.retryable, false);
+  assert.equal(error.code, "invalid_thread_ts");
 });
 
 test("AC-4 editing updates the existing message", async () => {
@@ -275,21 +284,68 @@ test("AC-4 a failed edit reports false instead of throwing", async () => {
   assert.deepEqual(logs, [["warn", "edit", "message_not_found"]]);
 });
 
-test("AC-5 without a bot token a reply is logged and dropped", async () => {
+test("AC-5 without a bot token a reply fails instead of disappearing", async () => {
   const { runtime, logs } = harness({ api: null });
   assert.equal(await runtime.onProgress(progressCtx()), null);
-  assert.equal(await runtime.reply(progressCtx(), "答案"), null);
-  assert.deepEqual(logs, [["warn", "reply", "no SLACK_BOT_TOKEN"]]);
+  const error = await runtime.reply(progressCtx(), "答案").catch((thrown) => thrown);
+  assert.equal(error.retryable, false, "没有 token 重试多少次都没用");
+  assert.equal(error.code, "no-token");
   assert.equal(await runtime.edit(progressCtx(), "1792559000.000002", "x"), false);
   await runtime.onProgressDone(progressCtx({ progress: { mode: "reaction", messageId: "m" } }));
-  assert.equal(logs.length, 1);
+  assert.deepEqual(logs, []);
 });
 
-test("AC-5 a failing postMessage is logged and dropped, never retried elsewhere", async () => {
+test("AC-5 a failing postMessage is thrown so the delivery layer can retry it", async () => {
   const { runtime, calls, logs } = harness({ handlers: { "chat.postMessage": { ok: false, error: "not_in_channel" } } });
-  assert.equal(await runtime.reply(progressCtx(), "答案"), null);
+  await assert.rejects(() => runtime.reply(progressCtx(), "答案"), /postMessage not_in_channel/);
   assert.deepEqual(logs, [["warn", "postMessage", "postMessage not_in_channel"]]);
   assert.equal(calls.filter(([method]) => method === "chat.postMessage").length, 1);
+});
+
+test("TC-18 a reply that already landed is found in the thread instead of being posted twice", async () => {
+  const thread = [
+    { ts: "1792558469.808939", user: "UTEST", text: "问题" },
+    { ts: "1792559000.000001", bot_id: "BBOT", text: "• 结论先说：把本地环境在 WSL 里跑起来，产物直接落到 NTFS 上\n\n结果在 `code` 里" },
+  ];
+  const fetches = [];
+  const locateReply = createReplyLocator({
+    channel: "CTESTCHANNEL",
+    readCookies: () => ({ xoxc: "xoxc-test", xoxd: "xoxd-test" }),
+    fetchFn: async (url) => {
+      fetches.push(url);
+      return { json: async () => ({ ok: true, messages: thread }) };
+    },
+  });
+  const found = await locateReply({ replyTo: "1792558469.808939" }, { text: "- 结论先说：把本地环境在 WSL 里跑起来，产物直接落到 NTFS 上\n\n结果在 `code` 里", since: 1792559000000 });
+  assert.equal(found, "1792559000.000001");
+  assert.match(String(fetches[0]), /ts=1792558469\.808939/);
+  assert.match(String(fetches[0]), /oldest=179255899/);
+});
+
+test("TC-19 the locator never claims a message it cannot match exactly", async () => {
+  const thread = [{ ts: "1792559000.000001", bot_id: "BBOT", text: "别的内容" }];
+  const locateReply = createReplyLocator({
+    channel: "CTESTCHANNEL",
+    readCookies: () => ({ xoxc: "xoxc-test", xoxd: "xoxd-test" }),
+    fetchFn: async () => ({ json: async () => ({ ok: true, messages: thread }) }),
+  });
+  const long = "一句很长但没发出去的答案，长度足够参与比对与重发判断";
+  assert.equal(await locateReply({ replyTo: "1" }, { text: long, since: 0 }), null);
+  assert.equal(await locateReply({ replyTo: "1" }, { text: "短", since: 0 }), null, "太短的正文不比，宁肯重发");
+  assert.equal(await locateReply({ replyTo: null }, { text: long, since: 0 }), null);
+});
+
+test("TC-19 a broken cookie fetch means no dedupe, not a failed reply", async () => {
+  const logs = [];
+  const locateReply = createReplyLocator({
+    channel: "CTESTCHANNEL",
+    readCookies: () => {
+      throw new Error("no cookies");
+    },
+    log: (level, ...rest) => logs.push([level, ...rest].join(" ")),
+  });
+  assert.equal(await locateReply({ replyTo: "1" }, { text: "一句很长但没发出去的答案，长度足够参与比对与重发判断", since: 0 }), null);
+  assert.deepEqual(logs, ["warn locate-reply no cookies"]);
 });
 
 test("the progress emoji is configurable", async () => {
