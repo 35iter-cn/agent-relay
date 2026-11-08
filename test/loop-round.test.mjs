@@ -346,7 +346,7 @@ test("TC-LR12 a NOOP round posts nothing and still counts as a healthy round", a
   assert.equal(rounds[0].outcome, "noop");
 });
 
-test("TC-LR13 an empty round is quiet too, and a NOOP line above a body still posts", async () => {
+test("TC-LR13 an empty round is quiet too, and a NOOP line after a body still posts", async () => {
   const quiet = harness({ state: { loops: { "loop-fake-1": seededLoop() } }, spawn: () => fakeChild({ stdout: "   " }) });
   await quiet.core.startDueLoops();
   await settle();
@@ -358,6 +358,25 @@ test("TC-LR13 an empty round is quiet too, and a NOOP line above a body still po
   await settle();
   assert.equal(loud.replies.length, 1);
   assert.equal(loud.core.state.loops["loop-fake-1"].lastOutcome, "ok");
+});
+
+test("TC-LR20 a body after a NOOP line is content, so the round still posts", async () => {
+  const loud = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    spawn: () => fakeChild({ stdout: "NOOP\n本轮没有候选，只输出一行 NOOP。" }),
+  });
+  await loud.core.startDueLoops();
+  await settle();
+  assert.equal(loud.replies.length, 1, `a trailing explanation is content: ${JSON.stringify(loud.replies)}`);
+  assert.equal(loud.core.state.loops["loop-fake-1"].lastOutcome, "ok");
+});
+
+test("TC-LR21 a NOOP wrapped in whitespace stays quiet", async () => {
+  const quiet = harness({ state: { loops: { "loop-fake-1": seededLoop() } }, spawn: () => fakeChild({ stdout: "\n\n  NOOP  \n\n" }) });
+  await quiet.core.startDueLoops();
+  await settle();
+  assert.equal(quiet.replies.length, 0, `whitespace is not content: ${JSON.stringify(quiet.replies)}`);
+  assert.equal(quiet.core.state.loops["loop-fake-1"].lastOutcome, "noop");
 });
 
 test("TC-LR14 a cron round leaves the loop armed and schedules the next cron match", async () => {

@@ -866,8 +866,8 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   function isNoopRound(text) {
-    const first = String(text ?? "").trim().split("\n")[0]?.trim() ?? "";
-    return !first || first === "NOOP" || first.startsWith("[无输出]");
+    const body = String(text ?? "").trim();
+    return !body || body === "NOOP" || body.startsWith("[无输出]");
   }
 
   async function deliverRound(job) {
