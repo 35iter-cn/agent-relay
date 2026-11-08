@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { createConfig } from "./config.mjs";
 import { ensurePrivateDir } from "./shared/fs.mjs";
 import { createLog } from "./shared/log.mjs";
@@ -10,7 +10,7 @@ import { definePlatform, isPlatform, PLATFORMS } from "./platforms/contract.mjs"
 import { durationMs } from "./shared/duration.mjs";
 import { readJson } from "./shared/json.mjs";
 import { localStamp } from "./shared/time.mjs";
-import { MAX_LOOPS, MIN_EVERY_MS, nextLoopId, platformOfLoopId, validatePrompt, validateSchedule } from "./loops/model.mjs";
+import { MAX_LOOPS, MIN_EVERY_MS, loopIdForSlug, nextLoopId, platformOfLoopId, validateLoopPrompt, validateSchedule, validateSlug } from "./loops/model.mjs";
 import { loopDueAt } from "./loops/schedule.mjs";
 import { loopHelp } from "./loops/help.mjs";
 import { jobHelp } from "./jobs/help.mjs";
@@ -128,6 +128,15 @@ export function listJobs(stateFile, key) {
     .map((job) => `${job.status}\t${job.dueAt ?? "-"}\t${job.inbound?.dedupeId ?? "-"}\t${firstLine(job.inbound?.text)}`);
 }
 
+export function loopPromptFlags(flags) {
+  const file = typeof flags["prompt-file"] === "string" ? flags["prompt-file"].trim() : "";
+  const text = typeof flags.prompt === "string" ? flags.prompt.trim() : "";
+  if (file && text) return { error: "prompt-source-ambiguous" };
+  if (file) return { promptFile: resolve(file) };
+  if (typeof flags.prompt === "string") return { prompt: text };
+  return {};
+}
+
 export function textFlag(flags, name) {
   const file = flags[`${name}-file`];
   if (typeof file === "string") return readFileSync(file, "utf8").trim();
@@ -170,7 +179,7 @@ export function listLoopRows(config, platforms, { all = false, nowMs = Date.now(
         due,
         overMs: loop.state === "armed" && Number.isFinite(due) ? Math.max(0, nowMs - due) : 0,
         lastOutcome: loop.lastOutcome ?? "-",
-        prompt: String(loop.prompt ?? ""),
+        prompt: String(loop.promptFile ?? loop.prompt ?? ""),
       });
     }
   }
@@ -343,11 +352,16 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
       return;
     }
     const loops = readLoops(config.stateFile(platform));
-    const prompt = textFlag(flags, "prompt");
+    const source = loopPromptFlags(flags);
+    if (source.error) {
+      refuse(source.error);
+      return;
+    }
+    const slug = typeof flags.slug === "string" ? flags.slug.trim() : "";
     const every = typeof flags.every === "string" ? flags.every : null;
     const at = typeof flags.at === "string" ? flags.at : null;
     const cron = typeof flags.cron === "string" ? flags.cron : null;
-    const refused = validateSchedule({ every, at, cron }) ?? validatePrompt(prompt);
+    const refused = validateSchedule({ every, at, cron }) ?? validateLoopPrompt(source) ?? (slug ? validateSlug(slug) : null);
     if (refused) {
       refuse(refused);
       return;
@@ -360,8 +374,9 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
     await send(
       {
         op: "loop-create",
-        id: nextLoopId(loops, platform),
-        prompt,
+        id: slug ? loopIdForSlug(slug, platform) : nextLoopId(loops, platform),
+        prompt: source.prompt ?? "",
+        promptFile: source.promptFile ?? null,
         every,
         loopAt: at,
         cron,
@@ -395,8 +410,7 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
         `due: ${Number.isFinite(loopDueAt(target)) ? localStamp(loopDueAt(target)) : "-"}`,
         `thread: ${target.thread !== false}`,
         `rounds: ${target.lastRound ?? 0}  last: ${target.lastOutcome ?? "-"}  streak: ${target.failStreak ?? 0}`,
-        `prompt:`,
-        target.prompt,
+        ...(target.promptFile ? [`prompt-file: ${target.promptFile}`] : [`prompt:`, target.prompt]),
         "",
       ].join("\n"),
     );
@@ -427,13 +441,18 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
       if (cron) command.cron = cron;
     }
     if (flags.prompt !== undefined || flags["prompt-file"] !== undefined) {
-      const prompt = textFlag(flags, "prompt");
-      const refused = validatePrompt(prompt);
+      const source = loopPromptFlags(flags);
+      if (source.error) {
+        refuse(source.error);
+        return;
+      }
+      const refused = validateLoopPrompt(source);
       if (refused) {
         refuse(refused);
         return;
       }
-      command.prompt = prompt;
+      command.prompt = source.prompt ?? "";
+      command.promptFile = source.promptFile ?? null;
     }
     if (flags.thread !== undefined || flags["no-thread"] !== undefined) command.thread = !flags["no-thread"];
     await send(command, owner);

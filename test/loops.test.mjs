@@ -9,11 +9,15 @@ import {
   activeLoopCount,
   createLoop,
   isLoopId,
+  loopIdForSlug,
   nextLoopId,
   platformOfLoopId,
+  validateLoopPrompt,
   validatePrompt,
   validateSchedule,
+  validateSlug,
 } from "../src/loops/model.mjs";
+import { MAX_PROMPT_FILE_BYTES, resolveLoopPrompt, validatePromptFile } from "../src/loops/prompt.mjs";
 import { loopDueAt, loopLateMs, roundSkipReason, roundsInLastHour } from "../src/loops/schedule.mjs";
 import { roundKeyFor, roundTitle, truncateOutput } from "../src/loops/round.mjs";
 import { appendRound, findRound, listRounds, loopHistoryFile, pruneHistory, readRoundLines } from "../src/loops/history.mjs";
@@ -130,4 +134,46 @@ test("TC-LP9 history appends, reads back newest first, finds a run and keeps the
   assert.equal(readRoundLines(loopHistoryFile(dir, "loop-slack-1")).length, 3);
   pruneHistory(dir, Date.parse("2026-11-06T00:05:00.000Z"), { maxRounds: 1 });
   assert.deepEqual(listRounds(dir, "loop-slack-1").map((round) => round.runId), ["loop-slack-1-r3"]);
+});
+
+test("TC-LP12 a slug turns the id into a readable handle, and the numeric form still parses", () => {
+  assert.equal(loopIdForSlug("intake", "slack"), "intake-slack");
+  assert.equal(loopIdForSlug("media-archive", "discord"), "media-archive-discord");
+  assert.equal(loopIdForSlug("intake-", "slack"), "");
+  assert.equal(platformOfLoopId("intake-slack"), "slack");
+  assert.equal(platformOfLoopId("media-archive-discord"), "discord");
+  assert.equal(platformOfLoopId("loop-mattermost-12"), "mattermost");
+  assert.equal(platformOfLoopId("intake"), null);
+  assert.equal(platformOfLoopId("intake-slack-r3"), null);
+  assert.equal(isLoopId("intake-slack"), true);
+  assert.equal(isLoopId("intake-slack-r3"), false);
+  assert.equal(validateSlug("intake"), null);
+  assert.equal(validateSlug("media-archive"), null);
+  assert.equal(validateSlug("Intake"), "bad-slug");
+  assert.equal(validateSlug("intake-"), "bad-slug");
+  assert.equal(validateSlug("loop"), "bad-slug");
+  assert.equal(validateSlug(""), "bad-slug");
+});
+
+test("TC-LP13 a loop can carry a prompt file, and that file is read at round time", () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-prompts-"));
+  const file = join(dir, "prompt.md");
+  writeFileSync(file, "  看 CI  \n");
+  const loop = createLoop({ id: "intake-slack", prompt: "ignored", promptFile: file, every: "30m", nowIso: "t" });
+  assert.equal(loop.promptFile, file);
+  assert.equal(loop.prompt, "");
+  assert.equal(validateLoopPrompt({ promptFile: file }), null);
+  assert.deepEqual(resolveLoopPrompt(loop), { text: "看 CI" });
+  writeFileSync(file, "新规则");
+  assert.deepEqual(resolveLoopPrompt(loop), { text: "新规则" }, "the round reads the file, not a stored copy");
+  writeFileSync(file, "   \n");
+  assert.deepEqual(resolveLoopPrompt(loop), { error: "empty-prompt" });
+  writeFileSync(file, "x".repeat(MAX_PROMPT_FILE_BYTES + 1));
+  assert.deepEqual(resolveLoopPrompt(loop), { error: "prompt-too-long" });
+  assert.deepEqual(resolveLoopPrompt({ id: "x", promptFile: join(dir, "gone.md") }), { error: "prompt-unreadable" });
+  assert.equal(validatePromptFile(join(dir, "gone.md")), "prompt-file-missing");
+  assert.equal(validatePromptFile(dir), "prompt-file-not-file");
+  assert.equal(validatePromptFile(""), "empty-prompt-file");
+  assert.deepEqual(resolveLoopPrompt({ id: "x", prompt: "内联" }), { text: "内联" });
+  assert.deepEqual(resolveLoopPrompt({ id: "x" }), { error: "empty-prompt" });
 });

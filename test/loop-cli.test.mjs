@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { handleLoopCommand, listLoopRows, formatLoopRows, loopPlatform, readLoops } from "../src/cli.mjs";
@@ -189,7 +189,7 @@ test("TC-LC7 run and update dispatch the right commands after validation", async
   assert.deepEqual(sent.at(-1).command, { op: "loop-run", id: "loop-slack-1" });
   const updated = await run(["update", "loop-slack-1", "--every", "2h", "--prompt", "新标准"], config, sent);
   assert.equal(updated.code, 0);
-  assert.deepEqual(sent.at(-1).command, { op: "loop-update", id: "loop-slack-1", every: "2h", loopAt: null, prompt: "新标准" });
+  assert.deepEqual(sent.at(-1).command, { op: "loop-update", id: "loop-slack-1", every: "2h", loopAt: null, prompt: "新标准", promptFile: null });
   const bad = await run(["update", "loop-slack-1", "--every", "1m"], config, sent);
   assert.equal(bad.code, 3);
   assert.match(bad.out, /refused: every-too-small/);
@@ -228,4 +228,51 @@ test("TC-LC8 a cron schedule validates, dispatches and shows up in list and show
   assert.ok(Number.isFinite(rows[0].due));
   const definition = await run(["show", "loop-slack-1"], config, sent);
   assert.match(definition.out, /schedule: cron 0 13 \* \* \*/);
+});
+
+test("TC-LC9 --slug names the loop and --prompt-file dispatches the path, not the text", async () => {
+  const config = makeConfig();
+  const file = join(mkdtempSync(join(tmpdir(), "relay-loopcli-file-")), "prompt.md");
+  writeFileSync(file, "看 CI 与看板\n");
+  seed(config, "slack", { "intake-slack": loopOf({ id: "intake-slack" }) });
+  const sent = [];
+  const created = await run(["create", "--platform", "slack", "--every", "30m", "--slug", "intake", "--prompt-file", file], config, sent);
+  assert.equal(created.code, 0);
+  assert.equal(sent.at(-1).command.id, "intake-slack");
+  assert.equal(sent.at(-1).command.promptFile, file);
+  assert.equal(sent.at(-1).command.prompt, "", "a file-backed loop stores no copy of the text");
+
+  const missing = await run(["create", "--platform", "slack", "--every", "30m", "--slug", "watch", "--prompt-file", join(file, "..", "nope.md")], config, sent);
+  assert.equal(missing.code, 3);
+  assert.match(missing.out, /refused: prompt-file-missing/);
+
+  const ambiguous = await run(["create", "--platform", "slack", "--every", "30m", "--prompt", "x", "--prompt-file", file], config, sent);
+  assert.equal(ambiguous.code, 3);
+  assert.match(ambiguous.out, /refused: prompt-source-ambiguous/);
+
+  const badSlug = await run(["create", "--platform", "slack", "--every", "30m", "--slug", "In take", "--prompt", "p"], config, sent);
+  assert.equal(badSlug.code, 3);
+  assert.match(badSlug.out, /refused: bad-slug/);
+
+  const inline = await run(["update", "intake-slack", "--prompt", "回到内联"], config, sent);
+  assert.equal(inline.code, 0);
+  assert.deepEqual(sent.at(-1).command, { op: "loop-update", id: "intake-slack", prompt: "回到内联", promptFile: null });
+
+  const toFile = await run(["update", "intake-slack", "--prompt-file", file], config, sent);
+  assert.equal(toFile.code, 0);
+  assert.deepEqual(sent.at(-1).command, { op: "loop-update", id: "intake-slack", prompt: "", promptFile: file });
+});
+
+test("TC-LC10 show and list name the prompt file instead of pretending to carry the text", async () => {
+  const config = makeConfig();
+  const file = join(mkdtempSync(join(tmpdir(), "relay-loopcli-show-")), "prompt.md");
+  writeFileSync(file, "看 CI\n");
+  seed(config, "slack", { "intake-slack": loopOf({ id: "intake-slack", prompt: "", promptFile: file }) });
+  const sent = [];
+  const shown = await run(["show", "intake-slack"], config, sent);
+  assert.equal(shown.code, 0);
+  assert.match(shown.out, new RegExp(`prompt-file: ${file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  const rows = formatLoopRows(listLoopRows(config, ["slack"]));
+  assert.equal(rows.length, 1);
+  assert.match(rows[0], new RegExp(file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });

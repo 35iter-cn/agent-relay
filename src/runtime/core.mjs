@@ -18,7 +18,8 @@ import { createStateStore } from "../state/store.mjs";
 import { createNoticeService } from "../notices/service.mjs";
 import { RESTART_PROMPT, stallNoticePrompt, stallNoticeText } from "./stall-notice.mjs";
 import { createPrompts } from "./prompts.mjs";
-import { activeLoopCount, createLoop, isLoopId, nextLoopId, platformOfLoopId, validateLoopChange, validatePrompt, validateSchedule } from "../loops/model.mjs";
+import { activeLoopCount, createLoop, isLoopId, nextLoopId, platformOfLoopId, validateLoopChange, validateLoopPrompt, validatePrompt, validateSchedule } from "../loops/model.mjs";
+import { resolveLoopPrompt } from "../loops/prompt.mjs";
 import { LOOP_ROUNDS_PER_HOUR, LOOP_TIMEOUT_MS, loopLateMs, roundSkipReason, roundsInLastHour } from "../loops/schedule.mjs";
 import { roundKeyFor, roundTitle, truncateOutput } from "../loops/round.mjs";
 import { appendRound, findRound, listRounds, pruneHistory } from "../loops/history.mjs";
@@ -899,6 +900,7 @@ export function createCore({ adapter, config, deps = {} }) {
     const runId = roundKeyFor(loop.id, round);
     const header = roundTitle(loop, round);
     const lateMs = loopLateMs(loop, at);
+    const source = resolveLoopPrompt(loop);
     const job = acceptJob({
       key: runId,
       session: adapter.sessionFor(runId),
@@ -915,7 +917,15 @@ export function createCore({ adapter, config, deps = {} }) {
     job.chain = 0;
     job.dueAt = isoAt(at - lateMs);
     job.lateMs = lateMs;
-    job.loop = { id: loop.id, round, prompt: loop.prompt, last: loopLastLine(loop), trigger, lateMs };
+    job.loop = {
+      id: loop.id,
+      round,
+      prompt: source.text ?? "",
+      promptFile: loop.promptFile ?? null,
+      last: loopLastLine(loop),
+      trigger,
+      lateMs,
+    };
     loop.lastRound = round;
     loop.lastRunId = runId;
     loop.lastRunAt = isoAt(at);
@@ -924,6 +934,16 @@ export function createCore({ adapter, config, deps = {} }) {
     state.meta.loopRoundStamps = [...(state.meta.loopRoundStamps ?? []), isoAt(at)].slice(-400);
     save();
     appendLog({ event: "loop-round", loop: loop.id, runId, job: job.id, trigger, lateMs });
+    if (source.error) {
+      job.status = "failed";
+      job.error = source.error;
+      job.loopRoundStatus = "failed";
+      job.updatedAt = isoNow();
+      save();
+      appendLog({ event: "prompt-source", loop: loop.id, runId, error: source.error, path: loop.promptFile ?? null });
+      await finishRound(job);
+      return job;
+    }
     drainInbox();
     return job;
   }
@@ -1075,7 +1095,8 @@ export function createCore({ adapter, config, deps = {} }) {
     const loops = state.loops;
     const platform = platformOfLoopId(command.id);
     if (op === "loop-create") {
-      const refused = validateSchedule({ every: command.every, at: command.loopAt, cron: command.cron }) ?? validatePrompt(command.prompt);
+      const promptFile = String(command.promptFile ?? "").trim();
+      const refused = validateSchedule({ every: command.every, at: command.loopAt, cron: command.cron }) ?? validateLoopPrompt({ prompt: command.prompt, promptFile });
       if (refused) return { op, refused };
       const id = isLoopId(command.id) && platformOfLoopId(command.id) === adapter.name ? command.id : nextLoopId(loops, adapter.name);
       if (loops[id]) return { op, refused: "duplicate", id };
@@ -1083,6 +1104,7 @@ export function createCore({ adapter, config, deps = {} }) {
       loops[id] = createLoop({
         id,
         prompt: command.prompt,
+        promptFile,
         every: command.every ?? null,
         at: command.loopAt ?? null,
         cron: command.cron ?? null,
@@ -1120,10 +1142,22 @@ export function createCore({ adapter, config, deps = {} }) {
         loop.cron = command.cron ?? null;
         if (loop.state === "done") loop.state = "armed";
       }
+      if (command.promptFile !== undefined) {
+        const file = String(command.promptFile ?? "").trim();
+        if (file) {
+          const refused = validateLoopPrompt({ promptFile: file });
+          if (refused) return { op, refused };
+          loop.promptFile = file;
+          loop.prompt = "";
+        } else {
+          loop.promptFile = null;
+        }
+      }
       if (command.prompt !== undefined) {
         const refused = validatePrompt(command.prompt);
         if (refused) return { op, refused };
         loop.prompt = String(command.prompt).trim();
+        if (loop.prompt) loop.promptFile = null;
       }
       if (command.thread !== undefined) loop.thread = command.thread !== false;
       save();

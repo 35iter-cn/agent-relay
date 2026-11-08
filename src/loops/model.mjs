@@ -1,5 +1,7 @@
 import { parseDurationMs } from "../shared/duration.mjs";
+import { PLATFORMS } from "../platforms/contract.mjs";
 import { cronNext, parseCron } from "./cron.mjs";
+import { validatePromptFile } from "./prompt.mjs";
 
 export const LOOP_STATES = new Set(["armed", "paused", "done", "deleted"]);
 export const MIN_EVERY_MS = 10 * 60_000;
@@ -8,14 +10,32 @@ export const MAX_PROMPT_BYTES = 4 * 1024;
 export const MAX_TITLE_BYTES = 80;
 
 const ID_PATTERN = /^loop-([a-z]+)-(\d+)$/;
+const SLUG_PATTERN = /^[a-z][a-z0-9-]{0,31}$/;
+const SLUG_ID_PATTERN = new RegExp(`^([a-z][a-z0-9-]{0,31})-(${[...PLATFORMS].sort((a, b) => b.length - a.length).join("|")})$`);
 
 export function platformOfLoopId(id) {
-  const match = ID_PATTERN.exec(String(id ?? ""));
-  return match ? match[1] : null;
+  const value = String(id ?? "");
+  const legacy = ID_PATTERN.exec(value);
+  if (legacy) return legacy[1];
+  const slug = SLUG_ID_PATTERN.exec(value);
+  return slug ? slug[2] : null;
 }
 
 export function isLoopId(id) {
-  return ID_PATTERN.test(String(id ?? ""));
+  const value = String(id ?? "");
+  return ID_PATTERN.test(value) || SLUG_ID_PATTERN.test(value);
+}
+
+export function validateSlug(slug) {
+  const value = String(slug ?? "").trim();
+  if (!SLUG_PATTERN.test(value) || value.endsWith("-") || value === "loop") return "bad-slug";
+  return null;
+}
+
+export function loopIdForSlug(slug, platform) {
+  const value = String(slug ?? "").trim();
+  if (!value || validateSlug(value)) return "";
+  return `${value}-${platform}`;
 }
 
 export function nextLoopId(loops, platform) {
@@ -53,15 +73,23 @@ export function validatePrompt(prompt) {
   return Buffer.byteLength(body) > MAX_PROMPT_BYTES ? "prompt-too-long" : null;
 }
 
+export function validateLoopPrompt({ prompt, promptFile } = {}) {
+  const file = String(promptFile ?? "").trim();
+  if (file) return validatePromptFile(file);
+  return validatePrompt(prompt);
+}
+
 export function validateLoopChange(change = {}) {
-  const refused = validateSchedule(change.schedule ?? {}) ?? validatePrompt(change.prompt);
+  const refused = validateSchedule(change.schedule ?? {}) ?? validateLoopPrompt(change);
   return refused ?? null;
 }
 
-export function createLoop({ id, prompt, every = null, at = null, cron = null, thread = true, createdBy = null, nowIso }) {
+export function createLoop({ id, prompt, promptFile = null, every = null, at = null, cron = null, thread = true, createdBy = null, nowIso }) {
+  const file = String(promptFile ?? "").trim();
   return {
     id,
-    prompt: String(prompt).trim(),
+    prompt: file ? "" : String(prompt ?? "").trim(),
+    promptFile: file || null,
     every: every ?? null,
     at: at ?? null,
     cron: cron ?? null,

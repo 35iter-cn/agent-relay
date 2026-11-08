@@ -71,13 +71,17 @@ only delays its own turns.
 A conversation turn can be put on a clock once (`job start`); a **loop** is the repeating version. A loop is one prompt plus one schedule (`--every`, `--at` or `--cron`), owned by the platform it was created on:
 
 ```bash
-agent-relay loop create --platform slack --every 30m --prompt-file ./ci-watch.txt
+agent-relay loop create --platform slack --slug intake --every 30m --prompt-file ~/.config/agent-relay/prompts/loops/intake-slack/prompt.md
 agent-relay loop create --platform slack --cron "0 13 * * *" --prompt-file ./digest.txt
 agent-relay loop list              # merges every platform, marks overdue loops
-agent-relay loop run loop-slack-1  # start one round right now
-agent-relay loop log loop-slack-1  # runId / time / trigger / outcome
+agent-relay loop run intake-slack  # start one round right now
+agent-relay loop log intake-slack  # runId / time / trigger / outcome
 agent-relay loop help              # every subcommand, schedule and gate
 ```
+
+A loop's id is readable when you say so: `--slug intake` makes it `intake-slack`; without `--slug` it stays `loop-<platform>-<n>`. The id is also the round key prefix (`intake-slack-r7`), so renaming it later is a migration, not an edit.
+
+**Where the prompt lives** decides when an edit lands. `--prompt <text>` stores the text in the state file (4 KiB cap). `--prompt-file <path>` stores only the path and reads it at the start of **every round** — edit the file, the next round uses it, no `loop update`, no restart. A file that was deleted, emptied or grown past 64 KiB fails that round (`prompt-unreadable` / `empty-prompt` / `prompt-too-long`), posts nothing, and counts towards the three-failure pause like any other failed round. The two flags are exclusive; `loop update` with one clears the other.
 
 The three schedules answer different questions and none replaces another: `every` schedules one interval after the previous round **started** (any duration, and "wait 30m after it finishes"); `at` fires once and leaves the loop `done`; `cron "<5 fields>"` fires on wall-clock minutes in `Asia/Shanghai` (`0 13 * * *` is every day at 13:00). Only one is set at a time — updating one clears the other two — and a cron loop never becomes `done`.
 
