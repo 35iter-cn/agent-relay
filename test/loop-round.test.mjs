@@ -128,7 +128,7 @@ test("TC-LR1 a due loop starts a round in a fresh session and posts it to the ch
   assert.equal(core.state.loops["loop-fake-1"].lastOutcome, "ok");
   assert.equal(replies.length, 1);
   assert.equal(replies[0].key, "notice");
-  assert.equal(replies[0].text, "📣📣📣 轮报\n轮次输出");
+  assert.equal(replies[0].text, "📣📣📣 播报\n轮次输出");
   const notice = core.state.notices[Object.keys(core.state.notices)[0]];
   assert.equal(notice.messageId, replies[0].messageId);
   assert.deepEqual(notice.reply, { mode: "conversation", key: "loop-fake-1-r1" });

@@ -64,7 +64,7 @@ test("TC-NT5 notices are never pruned on their own", () => {
 test("TC-NT6 the title is the first line, defaults to 通知 and survives a bound notice", async () => {
   assert.equal(withTitle("工时", "今日累计 8.8 小时"), "📣📣📣 工时\n今日累计 8.8 小时");
   assert.equal(withTitle("", "x"), "📣📣📣 通知\nx");
-  assert.equal(withTitle("轮报", "  "), "📣📣📣 轮报");
+  assert.equal(withTitle("播报", "  "), "📣📣📣 播报");
   const posted = [];
   const service = createNoticeService({
     state: emptyState(),
@@ -72,8 +72,8 @@ test("TC-NT6 the title is the first line, defaults to 通知 and survives a boun
     adapter: { name: "fake", postNotice: async (text) => (posted.push(text), { messageId: `m-${posted.length}` }) },
     now: () => now(),
   });
-  await service.emit({ text: "本轮没有新候选", title: "轮报", reply: { mode: "conversation", key: "k" } });
-  assert.deepEqual(posted, ["📣📣📣 轮报\n本轮没有新候选"]);
+  await service.emit({ text: "本轮没有新候选", title: "播报", reply: { mode: "conversation", key: "k" } });
+  assert.deepEqual(posted, ["📣📣📣 播报\n本轮没有新候选"]);
 });
 
 test("a prompt over the limit is cut without splitting a multi-byte character", () => {
