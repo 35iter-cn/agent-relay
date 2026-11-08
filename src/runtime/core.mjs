@@ -18,7 +18,7 @@ import { createStateStore } from "../state/store.mjs";
 import { createNoticeService } from "../notices/service.mjs";
 import { RESTART_PROMPT, stallNoticePrompt, stallNoticeText } from "./stall-notice.mjs";
 import { createPrompts } from "./prompts.mjs";
-import { activeLoopCount, createLoop, isLoopId, nextLoopId, platformOfLoopId, validateLoopChange, validateLoopPrompt, validatePrompt, validateSchedule } from "../loops/model.mjs";
+import { activeLoopCount, createLoop, isLoopId, platformOfLoopId, validateLoopChange, validateLoopPromptSource, validateSchedule } from "../loops/model.mjs";
 import { resolveLoopPrompt } from "../loops/prompt.mjs";
 import { LOOP_ROUNDS_PER_HOUR, LOOP_TIMEOUT_MS, loopLateMs, roundSkipReason, roundsInLastHour } from "../loops/schedule.mjs";
 import { roundKeyFor, roundTitle, truncateOutput } from "../loops/round.mjs";
@@ -1095,16 +1095,21 @@ export function createCore({ adapter, config, deps = {} }) {
     const loops = state.loops;
     const platform = platformOfLoopId(command.id);
     if (op === "loop-create") {
+      const id = String(command.id ?? "");
+      if (!isLoopId(id) || platformOfLoopId(id) !== adapter.name) return { op, refused: "bad-loop-id" };
       const promptFile = String(command.promptFile ?? "").trim();
-      const refused = validateSchedule({ every: command.every, at: command.loopAt, cron: command.cron }) ?? validateLoopPrompt({ prompt: command.prompt, promptFile });
+      const allowInline = Boolean(command.promptInline);
+      const refused =
+        validateSchedule({ every: command.every, at: command.loopAt, cron: command.cron }) ??
+        validateLoopPromptSource({ id, prompt: command.prompt, promptFile, configDir: config.configDir, allowInline });
       if (refused) return { op, refused };
-      const id = isLoopId(command.id) && platformOfLoopId(command.id) === adapter.name ? command.id : nextLoopId(loops, adapter.name);
       if (loops[id]) return { op, refused: "duplicate", id };
       if (activeLoopCount(loops) >= 20) return { op, refused: "too-many-loops" };
       loops[id] = createLoop({
         id,
         prompt: command.prompt,
         promptFile,
+        promptInline: allowInline,
         every: command.every ?? null,
         at: command.loopAt ?? null,
         cron: command.cron ?? null,
@@ -1142,22 +1147,20 @@ export function createCore({ adapter, config, deps = {} }) {
         loop.cron = command.cron ?? null;
         if (loop.state === "done") loop.state = "armed";
       }
-      if (command.promptFile !== undefined) {
-        const file = String(command.promptFile ?? "").trim();
-        if (file) {
-          const refused = validateLoopPrompt({ promptFile: file });
-          if (refused) return { op, refused };
-          loop.promptFile = file;
+      if (command.promptFile !== undefined || command.prompt !== undefined) {
+        const promptFile = String(command.promptFile ?? "").trim();
+        const allowInline = Boolean(command.promptInline);
+        const refused = validateLoopPromptSource({ id: loop.id, prompt: command.prompt, promptFile, configDir: config.configDir, allowInline });
+        if (refused) return { op, refused };
+        if (promptFile) {
+          loop.promptFile = promptFile;
           loop.prompt = "";
+          loop.promptInline = false;
         } else {
           loop.promptFile = null;
+          loop.prompt = String(command.prompt ?? "").trim();
+          loop.promptInline = Boolean(loop.prompt);
         }
-      }
-      if (command.prompt !== undefined) {
-        const refused = validatePrompt(command.prompt);
-        if (refused) return { op, refused };
-        loop.prompt = String(command.prompt).trim();
-        if (loop.prompt) loop.promptFile = null;
       }
       if (command.thread !== undefined) loop.thread = command.thread !== false;
       save();

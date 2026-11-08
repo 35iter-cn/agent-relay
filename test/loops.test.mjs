@@ -1,10 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   MAX_LOOPS,
+  canonicalPromptPath,
   MIN_EVERY_MS,
   activeLoopCount,
   createLoop,
@@ -13,6 +14,7 @@ import {
   nextLoopId,
   platformOfLoopId,
   validateLoopPrompt,
+  validateLoopPromptSource,
   validatePrompt,
   validateSchedule,
   validateSlug,
@@ -176,4 +178,21 @@ test("TC-LP13 a loop can carry a prompt file, and that file is read at round tim
   assert.equal(validatePromptFile(""), "empty-prompt-file");
   assert.deepEqual(resolveLoopPrompt({ id: "x", prompt: "内联" }), { text: "内联" });
   assert.deepEqual(resolveLoopPrompt({ id: "x" }), { error: "empty-prompt" });
+});
+
+test("TC-LP14 the prompt source is refused unless it is the canonical file for that id", () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-canon-"));
+  const id = "intake-slack";
+  const canonical = canonicalPromptPath(dir, id);
+  mkdirSync(join(dir, "prompts", "loops", id), { recursive: true });
+  writeFileSync(canonical, "看 CI\n");
+  assert.equal(validateLoopPromptSource({ id, promptFile: canonical, configDir: dir }), null);
+  assert.equal(validateLoopPromptSource({ id, promptFile: join(dir, "elsewhere.md"), configDir: dir }), "prompt-file-not-canonical");
+  assert.equal(validateLoopPromptSource({ id, promptFile: canonical, configDir: "/other" }), "prompt-file-not-canonical");
+  assert.equal(validateLoopPromptSource({ id, promptFile: canonicalPromptPath(dir, "other-slack"), configDir: dir }), "prompt-file-not-canonical");
+  assert.equal(validateLoopPromptSource({ id, prompt: "内联", configDir: dir }), "inline-prompt-refused");
+  assert.equal(validateLoopPromptSource({ id, prompt: "内联", configDir: dir, allowInline: true }), null);
+  assert.equal(validateLoopPromptSource({ id, prompt: "x".repeat(4097), configDir: dir, allowInline: true }), "prompt-too-long");
+  assert.equal(validateLoopPromptSource({ id, configDir: dir }), "empty-prompt");
+  assert.equal(validateLoopPromptSource({ id: "not-a-loop", promptFile: canonical, configDir: dir }), "bad-loop-id");
 });

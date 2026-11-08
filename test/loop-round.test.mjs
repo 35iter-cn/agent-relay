@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 import { EventEmitter } from "node:events";
 import { createCore } from "../src/runtime/core.mjs";
@@ -293,11 +293,15 @@ test("TC-LR10 an empty loop prompt template fails the round instead of spawning 
 
 test("TC-LR11 the command envelope timestamp never becomes the loop's own schedule", async () => {
   const { core, config } = harness({ state: { loops: {} } });
+  const promptFile = join(config.configDir, "prompts", "loops", "loop-fake-2", "prompt.md");
+  mkdirSync(dirname(promptFile), { recursive: true });
+  writeFileSync(promptFile, "看 CI\n");
   mkdirSync(config.commandDir("fake"), { recursive: true });
   writeJsonAtomic(join(config.commandDir("fake"), "2.json"), {
     op: "loop-create",
     id: "loop-fake-2",
-    prompt: "看 CI",
+    prompt: "",
+    promptFile,
     every: "10m",
     loopAt: null,
     thread: true,
@@ -309,10 +313,14 @@ test("TC-LR11 the command envelope timestamp never becomes the loop's own schedu
   assert.equal(created.every, "10m");
   assert.equal(created.at, null);
 
+  const promptFile3 = join(config.configDir, "prompts", "loops", "loop-fake-3", "prompt.md");
+  mkdirSync(dirname(promptFile3), { recursive: true });
+  writeFileSync(promptFile3, "一次性\n");
   writeJsonAtomic(join(config.commandDir("fake"), "3.json"), {
     op: "loop-create",
     id: "loop-fake-3",
-    prompt: "一次性",
+    prompt: "",
+    promptFile: promptFile3,
     every: null,
     loopAt: "2026-12-01T00:00:00.000Z",
     at: new Date().toISOString(),
