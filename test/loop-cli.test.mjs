@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { handleLoopCommand, listLoopRows, formatLoopRows, loopPlatform, readLoops } from "../src/cli.mjs";
@@ -20,6 +21,13 @@ function makeConfig() {
     stateFile: (platform) => join(configDir, `relay-${platform}.json`),
     commandDir: (platform) => join(configDir, `relay-${platform}.cmd`),
   };
+}
+
+function promptFileFor(config, id, text = "看 CI\n") {
+  const file = join(config.configDir, "prompts", "loops", id, "prompt.md");
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, text);
+  return file;
 }
 
 function seed(config, platform, loops) {
@@ -70,24 +78,27 @@ test("TC-LC1 create validates before dispatch and routes to the requested platfo
   const config = makeConfig();
   seed(config, "slack", {});
   const sent = [];
-  const ok = await run(["create", "--platform", "slack", "--every", "30m", "--prompt", "看 CI"], config, sent);
+  const file = promptFileFor(config, "watch-slack");
+  const ok = await run(["create", "--platform", "slack", "--every", "30m", "--slug", "watch", "--prompt-file", file], config, sent);
   assert.equal(ok.code, 0);
   assert.equal(sent.length, 1);
   assert.equal(sent[0].platform, "slack");
   assert.equal(sent[0].command.op, "loop-create");
-  assert.equal(sent[0].command.id, "loop-slack-1");
+  assert.equal(sent[0].command.id, "watch-slack");
+  assert.equal(sent[0].command.promptFile, file);
+  assert.equal(sent[0].command.prompt, "");
   assert.equal(sent[0].command.every, "30m");
   assert.equal(sent[0].command.thread, true);
 
-  const small = await run(["create", "--platform", "slack", "--every", "5m", "--prompt", "x"], config, sent);
+  const small = await run(["create", "--platform", "slack", "--every", "5m", "--slug", "watch", "--prompt-file", file], config, sent);
   assert.equal(small.code, 3);
   assert.match(small.out, /refused: every-too-small/);
 
-  const long = await run(["create", "--platform", "slack", "--every", "30m", "--prompt", "x".repeat(4097)], config, sent);
+  const long = await run(["create", "--platform", "slack", "--every", "30m", "--slug", "watch", "--prompt", "x".repeat(4097), "--allow-inline"], config, sent);
   assert.equal(long.code, 3);
   assert.match(long.out, /refused: prompt-too-long/);
 
-  const noThread = await run(["create", "--platform", "slack", "--at", new Date(Date.now() + 60000).toISOString(), "--prompt", "p", "--no-thread"], config, sent);
+  const noThread = await run(["create", "--platform", "slack", "--at", new Date(Date.now() + 60000).toISOString(), "--slug", "probe", "--prompt-file", promptFileFor(config, "probe-slack", "p\n"), "--no-thread"], config, sent);
   assert.equal(noThread.code, 0);
   assert.equal(sent.at(-1).command.thread, false);
   assert.ok(sent.at(-1).command.loopAt, "the loop's own at never overwrites the command envelope timestamp");
@@ -103,7 +114,7 @@ test("TC-LC2 the platform defaults to AGENT_RELAY_PLATFORM and the loop id decid
   assert.equal(loopPlatform({}, env), "slack");
   assert.equal(loopPlatform({}, {}), "");
   assert.equal(loopPlatform({ platform: "discord" }, env), "discord");
-  const created = await run(["create", "--every", "30m", "--prompt", "p"], config, sent, env);
+  const created = await run(["create", "--every", "30m", "--slug", "probe", "--prompt", "p", "--allow-inline"], config, sent, env);
   assert.equal(created.code, 0);
   assert.equal(sent.at(-1).platform, "slack");
   const paused = await run(["pause", "loop-discord-3"], config, sent);
@@ -136,7 +147,7 @@ test("TC-LC4 the loop ceiling is enforced before dispatch", async () => {
   for (let i = 1; i <= 20; i += 1) loops[`loop-slack-${i}`] = loopOf({ id: `loop-slack-${i}` });
   seed(config, "slack", loops);
   const sent = [];
-  const refused = await run(["create", "--platform", "slack", "--every", "30m", "--prompt", "p"], config, sent);
+  const refused = await run(["create", "--platform", "slack", "--every", "30m", "--slug", "over", "--prompt", "p", "--allow-inline"], config, sent);
   assert.equal(refused.code, 3);
   assert.match(refused.out, /refused: too-many-loops/);
   assert.equal(sent.length, 0);
@@ -187,9 +198,9 @@ test("TC-LC7 run and update dispatch the right commands after validation", async
   const manual = await run(["run", "loop-slack-1"], config, sent);
   assert.equal(manual.code, 0);
   assert.deepEqual(sent.at(-1).command, { op: "loop-run", id: "loop-slack-1" });
-  const updated = await run(["update", "loop-slack-1", "--every", "2h", "--prompt", "新标准"], config, sent);
+  const updated = await run(["update", "loop-slack-1", "--every", "2h", "--prompt", "新标准", "--allow-inline"], config, sent);
   assert.equal(updated.code, 0);
-  assert.deepEqual(sent.at(-1).command, { op: "loop-update", id: "loop-slack-1", every: "2h", loopAt: null, prompt: "新标准", promptFile: null });
+  assert.deepEqual(sent.at(-1).command, { op: "loop-update", id: "loop-slack-1", every: "2h", loopAt: null, prompt: "新标准", promptFile: null, promptInline: true });
   const bad = await run(["update", "loop-slack-1", "--every", "1m"], config, sent);
   assert.equal(bad.code, 3);
   assert.match(bad.out, /refused: every-too-small/);
@@ -201,7 +212,7 @@ test("TC-LC8 a cron schedule validates, dispatches and shows up in list and show
   const config = makeConfig();
   seed(config, "slack", {});
   const sent = [];
-  const created = await run(["create", "--platform", "slack", "--cron", "0 13 * * *", "--prompt", "看 CI"], config, sent);
+  const created = await run(["create", "--platform", "slack", "--cron", "0 13 * * *", "--slug", "digest", "--prompt", "看 CI", "--allow-inline"], config, sent);
   assert.equal(created.code, 0);
   assert.equal(sent.at(-1).command.cron, "0 13 * * *");
   assert.equal(sent.at(-1).command.every, null);
@@ -230,11 +241,10 @@ test("TC-LC8 a cron schedule validates, dispatches and shows up in list and show
   assert.match(definition.out, /schedule: cron 0 13 \* \* \*/);
 });
 
-test("TC-LC9 --slug names the loop and --prompt-file dispatches the path, not the text", async () => {
+test("TC-LC9 --slug names the loop and --prompt-file stores the canonical path, not the text", async () => {
   const config = makeConfig();
-  const file = join(mkdtempSync(join(tmpdir(), "relay-loopcli-file-")), "prompt.md");
-  writeFileSync(file, "看 CI 与看板\n");
   seed(config, "slack", { "intake-slack": loopOf({ id: "intake-slack" }) });
+  const file = promptFileFor(config, "intake-slack");
   const sent = [];
   const created = await run(["create", "--platform", "slack", "--every", "30m", "--slug", "intake", "--prompt-file", file], config, sent);
   assert.equal(created.code, 0);
@@ -242,25 +252,76 @@ test("TC-LC9 --slug names the loop and --prompt-file dispatches the path, not th
   assert.equal(sent.at(-1).command.promptFile, file);
   assert.equal(sent.at(-1).command.prompt, "", "a file-backed loop stores no copy of the text");
 
-  const missing = await run(["create", "--platform", "slack", "--every", "30m", "--slug", "watch", "--prompt-file", join(file, "..", "nope.md")], config, sent);
-  assert.equal(missing.code, 3);
-  assert.match(missing.out, /refused: prompt-file-missing/);
-
-  const ambiguous = await run(["create", "--platform", "slack", "--every", "30m", "--prompt", "x", "--prompt-file", file], config, sent);
+  const ambiguous = await run(["create", "--platform", "slack", "--every", "30m", "--slug", "intake", "--prompt", "x", "--prompt-file", file], config, sent);
   assert.equal(ambiguous.code, 3);
   assert.match(ambiguous.out, /refused: prompt-source-ambiguous/);
 
-  const badSlug = await run(["create", "--platform", "slack", "--every", "30m", "--slug", "In take", "--prompt", "p"], config, sent);
+  const badSlug = await run(["create", "--platform", "slack", "--every", "30m", "--slug", "In take", "--prompt", "p", "--allow-inline"], config, sent);
   assert.equal(badSlug.code, 3);
   assert.match(badSlug.out, /refused: bad-slug/);
 
-  const inline = await run(["update", "intake-slack", "--prompt", "回到内联"], config, sent);
+  const inline = await run(["update", "intake-slack", "--prompt", "回到内联", "--allow-inline"], config, sent);
   assert.equal(inline.code, 0);
-  assert.deepEqual(sent.at(-1).command, { op: "loop-update", id: "intake-slack", prompt: "回到内联", promptFile: null });
+  assert.deepEqual(sent.at(-1).command, { op: "loop-update", id: "intake-slack", prompt: "回到内联", promptFile: null, promptInline: true });
 
   const toFile = await run(["update", "intake-slack", "--prompt-file", file], config, sent);
   assert.equal(toFile.code, 0);
-  assert.deepEqual(sent.at(-1).command, { op: "loop-update", id: "intake-slack", prompt: "", promptFile: file });
+  assert.deepEqual(sent.at(-1).command, { op: "loop-update", id: "intake-slack", prompt: "", promptFile: file, promptInline: false });
+});
+
+test("TC-LC11 the shape is refused, not merely documented: slug, canonical path and inline", async () => {
+  const config = makeConfig();
+  seed(config, "slack", {});
+  const sent = [];
+  const file = promptFileFor(config, "watch-slack");
+
+  const noSlug = await run(["create", "--platform", "slack", "--every", "30m", "--prompt-file", file], config, sent);
+  assert.equal(noSlug.code, 3);
+  assert.match(noSlug.out, /refused: slug-required/);
+
+  const stray = await run(["create", "--platform", "slack", "--every", "30m", "--slug", "watch", "--prompt-file", join(mkdtempSync(join(tmpdir(), "relay-loopcli-stray-")), "prompt.md")], config, sent);
+  assert.equal(stray.code, 3);
+  assert.match(stray.out, /refused: prompt-file-not-canonical/);
+
+  const wrongName = await run(["create", "--platform", "slack", "--every", "30m", "--slug", "watch", "--prompt-file", promptFileFor(config, "other-slack")], config, sent);
+  assert.equal(wrongName.code, 3);
+  assert.match(wrongName.out, /refused: prompt-file-not-canonical/);
+
+  const inline = await run(["create", "--platform", "slack", "--every", "30m", "--slug", "watch", "--prompt", "看 CI"], config, sent);
+  assert.equal(inline.code, 3);
+  assert.match(inline.out, /refused: inline-prompt-refused/);
+
+  const allowed = await run(["create", "--platform", "slack", "--every", "30m", "--slug", "probe", "--prompt", "一次性调试", "--allow-inline"], config, sent);
+  assert.equal(allowed.code, 0);
+  assert.equal(sent.at(-1).command.id, "probe-slack");
+  assert.equal(sent.at(-1).command.promptInline, true);
+  assert.equal(sent.at(-1).command.promptFile, null);
+  assert.equal(sent.length, 1, "only the allow-inline create was dispatched");
+});
+
+test("TC-LC12 doctor reports shape drift without writing anything", async () => {
+  const config = makeConfig();
+  const canonical = promptFileFor(config, "intake-slack");
+  seed(config, "slack", {
+    "intake-slack": loopOf({ id: "intake-slack", prompt: "", promptFile: canonical }),
+    "loop-slack-3": loopOf({ id: "loop-slack-3", prompt: "", promptFile: promptFileFor(config, "loop-slack-3") }),
+    "old-inline": loopOf({ id: "old-inline", prompt: "老规则", promptFile: null }),
+    "gone-slack": loopOf({ id: "gone-slack", prompt: "", promptFile: join(config.configDir, "prompts", "loops", "gone-slack", "prompt.md") }),
+    "moved-slack": loopOf({ id: "moved-slack", prompt: "", promptFile: join(config.configDir, "elsewhere", "prompt.md") }),
+  });
+  const sent = [];
+  const report = await run(["doctor", "--platform", "slack"], config, sent);
+  assert.equal(sent.length, 0, "doctor never dispatches");
+  assert.equal(report.code, 3, "a failing loop sets exit code 3");
+  const lines = report.out.trim().split("\n");
+  const byId = Object.fromEntries(lines.map((line) => { const [id, level, problems] = line.split("\t"); return [id, { level, problems }]; }));
+  assert.deepEqual(byId["intake-slack"], { level: "ok", problems: "-" });
+  assert.equal(byId["loop-slack-3"].level, "warn");
+  assert.match(byId["loop-slack-3"].problems, /legacy-id/);
+  assert.match(byId["old-inline"].problems, /inline-prompt/);
+  assert.equal(byId["old-inline"].level, "fail");
+  assert.match(byId["gone-slack"].problems, /prompt-file-missing/);
+  assert.match(byId["moved-slack"].problems, /prompt-file-not-canonical/);
 });
 
 test("TC-LC10 show and list name the prompt file instead of pretending to carry the text", async () => {

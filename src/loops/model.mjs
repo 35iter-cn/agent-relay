@@ -1,5 +1,6 @@
-import { parseDurationMs } from "../shared/duration.mjs";
+import { join, resolve } from "node:path";
 import { PLATFORMS } from "../platforms/contract.mjs";
+import { parseDurationMs } from "../shared/duration.mjs";
 import { cronNext, parseCron } from "./cron.mjs";
 import { validatePromptFile } from "./prompt.mjs";
 
@@ -73,6 +74,22 @@ export function validatePrompt(prompt) {
   return Buffer.byteLength(body) > MAX_PROMPT_BYTES ? "prompt-too-long" : null;
 }
 
+export function canonicalPromptPath(configDir, id) {
+  return join(String(configDir ?? ""), "prompts", "loops", String(id ?? ""), "prompt.md");
+}
+
+export function validateLoopPromptSource({ id, prompt, promptFile, configDir, allowInline = false } = {}) {
+  const file = String(promptFile ?? "").trim();
+  const text = String(prompt ?? "").trim();
+  if (file) {
+    if (!isLoopId(id)) return "bad-loop-id";
+    if (resolve(file) !== resolve(canonicalPromptPath(configDir, id))) return "prompt-file-not-canonical";
+    return validatePromptFile(file);
+  }
+  if (text) return allowInline ? validatePrompt(text) : "inline-prompt-refused";
+  return "empty-prompt";
+}
+
 export function validateLoopPrompt({ prompt, promptFile } = {}) {
   const file = String(promptFile ?? "").trim();
   if (file) return validatePromptFile(file);
@@ -84,12 +101,14 @@ export function validateLoopChange(change = {}) {
   return refused ?? null;
 }
 
-export function createLoop({ id, prompt, promptFile = null, every = null, at = null, cron = null, thread = true, createdBy = null, nowIso }) {
+export function createLoop({ id, prompt, promptFile = null, promptInline = false, every = null, at = null, cron = null, thread = true, createdBy = null, nowIso }) {
   const file = String(promptFile ?? "").trim();
+  const text = file ? "" : String(prompt ?? "").trim();
   return {
     id,
-    prompt: file ? "" : String(prompt ?? "").trim(),
+    prompt: text,
     promptFile: file || null,
+    promptInline: file ? false : Boolean(promptInline && text),
     every: every ?? null,
     at: at ?? null,
     cron: cron ?? null,

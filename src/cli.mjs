@@ -10,14 +10,15 @@ import { definePlatform, isPlatform, PLATFORMS } from "./platforms/contract.mjs"
 import { durationMs } from "./shared/duration.mjs";
 import { readJson } from "./shared/json.mjs";
 import { localStamp } from "./shared/time.mjs";
-import { MAX_LOOPS, MIN_EVERY_MS, loopIdForSlug, nextLoopId, platformOfLoopId, validateLoopPrompt, validateSchedule, validateSlug } from "./loops/model.mjs";
+import { MAX_LOOPS, MIN_EVERY_MS, canonicalPromptPath, isLoopId, loopIdForSlug, platformOfLoopId, validateLoopPromptSource, validateSchedule, validateSlug } from "./loops/model.mjs";
 import { loopDueAt } from "./loops/schedule.mjs";
+import { validatePromptFile } from "./loops/prompt.mjs";
 import { loopHelp } from "./loops/help.mjs";
 import { jobHelp } from "./jobs/help.mjs";
 import { findRound, listRounds } from "./loops/history.mjs";
 
 export const ACTION_NAMES = new Set(["cancel", "restart"]);
-export const LOOP_ACTIONS = new Set(["create", "list", "show", "update", "pause", "resume", "delete", "run", "log", "show-run"]);
+export const LOOP_ACTIONS = new Set(["create", "list", "show", "update", "pause", "resume", "delete", "run", "log", "show-run", "doctor"]);
 export const JOB_ACTIONS = new Set(["start", "cancel", "list"]);
 const COMMAND_WAIT_MS = 20_000;
 const COMMAND_POLL_MS = 500;
@@ -194,6 +195,33 @@ export function formatLoopRows(rows) {
   });
 }
 
+export function doctorLoopRows(config, platforms) {
+  const allowedWarnings = new Set(["legacy-id", "inline-prompt-allowed"]);
+  const rows = [];
+  for (const platform of platforms) {
+    for (const loop of Object.values(readLoops(config.stateFile(platform)))) {
+      if (loop.state === "deleted") continue;
+      const id = String(loop.id ?? "");
+      const problems = [];
+      if (!isLoopId(id)) problems.push("bad-loop-id");
+      else if (/^loop-[a-z]+-\d+$/.test(id)) problems.push("legacy-id");
+      if (loop.promptFile) {
+        if (resolve(String(loop.promptFile)) !== resolve(canonicalPromptPath(config.configDir, id))) problems.push("prompt-file-not-canonical");
+        const refused = validatePromptFile(loop.promptFile);
+        if (refused) problems.push(refused);
+      } else if (String(loop.prompt ?? "").trim()) {
+        problems.push(loop.promptInline ? "inline-prompt-allowed" : "inline-prompt");
+      } else {
+        problems.push("empty-prompt");
+      }
+      if (validateSchedule({ every: loop.every, at: loop.at, cron: loop.cron })) problems.push("bad-schedule");
+      const level = !problems.length ? "ok" : problems.every((item) => allowedWarnings.has(item)) ? "warn" : "fail";
+      rows.push({ platform, id, level, problems });
+    }
+  }
+  return rows.sort((a, b) => String(a.id).localeCompare(String(b.id)));
+}
+
 export async function handleJobCommand(rest, config, log, deps = {}) {
   const dispatch = deps.sendCommand ?? sendCommand;
   const { verb, flags, positional } = jobArgs(rest);
@@ -345,6 +373,15 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
     process.stdout.write(`${round.runId}\t${round.trigger}\t${round.outcome}\t${round.messageId ?? "-"}\n${round.output ?? ""}\n`);
     return;
   }
+  if (verb === "doctor") {
+    const platform = typeof flags.platform === "string" ? flags.platform : "";
+    const platforms = isPlatform(platform) ? [platform] : PLATFORMS;
+    const rows = doctorLoopRows(config, platforms);
+    const lines = rows.map((row) => `${row.id}\t${row.level}\t${row.problems.join(",") || "-"}`);
+    process.stdout.write(`${lines.join("\n")}${lines.length ? "\n" : ""}`);
+    process.exitCode = rows.some((row) => row.level === "fail") ? 3 : 0;
+    return;
+  }
   if (verb === "create") {
     const platform = loopPlatform(flags, deps.env ?? process.env);
     if (!isPlatform(platform)) {
@@ -358,10 +395,15 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
       return;
     }
     const slug = typeof flags.slug === "string" ? flags.slug.trim() : "";
+    const allowInline = Boolean(flags["allow-inline"]);
     const every = typeof flags.every === "string" ? flags.every : null;
     const at = typeof flags.at === "string" ? flags.at : null;
     const cron = typeof flags.cron === "string" ? flags.cron : null;
-    const refused = validateSchedule({ every, at, cron }) ?? validateLoopPrompt(source) ?? (slug ? validateSlug(slug) : null);
+    const id = loopIdForSlug(slug, platform);
+    const refused =
+      validateSchedule({ every, at, cron }) ??
+      (slug ? validateSlug(slug) : "slug-required") ??
+      validateLoopPromptSource({ id, prompt: source.prompt, promptFile: source.promptFile, configDir: config.configDir, allowInline });
     if (refused) {
       refuse(refused);
       return;
@@ -374,9 +416,10 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
     await send(
       {
         op: "loop-create",
-        id: slug ? loopIdForSlug(slug, platform) : nextLoopId(loops, platform),
+        id,
         prompt: source.prompt ?? "",
         promptFile: source.promptFile ?? null,
+        promptInline: !source.promptFile && Boolean(source.prompt),
         every,
         loopAt: at,
         cron,
@@ -446,13 +489,20 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
         refuse(source.error);
         return;
       }
-      const refused = validateLoopPrompt(source);
+      const refused = validateLoopPromptSource({
+        id,
+        prompt: source.prompt,
+        promptFile: source.promptFile,
+        configDir: config.configDir,
+        allowInline: Boolean(flags["allow-inline"]),
+      });
       if (refused) {
         refuse(refused);
         return;
       }
       command.prompt = source.prompt ?? "";
       command.promptFile = source.promptFile ?? null;
+      command.promptInline = !source.promptFile && Boolean(source.prompt);
     }
     if (flags.thread !== undefined || flags["no-thread"] !== undefined) command.thread = !flags["no-thread"];
     await send(command, owner);

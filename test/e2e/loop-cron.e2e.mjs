@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { spawn } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
 const { createCore } = await import("../../src/runtime/core.mjs");
@@ -86,9 +86,13 @@ const readReplies = () =>
     : [];
 const wait = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+const promptFile = join(config.configDir, "prompts", "loops", "probe-slack", "prompt.md");
+mkdirSync(dirname(promptFile), { recursive: true });
+writeFileSync(promptFile, "看 CI\n");
+
 const drainer = setInterval(() => core.drainCommands().catch(() => {}), 50);
 try {
-  await handleLoopCommand(["create", "--platform", "slack", "--cron", "* * * * *", "--prompt", "看 CI"], config, () => {}, {
+  await handleLoopCommand(["create", "--platform", "slack", "--slug", "probe", "--cron", "* * * * *", "--prompt-file", promptFile], config, () => {}, {
     env: { AGENT_RELAY_PLATFORM: "slack" },
   });
 } finally {
@@ -96,21 +100,21 @@ try {
 }
 await core.drainCommands();
 
-const created = core.state.loops["loop-slack-1"];
+const created = core.state.loops["probe-slack"];
 check("the CLI command file creates a cron loop in the daemon", created?.cron === "* * * * *", JSON.stringify(created?.cron));
 check("the cron loop carries no interval and no one-shot moment", created?.every === null && created?.at === null);
 
-core.state.loops["loop-slack-1"].lastRunAt = new Date(Date.now() - 5 * 60_000).toISOString();
+core.state.loops["probe-slack"].lastRunAt = new Date(Date.now() - 5 * 60_000).toISOString();
 core.save();
 const firstTick = await core.startDueLoops();
 await wait(1500);
 check("a due cron loop starts exactly one round", firstTick === 1, `started=${firstTick}`);
-check("the round runs in a fresh session", Object.values(core.state.jobs).some((job) => job.origin === "loop" && job.key === "loop-slack-1-r1"));
+check("the round runs in a fresh session", Object.values(core.state.jobs).some((job) => job.origin === "loop" && job.key === "probe-slack-r1"));
 check("the round output is posted once", readReplies().length === 1, JSON.stringify(readReplies().map((item) => item.key)));
-const afterRound = core.state.loops["loop-slack-1"];
+const afterRound = core.state.loops["probe-slack"];
 check("the cron loop stays armed after its round", afterRound.state === "armed", afterRound.state);
 check("the round is recorded as ok", afterRound.lastOutcome === "ok", afterRound.lastOutcome);
-check("the history holds one round", listRounds(config.loopHistoryDir, "loop-slack-1").length === 1);
+check("the history holds one round", listRounds(config.loopHistoryDir, "probe-slack").length === 1);
 
 const nextDue = loopDueAt(afterRound);
 check("the next round is the next cron minute", Number.isFinite(nextDue) && nextDue > Date.now() && nextDue % 60_000 === 0, `${nextDue}`);
@@ -121,7 +125,7 @@ const listCli = [];
 const stdout = process.stdout.write;
 process.stdout.write = (chunk) => (listCli.push(String(chunk)), true);
 try {
-  await handleLoopCommand(["show", "loop-slack-1"], config, () => {});
+  await handleLoopCommand(["show", "probe-slack"], config, () => {});
 } finally {
   process.stdout.write = stdout;
 }

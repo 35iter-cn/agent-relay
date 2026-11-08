@@ -4,15 +4,15 @@ export const LOOP_VERBS = [
   {
     verb: "create",
     usage:
-      'loop create --platform <p> (--every <dur> | --at <iso> | --cron "<expr>") (--prompt <text> | --prompt-file <path>) [--slug <name>] [--no-thread]',
+      'loop create --platform <p> --slug <name> (--every <dur> | --at <iso> | --cron "<expr>") --prompt-file <path> [--no-thread]',
     detail: [
       "三种 schedule 互斥，恰好给一个。",
       "  --every <dur>     间隔，下一轮从上一轮实际起跑时刻算起（30m / 2h），最小 10 分钟",
       "  --at <iso>        一次性定点（2026-11-08T13:00:00+08:00），跑完 loop 变 done",
       '  --cron "<expr>"   5 字段（分 时 日 月 周），按 Asia/Shanghai 定点，如 "0 13 * * *" 是每天 13:00',
-      "  --prompt <text>   内联文本，存进 state（上限 4 KiB）",
-      "  --prompt-file <p> 只存路径，每轮现读：改文件下一轮就生效，删掉/清空/超 64 KiB 则该轮 failed",
-      "--slug <name> 让 id 可读：<name>-<platform>（如 intake-slack）；不给就是 loop-<platform>-<n>。",
+      "  --prompt-file <p> 只存路径，每轮现读；唯一合法值 = ~/.config/agent-relay/prompts/loops/<id>/prompt.md",
+      "--slug <name> 必填：id = <name>-<platform>（如 intake-slack）。先写 prompt.md，再建 loop。",
+      "路径不在那个目录下会被 refused: prompt-file-not-canonical；内联 --prompt 需要 --allow-inline。",
       "每轮是新会话，输出作为一条消息发出；只输出 NOOP（或什么都不输出）的轮次不发消息。",
       "--no-thread 不给轮次消息开 thread（默认开，平台支持才生效）。",
     ],
@@ -22,11 +22,11 @@ export const LOOP_VERBS = [
   { verb: "show", usage: "loop show <id>", detail: ["打一条 loop 的定义、状态、下一次触发点与最近一轮结果。"] },
   {
     verb: "update",
-    usage: 'loop update <id> [--every <dur> | --at <iso> | --cron "<expr>" | --prompt <text> | --prompt-file <path> | --thread | --no-thread]',
+    usage: 'loop update <id> [--every <dur> | --at <iso> | --cron "<expr>" | --prompt-file <path> | --prompt <text> --allow-inline | --thread | --no-thread]',
     detail: [
       "给任意一种 schedule 就会替换全部三种（--every 会清掉 --cron，反之亦然）。",
       "只改 prompt 时 schedule 与 lastRunAt 不动；done 的 loop 改了 schedule 会自动回到 armed。",
-      "--prompt 与 --prompt-file 互斥：后者只存路径、每轮现读，切换时另一侧被清掉。",
+      "--prompt-file 只存路径、每轮现读，切换时清掉内联文本；改回内联要加 --allow-inline。",
     ],
     example: "agent-relay loop update loop-discord-1 --cron \"0 13 * * *\"",
   },
@@ -36,6 +36,14 @@ export const LOOP_VERBS = [
   { verb: "run", usage: "loop run <id>", detail: ["立刻起一轮（trigger=manual），不管 schedule；会把 lastRunAt 推到此刻。"] },
   { verb: "log", usage: "loop log <id> [--limit 20]", detail: ["倒序列出轮次：runId / 时刻 / trigger / outcome。"] },
   { verb: "show-run", usage: "loop show-run <runId>", detail: ["打印某一轮的完整输出（每轮最多 32 KiB）。"] },
+  {
+    verb: "doctor",
+    usage: "loop doctor [--platform <p>]",
+    detail: [
+      "只读巡检：id 形态、prompt 路径是否等于 prompts/loops/<id>/prompt.md、文件是否存在非空、schedule 是否还能算出下一次。",
+      "输出 <id>\t<ok|warn|fail>\t<问题列表>；有 fail 时退出码 3。",
+    ],
+  },
   { verb: "help", usage: "loop help [<verb>]", detail: ["不带 <verb> 时列全部子命令；带时只看那一条。"] },
 ];
 
