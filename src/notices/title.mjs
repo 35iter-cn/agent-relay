@@ -1,12 +1,9 @@
 export const NOTICE_TITLES = {
   boot: "启动",
-  restart: "重启",
-  restartFailed: "重启失败",
   stall: "卡住",
-  round: "轮报",
-  pause: "暂停",
+  round: "播报",
+  pause: "自动暂停",
   throttle: "限流",
-  hours: "工时",
   notice: "通知",
 };
 

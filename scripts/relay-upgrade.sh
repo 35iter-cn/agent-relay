@@ -134,7 +134,7 @@ entered="$(systemctl --user show "agent-relay@$platform.service" -p ActiveEnterT
 
 if systemctl --user is-active --quiet "agent-relay@$platform.service" && [[ -n "${pid:-}" && "$pid" != "0" && "$pid" != "${before_pid:-}" ]]; then
   echo "relay-upgrade: OK $platform active (pid $pid, entered ${entered:-?})"
-  notify "重启" "agent-relay-$platform 已重启，健康检查通过（pid ${before_pid:-none} → $pid，$(date '+%Y-%m-%d %H:%M')）"
+  notify "重启成功" "agent-relay-$platform 已重启，健康检查通过（pid ${before_pid:-none} → $pid，$(date '+%Y-%m-%d %H:%M')）"
   exit 0
 fi
 
