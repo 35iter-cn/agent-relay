@@ -69,7 +69,7 @@ function harness({ state = emptyState(), spawn, sessions = [], clock } = {}) {
     worker: "stub",
     piBin: "/bin/true",
     sessionFor: (key) => `fs-${key}`,
-    reply: async (ctx, text) => replies.push({ key: ctx.key, text }),
+    reply: async (ctx, text) => (replies.push({ key: ctx.key, text }), { messageId: `m-${replies.length}` }),
     postNotice: async (text) => (replies.push({ key: "notice", text }), { messageId: "notice-1" }),
     selfContext: (key) => ({ chatId: "c1", threadId: null, replyTo: key }),
     buildWorker: ({ prompt }) => (prompts.push(prompt), { bin: "/bin/true", args: [] }),

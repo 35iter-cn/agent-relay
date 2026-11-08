@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { handleJobCommand, JOB_ACTIONS } from "../src/cli.mjs";
@@ -86,4 +86,43 @@ test("TC-JH4 the job help table and the dispatch table hold the same verbs", () 
   assert.match(jobHelp(), /模型读这三行就够/);
   assert.match(jobHelp(), /没有静默这回事/);
   assert.doesNotMatch(jobHelp("start"), /模型读这三行就够/);
+});
+
+function stateWith(jobs) {
+  const config = makeConfig();
+  mkdirSync(config.configDir, { recursive: true });
+  writeFileSync(config.stateFile("slack"), JSON.stringify({ jobs }));
+  return config;
+}
+
+test("TC-RD3 redeliver sends the failed job id to the daemon and reports it", async () => {
+  const config = stateWith({
+    "job-9": { id: "job-9", key: "th-abc", status: "failed", error: "reply-failed", answer: "答案", updatedAt: "2026-11-08T12:36:14.000Z" },
+  });
+  const sent = [];
+  const { code, out } = await run(["redeliver", "--platform", "slack", "th-abc"], config, sent);
+  assert.equal(code, 0);
+  assert.match(out, /redelivered/);
+  assert.deepEqual(sent, [{ platform: "slack", command: { op: "redeliver", job: "job-9", key: "th-abc" } }]);
+});
+
+test("TC-RD3b a job id may be given instead of the conversation key", async () => {
+  const config = stateWith({
+    "job-9": { id: "job-9", key: "th-abc", status: "failed", answer: "答案", updatedAt: "2026-11-08T12:36:14.000Z" },
+  });
+  const sent = [];
+  const { code } = await run(["redeliver", "--platform", "slack", "job-9"], config, sent);
+  assert.equal(code, 0);
+  assert.equal(sent[0].command.job, "job-9");
+});
+
+test("TC-RD4 nothing to resend is refused before the daemon is touched", async () => {
+  const config = stateWith({
+    "job-9": { id: "job-9", key: "th-abc", status: "done", updatedAt: "2026-11-08T12:36:14.000Z" },
+  });
+  const sent = [];
+  const { code, out } = await run(["redeliver", "--platform", "slack", "th-abc"], config, sent);
+  assert.equal(code, 3);
+  assert.match(out, /refused: nothing-to-redeliver/);
+  assert.equal(sent.length, 0);
 });

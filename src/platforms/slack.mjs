@@ -2,6 +2,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chunkText } from "../shared/chunk.mjs";
+import { deliveryError } from "../jobs/delivery.mjs";
 import { relayEnv } from "../shared/env.mjs";
 import { ensurePrivateDir } from "../shared/fs.mjs";
 import { createRootCache } from "./shared/root-cache.mjs";
@@ -22,6 +23,22 @@ export const FILES_ALERT = "relay: Slack 附件下载失败，检查 app 是否�
 
 export const PROGRESS_EMOJI = "thinking_face";
 const PLACEHOLDER_TEXT = "⏳ 正在处理…";
+const PERMANENT_REPLY_ERRORS = new Set([
+  "invalid_thread_ts",
+  "thread_not_found",
+  "channel_not_found",
+  "not_in_channel",
+  "is_archived",
+  "is_read_only",
+  "missing_scope",
+  "invalid_auth",
+  "not_authed",
+  "token_revoked",
+  "account_inactive",
+]);
+const LOCATE_SKEW_MS = 5_000;
+const LOCATE_MIN_CHARS = 24;
+const LOCATE_LIMIT = 50;
 const PERMISSION_ERRORS = new Set(["missing_scope", "not_allowed_token_type", "invalid_auth", "not_authed", "account_inactive", "token_revoked"]);
 const ALREADY_PROGRESSED = new Set(["already_reacted"]);
 const ALREADY_CLEANED = new Set(["no_reaction", "message_not_found"]);
@@ -100,16 +117,14 @@ export function createRuntime({ api, log, channel, emoji = PROGRESS_EMOJI }) {
   async function postMessage(ctx, text) {
     const params = { channel, text, ...(ctx.replyTo ? { thread_ts: ctx.replyTo } : {}) };
     const res = await sendMarkdown(api, "chat.postMessage", params, log);
-    if (!res.ok) throw new Error(`postMessage ${res.error}`);
+    if (!res.ok) throw deliveryError(`postMessage ${res.error ?? "failed"}`, { retryable: !PERMANENT_REPLY_ERRORS.has(res.error), code: res.error ?? null });
+    if (!res.ts) throw deliveryError("postMessage returned no ts", { code: "no-ts" });
     return { messageId: res.ts };
   }
 
   return {
     async reply(ctx, text) {
-      if (!api) {
-        log("warn", "reply", "no SLACK_BOT_TOKEN");
-        return null;
-      }
+      if (!api) throw deliveryError("no SLACK_BOT_TOKEN", { retryable: false, code: "no-token" });
       const entry = ctx.progress;
       if (entry?.mode === "placeholder" && entry.messageId && entry.pending) {
         const patched = await sendMarkdown(api, "chat.update", { channel, ts: entry.messageId, text }, log);
@@ -123,7 +138,7 @@ export function createRuntime({ api, log, channel, emoji = PROGRESS_EMOJI }) {
         return await postMessage(ctx, text);
       } catch (error) {
         log("warn", "postMessage", String(error?.message ?? error));
-        return null;
+        throw error;
       }
     },
 
@@ -164,6 +179,42 @@ export function createRuntime({ api, log, channel, emoji = PROGRESS_EMOJI }) {
         if (!res.ok && !ALREADY_CLEANED.has(res.error)) log("warn", "progress-delete", res.error);
       }
     },
+  };
+}
+
+export function normalizeForMatch(text) {
+  return String(text ?? "").replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+export function createReplyLocator({ channel, readCookies, log = () => {}, fetchFn = (...args) => fetch(...args) }) {
+  async function threadMessages(thread, oldest) {
+    const cookies = readCookies();
+    const url = new URL("https://slack.com/api/conversations.replies");
+    url.searchParams.set("channel", channel);
+    url.searchParams.set("ts", thread);
+    url.searchParams.set("oldest", String(oldest));
+    url.searchParams.set("inclusive", "true");
+    url.searchParams.set("limit", String(LOCATE_LIMIT));
+    const res = await fetchFn(url, { headers: { Authorization: `Bearer ${cookies.xoxc}`, Cookie: `d=${cookies.xoxd}` } });
+    const body = await res.json().catch(() => null);
+    if (!body?.ok) throw new Error(`replies ${body?.error ?? "unreadable-body"}`);
+    return body.messages ?? [];
+  }
+
+  return async function locateReply(ctx, { text, since } = {}) {
+    const thread = ctx?.replyTo ?? ctx?.threadId ?? ctx?.messageId ?? null;
+    const wanted = normalizeForMatch(text);
+    if (!thread || wanted.length < LOCATE_MIN_CHARS) return null;
+    const startedAt = Number(since);
+    const oldest = Number.isFinite(startedAt) ? Math.max(0, Math.floor((startedAt - LOCATE_SKEW_MS) / 1000)) : 0;
+    try {
+      const messages = await threadMessages(thread, oldest);
+      const hit = messages.find((message) => message?.bot_id && normalizeForMatch(message.text) === wanted);
+      return hit?.ts ?? null;
+    } catch (error) {
+      log("warn", "locate-reply", String(error?.message ?? error));
+      return null;
+    }
   };
 }
 
@@ -636,6 +687,8 @@ export function createPlatform({ config, log: baseLog }) {
     },
 
     postMedia,
+
+    locateReply: createReplyLocator({ channel, readCookies, log }),
 
     async edit(ctx, messageId, text) {
       return runtime.edit(ctx, messageId, text);

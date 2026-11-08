@@ -40,7 +40,7 @@ const adapter = {
   worker: "pi",
   piBin: "bash",
   sessionFor: () => SESSION,
-  reply: async (inbound, text) => appendFileSync(repliesPath, `${JSON.stringify({ key: inbound.key, text })}\n`),
+  reply: async (inbound, text) => (appendFileSync(repliesPath, `${JSON.stringify({ key: inbound.key, text })}\n`), { messageId: `reply-${Date.now()}` }),
   postNotice: async (text) => {
     appendFileSync(repliesPath, `${JSON.stringify({ key: "notice", text })}\n`);
     return { messageId: `notice-${Date.now()}` };

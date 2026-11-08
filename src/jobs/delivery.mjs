@@ -6,6 +6,17 @@ export function hashOf(text) {
   return createHash("sha256").update(String(text)).digest("hex").slice(0, 16);
 }
 
+export function deliveryError(message, { retryable = true, code = null } = {}) {
+  const error = new Error(message);
+  error.retryable = retryable;
+  error.code = code;
+  return error;
+}
+
+export function isRetryable(error) {
+  return error?.retryable !== false;
+}
+
 export function planParts({ answer, parts = [], chunkLimit, canEdit = false, media = null }) {
   if (answer == null) return [];
   const files = media?.files ?? [];
