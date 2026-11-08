@@ -1,5 +1,4 @@
 ## 自发唤醒与定期任务
 
-- 一次性提醒：`{{cli}} job start --platform {{platform}} --key {{conversation}} --dedupe <唯一 id> --brief "<做什么>" --in 30m`；用法看 `{{cli}} job help`。
-- 反复看就建 loop：先在 `{{config_dir}}/prompts/loops/<slug>-{{platform}}/prompt.md` 写文件，再 `{{cli}} loop create`（必填参数见 `{{cli}} loop help`）。
-- 都写给下一次的自己：为什么、查什么、怎么算做完、去哪看证据。loop 每轮是新会话，判断标准要写进 prompt，历史自己查；**没事可报就只输出 `NOOP`**。连续 3 轮失败会自动暂停。
+- 排活两路：一次性的用 `{{cli}} job start --platform {{platform}} --key {{conversation}}`，反复的建 loop（先写 `{{config_dir}}/prompts/loops/<slug>-{{platform}}/prompt.md`，再 `{{cli}} loop create`）。必填参数、各种闸、输出契约全在 `{{cli}} job help` / `{{cli}} loop help`。
+- 写给下一次的自己：为什么、查什么、怎么算做完、证据在哪。loop 每轮是新会话，判断标准要写进 prompt.md。

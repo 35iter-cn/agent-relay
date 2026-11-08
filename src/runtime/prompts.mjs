@@ -9,7 +9,7 @@ export const SECTION_FILE = /^(\d{2})-(.+)\.md$/;
 export const ENTRY_SECTIONS = {
   conversation: ["header-conversation", "task", "record", "reply", "surface", "situation", "stall", "self-wake", "boundary"],
   notice: ["header-notice", "notice-task", "record", "reply", "situation", "self-wake", "boundary"],
-  loop: ["header-loop", "loop-task", "record", "reply", "surface", "situation", "stall", "boundary"],
+  loop: ["header-loop", "loop-task", "record", "reply", "surface", "situation", "boundary"],
 };
 
 export function rootSectionText(root, message) {

@@ -19,6 +19,9 @@ function render(prompts, platform, entry = "conversation", extra = {}) {
   if (entry === "notice") {
     return prompts.noticeReply({ platform, adapter, inbound: { ...inbound, text: "杀掉" }, root: "", notice: { id: "ntc-1", prompt: "STALL-BODY" }, ...extra });
   }
+  if (entry === "loop") {
+    return prompts.loopRound({ platform, adapter, inbound, root: "", loop: { id: "signals-slack", round: 3, prompt: "LOOP-BODY", last: "上一轮 ok" }, ...extra });
+  }
   return prompts.conversation({ platform, adapter, inbound, root: inbound.text, running: [], ...extra });
 }
 
@@ -151,9 +154,36 @@ test("TC-P11 the built-in first-turn prompt stays within the first-turn budget w
     assert.match(text, /agent-relay loop help/);
     assert.match(text, /agent-relay job help/);
     assert.doesNotMatch(text, /loop list|loop pause|loop update|loop log|job list|job cancel/);
-    assert.match(text, /NOOP/);
-    assert.match(text, /连续 3 轮失败会自动暂停/);
+    assert.doesNotMatch(text, /NOOP/);
+    assert.doesNotMatch(text, /连续 3 轮失败会自动暂停/);
   }
+});
+
+test("TC-P18 a loop round drops the stall section but keeps the NOOP contract", () => {
+  const text = render(builtinPrompts(), "slack", "loop");
+  assert.match(text, /LOOP-BODY/);
+  assert.doesNotMatch(text, /## 处置卡住的 job/);
+  assert.doesNotMatch(text, /stall slack cancel\|restart/);
+  assert.match(text, /整个输出只有一行 `NOOP`/);
+  assert.match(text, /loop log signals-slack/);
+});
+
+test("TC-P23 every entry carries the single outbound rule", () => {
+  for (const entry of ["conversation", "notice", "loop"]) {
+    const text = render(builtinPrompts(), "slack", entry);
+    assert.match(text, /不要再用 `notice emit` 或平台 API 发第二遍/, entry);
+    assert.equal(text.match(/不要再用 `notice emit`/g).length, 1, entry);
+  }
+});
+
+test("TC-P24 the self-wake section keeps capabilities and pointers only", () => {
+  const text = readSection("45-self-wake.md");
+  assert.match(text, /job help/);
+  assert.match(text, /loop help/);
+  assert.match(text, /job start --platform \{\{platform\}\} --key \{\{conversation\}\}/);
+  assert.doesNotMatch(text, /--dedupe|--brief|--in 30m/);
+  assert.doesNotMatch(text, /NOOP/);
+  assert.doesNotMatch(text, /连续 3 轮/);
 });
 
 test("TC-P14 the loop round sections point at loop help instead of repeating flags", () => {
