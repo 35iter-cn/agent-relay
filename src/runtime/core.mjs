@@ -16,6 +16,7 @@ import { declaredTimeoutMs, readSessionSignal, TOOL_GRACE_MS } from "../jobs/sig
 import { nextAction } from "../jobs/next-action.mjs";
 import { createStateStore } from "../state/store.mjs";
 import { createNoticeService } from "../notices/service.mjs";
+import { NOTICE_TITLES } from "../notices/title.mjs";
 import { RESTART_PROMPT, stallNoticePrompt, stallNoticeText } from "./stall-notice.mjs";
 import { createPrompts } from "./prompts.mjs";
 import { activeLoopCount, createLoop, isLoopId, platformOfLoopId, validateLoopChange, validateLoopPromptSource, validateSchedule } from "../loops/model.mjs";
@@ -144,6 +145,7 @@ export function createCore({ adapter, config, deps = {} }) {
     };
     try {
       const notice = await notices.emit({
+        title: NOTICE_TITLES.stall,
         text: stallNoticeText(fields),
         prompt: stallNoticePrompt({
           key: job.key,
@@ -285,7 +287,7 @@ export function createCore({ adapter, config, deps = {} }) {
       if (!Number.isFinite(writtenAt) || now() - writtenAt > COMMAND_TTL_MS) continue;
       try {
         if (command.op === "emit") {
-          await notices.emit({ text: command.text, prompt: command.prompt ?? "", reply: command.reply ?? null });
+          await notices.emit({ text: command.text, prompt: command.prompt ?? "", reply: command.reply ?? null, title: command.title ?? "" });
         } else if (command.op === "schedule") {
           const outcome = scheduleJob(command);
           appendLog({ event: "command-schedule", ...outcome, key: String(command.key ?? "") });
@@ -609,91 +611,6 @@ export function createCore({ adapter, config, deps = {} }) {
     }
   }
 
-  function parseCommand(text) {
-    const trimmed = String(text ?? "").trim();
-    const lower = trimmed.toLowerCase();
-    if (lower === "停" || lower === "stop" || /^\/stop(@\w+)?$/.test(lower)) return "stop";
-    if (trimmed === "重跑" || /^\/重跑$/.test(trimmed) || /^\/rerun(@\w+)?$/i.test(trimmed)) return "retry";
-    return null;
-  }
-
-  function ctxFor(inbound, job) {
-    if (job) return ctxOf(job);
-    return {
-      jobId: null,
-      key: inbound.key,
-      chatId: inbound.chatId ?? null,
-      messageId: inbound.messageId ?? null,
-      threadId: inbound.threadId ?? null,
-      replyTo: inbound.replyTo ?? null,
-      progress: null,
-      text: inbound.text,
-      rootText: inbound.rootText ?? inbound.text,
-    };
-  }
-
-  async function runStop(inbound) {
-    const activeId = state.convs[inbound.key]?.activeJob;
-    const job = activeId ? state.jobs[activeId] : null;
-    const cancelled = cancel(inbound.key);
-    if (job && job.status === "running") {
-      job.status = "cancelled";
-      job.lease = null;
-      job.updatedAt = isoNow();
-    }
-    const dropped = dropQueued(inbound.key);
-    state.seen[inbound.dedupeId] = "legacy";
-    save();
-    appendLog({ event: "stop", key: inbound.key, cancelled, job: job?.id ?? null, dequeued: dropped });
-    if (cancelled) return "accepted";
-    let text = "当前没有在跑的任务。";
-    if (dropped.length) text = `已取消排队中的 ${dropped.length} 个任务（还没开始跑）。`;
-    try {
-      await adapter.reply(ctxFor(inbound, job), text);
-    } catch (error) {
-      log("error", "stop-reply", String(error?.message ?? error));
-    }
-    return "accepted";
-  }
-
-  async function runRetry(inbound) {
-    const target = Object.values(state.jobs)
-      .filter((job) => job.key === inbound.key && job.status === "interrupted")
-      .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))[0];
-    if (!target) {
-      try {
-        await adapter.reply(ctxFor(inbound, null), "这个会话没有可重跑的中断任务。");
-      } catch (error) {
-        log("error", "retry-reply", String(error?.message ?? error));
-      }
-      return "accepted";
-    }
-    const attempt = Number(target.attempts ?? 1) + 1;
-    const retryInbound = {
-      ...target.inbound,
-      key: target.key,
-      session: target.session,
-      noticeId: target.noticeId ?? null,
-      dedupeId: `${target.inbound.dedupeId}#retry${attempt - 1}`,
-      authorId: inbound.authorId ?? target.inbound.authorId,
-      chatId: inbound.chatId ?? target.inbound.chatId,
-      messageId: inbound.messageId ?? target.inbound.messageId,
-      threadId: inbound.threadId ?? target.inbound.threadId,
-    };
-    const job = createJob(state, retryInbound, isoNow);
-    job.attempts = attempt;
-    state.jobs[job.id] = job;
-    state.inbox.push(job.id);
-    state.seen[retryInbound.dedupeId] = job.id;
-    state.seen[inbound.dedupeId] = job.id;
-    target.retriedBy = job.id;
-    target.updatedAt = isoNow();
-    save();
-    appendLog({ event: "retry", job: job.id, from: target.id, key: job.key });
-    drainInbox();
-    return "accepted";
-  }
-
   async function interrupt(job) {
     if (!job.noticeSent && isScheduled(job)) {
       job.noticeSent = true;
@@ -771,7 +688,7 @@ export function createCore({ adapter, config, deps = {} }) {
     if (!shouldAnnounceBoot(state.meta.bootNotice?.bootId, bootId)) return false;
     const at = new Date(now());
     try {
-      const notice = await notices.emit({ text: bootNoticeText(at, localStamp) });
+      const notice = await notices.emit({ text: bootNoticeText(at, localStamp), title: NOTICE_TITLES.boot });
       state.meta.bootNotice = { bootId, at: at.toISOString(), noticeId: notice.id };
       save();
       log("info", "boot-notice", bootId, notice.id);
@@ -966,7 +883,7 @@ export function createCore({ adapter, config, deps = {} }) {
     }
     for (let attempt = 1; attempt <= MAX_DELIVERY_ATTEMPTS; attempt += 1) {
       try {
-        const notice = await notices.emit({ text, reply: { mode: "conversation", key: job.key } });
+        const notice = await notices.emit({ text, title: NOTICE_TITLES.round, reply: { mode: "conversation", key: job.key } });
         job.noticeId = notice.id;
         job.parts = [{ i: 0, messageId: notice.messageId ?? null, hash: hashOf(text), sentAt: isoNow() }];
         job.status = "done";
@@ -1004,7 +921,7 @@ export function createCore({ adapter, config, deps = {} }) {
       if (loop.failStreak >= 3 && loop.state === "armed") {
         loop.state = "paused";
         notices
-          .emit({ text: `⏸ ${loop.id} 连续 ${loop.failStreak} 轮失败，已暂停：${job.error ?? outcome}` })
+          .emit({ text: `${loop.id} 连续 ${loop.failStreak} 轮失败，已暂停：${job.error ?? outcome}`, title: NOTICE_TITLES.pause })
           .catch((error) => log("warn", "loop-pause-notice", String(error?.message ?? error)));
       }
     }
@@ -1062,7 +979,7 @@ export function createCore({ adapter, config, deps = {} }) {
     state.meta.loopThrottleAt = isoAt(now());
     save();
     notices
-      .emit({ text: `⏳ 本平台这一小时的 loop 轮数已到上限（${LOOP_ROUNDS_PER_HOUR}），后面的轮次跳过。` })
+      .emit({ text: `本平台这一小时的 loop 轮数已到上限（${LOOP_ROUNDS_PER_HOUR}），后面的轮次跳过。`, title: NOTICE_TITLES.throttle })
       .catch((error) => log("warn", "loop-throttle-notice", String(error?.message ?? error)));
   }
 
@@ -1239,20 +1156,8 @@ export function createCore({ adapter, config, deps = {} }) {
       log("ignore", "author", inbound.authorId);
       return "ignored";
     }
-    const command = parseCommand(inbound.text);
     const known = state.seen[inbound.dedupeId];
-    if (command) {
-      if (known && known !== "legacy") {
-        log("ignore", "duplicate-command", inbound.dedupeId);
-        return "duplicate";
-      }
-      return command === "stop" ? runStop(inbound) : runRetry(inbound);
-    }
     const notice = notices.match(inbound.replyIds ?? []);
-    if (known === "legacy") {
-      log("ignore", "duplicate-legacy", inbound.dedupeId);
-      return "duplicate";
-    }
     const existing = known ? state.jobs[known] : null;
     if (existing && !isFinished(existing)) {
       log("ignore", "duplicate-in-flight", existing.id);

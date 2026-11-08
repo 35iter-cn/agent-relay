@@ -16,7 +16,7 @@ export const JOB_VERBS = [
     ],
     example: 'agent-relay job start --platform slack --key <thread-id> --dedupe ci-check-1 --brief "看一下 CI" --in 30m',
   },
-  { verb: "cancel", usage: "job cancel --platform <p> <dedupe>", detail: ["取消一条还没开始的定时轮；已经开始的不受影响（用 stall 或 /stop）。"] },
+  { verb: "cancel", usage: "job cancel --platform <p> <dedupe>", detail: ["取消一条还没开始的定时轮；已经开始的不受影响（用 `agent-relay stall <p> cancel <key>`）。"] },
   { verb: "list", usage: "job list --platform <p> [--key <k>]", detail: ["列出 scheduled 与 running 的轮次。"] },
   { verb: "help", usage: "job help [<verb>]", detail: ["不带 <verb> 时列全部子命令；带时只看那一条。"] },
 ];

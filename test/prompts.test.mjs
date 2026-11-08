@@ -55,13 +55,12 @@ const stubSections = {
   "30-situation.md": "SITUATION",
   "40-stall.md": "{{stall_section}}",
   "50-boundary.md": "BOUNDARY",
-  "80-candidate.md": "CANDIDATE",
 };
 
 test("TC-P1 every built-in section file carries a number prefix and a name", () => {
   const prompts = builtinPrompts();
   const sections = prompts.listSections();
-  assert.equal(sections.length, 19);
+  assert.equal(sections.length, 18);
   assert.deepEqual(sections.map((section) => section.order), [...sections.map((section) => section.order)].sort((a, b) => a - b));
   assert.equal(new Set(sections.map((section) => section.name)).size, sections.length);
 });
@@ -203,8 +202,8 @@ test("TC-P16 each entry selects its documented sections plus its own platform re
     return fileOrder.filter((name) => allowed.has(name));
   };
   for (const platform of ["slack", "feishu", "telegram", "discord"]) {
-    assert.deepEqual(sectionsByName(prompts, { entry: "conversation", platform, variant: "task" }), withPlatform("conversation", platform));
-    assert.deepEqual(sectionsByName(prompts, { entry: "notice", platform, variant: "task" }), withPlatform("notice", platform));
+    assert.deepEqual(sectionsByName(prompts, { entry: "conversation", platform }), withPlatform("conversation", platform));
+    assert.deepEqual(sectionsByName(prompts, { entry: "notice", platform }), withPlatform("notice", platform));
   }
 });
 
@@ -212,23 +211,11 @@ test("TC-P17 every platform-* section renders only for its own platform", () => 
   const prompts = builtinPrompts();
   for (const platform of ["slack", "feishu", "telegram", "discord"]) {
     for (const entry of ["conversation", "notice"]) {
-      const names = sectionsByName(prompts, { entry, platform, variant: "task" });
+      const names = sectionsByName(prompts, { entry, platform });
       const platformSections = names.filter((name) => name.startsWith("platform-"));
       assert.deepEqual(platformSections, [`platform-${platform}-reply`]);
     }
   }
-});
-
-test("TC-P18 the candidate section renders only for the candidate variant", () => {
-  const prompts = builtinPrompts();
-  const candidate = prompts.conversation({
-    platform: "feishu",
-    adapter: { surface: "本话题", chunkLimit: 3000 },
-    inbound: { key: "k", chatId: "c", text: "go" },
-    root: "[20261023-0834-1] 看板新增 Todo https://x/1",
-  });
-  assert.match(candidate, /候选任务/);
-  assert.doesNotMatch(render(prompts, "feishu"), /候选任务/);
 });
 
 test("TC-P19 a user section overrides only that section", () => {

@@ -443,10 +443,6 @@ export function createPlatform({ config, log: baseLog }) {
       return { messageId: last ? String(last) : null };
     },
 
-    async notify(text) {
-      return adapter.postNotice(text);
-    },
-
     prune: () => {
       if (!state) return { convs: 0, topics: 0, uploads: 0 };
       const now = Date.now();

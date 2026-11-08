@@ -23,7 +23,7 @@ notify() {
     echo "relay-upgrade: WARN bun not found, skipping notify" >&2
     return 0
   fi
-  if ! "$bun_bin" "$relay_root/src/cli.mjs" notice emit --platform "$platform" --text "$1"; then
+  if ! "$bun_bin" "$relay_root/src/cli.mjs" notice emit --platform "$platform" --title "$1" --text "$2"; then
     echo "relay-upgrade: WARN notify failed" >&2
   fi
 }
@@ -134,11 +134,11 @@ entered="$(systemctl --user show "agent-relay@$platform.service" -p ActiveEnterT
 
 if systemctl --user is-active --quiet "agent-relay@$platform.service" && [[ -n "${pid:-}" && "$pid" != "0" && "$pid" != "${before_pid:-}" ]]; then
   echo "relay-upgrade: OK $platform active (pid $pid, entered ${entered:-?})"
-  notify "🔄 agent-relay-$platform 已重启，健康检查通过（pid ${before_pid:-none} → $pid，$(date '+%Y-%m-%d %H:%M')）"
+  notify "重启" "agent-relay-$platform 已重启，健康检查通过（pid ${before_pid:-none} → $pid，$(date '+%Y-%m-%d %H:%M')）"
   exit 0
 fi
 
 echo "relay-upgrade: FAILED $platform — is-active or MainPID unchanged (before=${before_pid:-none} now=${pid:-none}, entered ${entered:-?})" >&2
 journalctl --user -u "agent-relay@$platform.service" -n 30 --no-pager >&2
-notify "🔴 agent-relay-$platform 重启后未通过健康检查（服务未 active 或 MainPID 未变，旧进程还在），需要人工看一下（journalctl --user -u agent-relay@$platform）"
+notify "重启失败" "agent-relay-$platform 重启后未通过健康检查（服务未 active 或 MainPID 未变，旧进程还在），需要人工看一下（journalctl --user -u agent-relay@$platform）"
 exit 1

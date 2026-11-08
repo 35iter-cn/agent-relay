@@ -741,12 +741,6 @@ export function createPlatform({ config, log: baseLog }) {
       return { messageId: ids[0] ?? null };
     },
 
-    notify: async (text) => {
-      rest = rest ?? createRest(token);
-      const ids = await sendChunks(String(channelId), text);
-      return { messageId: ids[0] ?? null };
-    },
-
     postMedia: createMediaUploader({
       token,
       channelId,

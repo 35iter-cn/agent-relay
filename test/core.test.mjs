@@ -37,7 +37,7 @@ function fakeChild({ stdout = "", stderr = "", code = 0, onClose } = {}) {
   return child;
 }
 
-function harness({ spawn, replies = [], adapterOverrides = {}, state = emptyState(), sessions = [], deps = {}, candidateRules = null } = {}) {
+function harness({ spawn, replies = [], adapterOverrides = {}, state = emptyState(), sessions = [], deps = {} } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "relay-core-"));
   const sessionsDir = join(dir, "sessions");
   mkdirSync(sessionsDir, { recursive: true });
@@ -54,7 +54,6 @@ function harness({ spawn, replies = [], adapterOverrides = {}, state = emptyStat
   writeFileSync(join(sectionsDir, "11-notice-task.md"), "NOTICE-TASK");
   writeFileSync(join(promptsDir, "stall-instructions.md"), "STALL-INSTRUCTIONS");
   writeFileSync(join(promptsDir, "stall-actions.md"), "ACTIONS platform={{platform}} key=<key>");
-  if (candidateRules) writeFileSync(join(sectionsDir, "80-candidate.md"), candidateRules);
   const configDir = join(dir, ".config/agent-relay");
   const config = {
     home: dir,
@@ -649,71 +648,6 @@ test("TC-20 a queued job left by a crash is picked up again", async () => {
   assert.match(replies[0].text, /resumed answer/);
 });
 
-test("TC-26 /重跑 turns the last interrupted job into a new attempt", async () => {
-  const state = jobState({ status: "interrupted", lease: null });
-  state.jobs["job-1"].noticeSent = true;
-  const { core, replies } = harness({ state, spawn: () => fakeChild({ stdout: "retried" }) });
-  assert.equal(await core.handle(inbound({ dedupeId: "cmd-1", text: "/重跑" })), "accepted");
-  const retried = Object.values(core.state.jobs).find((job) => job.id !== "job-1");
-  assert.ok(retried, "a new job is created");
-  assert.match(retried.inbound.dedupeId, /#retry1$/);
-  assert.equal(retried.attempts, 2);
-  assert.equal(core.state.jobs["job-1"].retriedBy, retried.id);
-  await tick();
-  assert.equal(retried.status, "done");
-  assert.match(replies.at(-1).text, /retried/);
-});
-
-test("TC-26 /重跑 without an interrupted job replies instead of creating work", async () => {
-  const { core, replies } = harness();
-  assert.equal(await core.handle(inbound({ dedupeId: "cmd-2", text: "/rerun" })), "accepted");
-  assert.equal(Object.keys(core.state.jobs).length, 0);
-  assert.match(replies[0].text, /没有可重跑/);
-});
-
-test("TC-26 stop words cancel the running turn and answer honestly when idle", async () => {
-  const spawned = [];
-  const { core, replies } = harness({
-    spawn: () => {
-      const child = controlledChild();
-      spawned.push(child);
-      return child;
-    },
-  });
-  await core.handle(inbound({ dedupeId: "a" }));
-  assert.equal(await core.handle(inbound({ dedupeId: "b", text: "停" })), "accepted");
-  assert.equal(core.state.jobs[core.state.seen.a].status, "cancelled");
-  assert.equal(core.state.seen.b, "legacy");
-
-  const idle = harness();
-  assert.equal(await idle.core.handle(inbound({ dedupeId: "c", text: "/stop" })), "accepted");
-  assert.match(idle.replies[0].text, /没有在跑的任务/);
-});
-
-test("TC-26b stop also drops the turn that is still queued in the same conversation", async () => {
-  const spawned = [];
-  const { core } = harness({
-    maxWorkers: 1,
-    adapterOverrides: { maxWorkers: 1 },
-    spawn: () => {
-      const child = controlledChild();
-      spawned.push(child);
-      return child;
-    },
-  });
-  await core.handle(inbound({ dedupeId: "a" }));
-  await core.handle(inbound({ dedupeId: "b", text: "第二个问题" }));
-  const queuedId = core.state.seen.b;
-  assert.equal(core.state.jobs[queuedId].status, "queued");
-  assert.equal(await core.handle(inbound({ dedupeId: "c", text: "停" })), "accepted");
-  assert.equal(core.state.jobs[queuedId].status, "cancelled");
-  assert.equal(core.state.jobs[queuedId].error, "stopped");
-  assert.deepEqual(core.state.inbox, []);
-  spawned[0].finish(0);
-  await tick();
-  assert.equal(spawned.length, 1, "the cancelled queued turn never starts");
-});
-
 test("TC-ST14 a stall action with nothing running replies instead of staying silent", async () => {
   const state = jobState({ status: "done", lease: null });
   state.convs["th-abc"].activeJob = null;
@@ -739,116 +673,6 @@ test("TC-ST15 a stall cancel drops a queued turn and says so", async () => {
   assert.match(replies[0].text, /已取消排队中的 1 个任务/);
 });
 
-test("TC-26 command words are matched against already-stripped text", async () => {
-  const cases = [
-    ["/重跑", "retry"],
-    ["重跑", "retry"],
-    ["  /rerun  ", "retry"],
-    ["@_user_1 /重跑", "message"],
-    ["@_user_1 重跑", "message"],
-    ["停", "stop"],
-    ["@_user_1 停", "message"],
-    ["/stop", "stop"],
-    ["我们要重跑一下这个流程", "message"],
-    ["重跑了", "message"],
-  ];
-  for (const [text, expected] of cases) {
-    const state = jobState({ status: "interrupted", lease: null });
-    state.jobs["job-1"].noticeSent = true;
-    const { core } = harness({ state, spawn: () => fakeChild({ stdout: "x" }) });
-    await core.handle(inbound({ dedupeId: `cmd-${text}`, text }));
-    const created = Object.values(core.state.jobs).find((job) => job.id !== "job-1");
-    if (expected === "retry") {
-      assert.ok(created, `"${text}" should retry`);
-      assert.match(created.inbound.dedupeId, /#retry1$/);
-    } else if (expected === "stop") {
-      assert.equal(core.state.seen[`cmd-${text}`], "legacy", `"${text}" should stop`);
-    } else {
-      assert.ok(created, `"${text}" is ordinary text and must be accepted as a message`);
-      assert.doesNotMatch(created.inbound.dedupeId, /#retry/, `"${text}" must not become a retry`);
-    }
-  }
-});
-
-test("TC-26 /重跑 turns the last interrupted job into a new attempt", async () => {
-  const state = jobState({ status: "interrupted", lease: null });
-  state.jobs["job-1"].noticeSent = true;
-  const { core, replies } = harness({ state, spawn: () => fakeChild({ stdout: "retried" }) });
-  assert.equal(await core.handle(inbound({ dedupeId: "cmd-1", text: "/重跑" })), "accepted");
-  const retried = Object.values(core.state.jobs).find((job) => job.id !== "job-1");
-  assert.ok(retried, "a new job is created");
-  assert.match(retried.inbound.dedupeId, /#retry1$/);
-  assert.equal(retried.attempts, 2);
-  assert.equal(core.state.jobs["job-1"].retriedBy, retried.id);
-  await tick();
-  assert.equal(retried.status, "done");
-  assert.match(replies.at(-1).text, /retried/);
-});
-
-test("TC-26 /重跑 without an interrupted job replies instead of creating work", async () => {
-  const { core, replies } = harness();
-  assert.equal(await core.handle(inbound({ dedupeId: "cmd-2", text: "/rerun" })), "accepted");
-  assert.equal(Object.keys(core.state.jobs).length, 0);
-  assert.match(replies[0].text, /没有可重跑/);
-});
-
-test("TC-26 stop words cancel the running turn and answer honestly when idle", async () => {
-  const spawned = [];
-  const { core, replies } = harness({
-    spawn: () => {
-      const child = controlledChild();
-      spawned.push(child);
-      return child;
-    },
-  });
-  await core.handle(inbound({ dedupeId: "a" }));
-  assert.equal(await core.handle(inbound({ dedupeId: "b", text: "停" })), "accepted");
-  assert.equal(core.state.jobs[core.state.seen.a].status, "cancelled");
-  assert.equal(core.state.seen.b, "legacy");
-
-  const idle = harness();
-  assert.equal(await idle.core.handle(inbound({ dedupeId: "c", text: "/stop" })), "accepted");
-  assert.match(idle.replies[0].text, /没有在跑的任务/);
-});
-
-test("TC-V1 candidate root injects the candidate section", async () => {
-  const captured = [];
-  const { core } = harness({
-    candidateRules: "## 候选任务\n\n候选规则正文",
-    adapterOverrides: { buildWorker: ({ prompt, full }) => (captured.push({ prompt, full }), { bin: "/bin/true", args: [] }) },
-  });
-  await core.handle(inbound({ text: "go", rootText: "[20261023-0834-1] 看板新增 Todo https://x/1" }));
-  await tick();
-  assert.equal(captured.length, 1);
-  assert.match(captured[0].prompt, /## 候选任务/);
-  assert.match(captured[0].prompt, /候选规则正文/);
-  assert.match(captured[0].prompt, /本会话的起点（不是你这条）：/);
-});
-
-test("TC-V2 task root skips the candidate section", async () => {
-  const captured = [];
-  const { core } = harness({
-    candidateRules: "## 候选任务\n\n候选规则正文",
-    adapterOverrides: { buildWorker: ({ prompt, full }) => (captured.push({ prompt, full }), { bin: "/bin/true", args: [] }) },
-  });
-  await core.handle(inbound({ text: "读一下 core.mjs", rootText: "读一下 core.mjs" }));
-  await tick();
-  assert.doesNotMatch(captured[0].prompt, /候选任务/);
-  assert.doesNotMatch(captured[0].prompt, /本会话的起点/);
-});
-
-test("TC-V3 empty root falls back to the message text for the variant judgement", async () => {
-  const captured = [];
-  const { core } = harness({
-    candidateRules: "## 候选任务\n\n候选规则正文",
-    adapterOverrides: { buildWorker: ({ prompt, full }) => (captured.push({ prompt, full }), { bin: "/bin/true", args: [] }) },
-  });
-  await core.handle(inbound({ text: "[20261023-0834-9] 板外 issue https://x/9", rootText: "" }));
-  await tick();
-  assert.match(captured[0].prompt, /## 候选任务/);
-  assert.doesNotMatch(captured[0].prompt, /本会话的起点/);
-});
-
 test("TC-V6 killed worker tells the user to continue instead of rerunning", async () => {
   const { spawn } = await import("node:child_process");
   const replies = [];
@@ -867,24 +691,6 @@ test("TC-V6 killed worker tells the user to continue instead of rerunning", asyn
   assert.equal(replies.length, 1);
   assert.match(replies[0].text, /回复「继续」/);
   assert.doesNotMatch(replies[0].text, /\/重跑/);
-});
-
-test("TC-V7 a timed-out job cannot be rerun while an interrupted one can", async () => {
-  const state = emptyState();
-  state.jobs["job-old"] = {
-    id: "job-old",
-    key: "th-abc",
-    session: "fs-th-abc",
-    status: "failed",
-    killed: true,
-    createdAt: "2026-10-23T00:00:00.000Z",
-    updatedAt: "2026-10-23T00:01:00.000Z",
-    inbound: { text: "第一条", dedupeId: "m0" },
-  };
-  const { core, replies } = harness({ state });
-  await core.handle(inbound({ dedupeId: "cmd-1", text: "/重跑" }));
-  assert.equal(replies.length, 1);
-  assert.match(replies[0].text, /没有可重跑/);
 });
 
 test("TC-40 attachments become @refs ahead of the prompt", async () => {
@@ -932,7 +738,7 @@ test("TC-BOOT a new boot id posts one boot notice and records it", async () => {
   assert.match(replies[0].text, /系统已启动/);
   assert.equal(core.state.meta.bootNotice.bootId, "b1");
   const boot = core.state.notices[core.state.meta.bootNotice.noticeId];
-  assert.match(boot.text, /系统已启动/);
+  assert.match(boot.text, /^📣📣📣 启动\n系统已启动/);
   assert.equal(boot.prompt, "");
 });
 
@@ -1443,4 +1249,36 @@ test("TC-31 an adapter without postMedia keeps the image line as plain text", as
   assert.equal(whole.includes(`![](${shot})`), true, "the reference stays in the text verbatim");
   assert.equal(job.parts.length, delivered.length, "every chunk is recorded as a text part");
   assert.equal(job.parts.every((part) => part.kind === undefined), true, "no media step is planned");
+});
+
+test("TC-NT7 an emit command carries its title into the posted body", async () => {
+  const { core, replies, dir } = harness();
+  const cmdDir = join(dir, ".config/agent-relay/relay-fake.cmd");
+  mkdirSync(cmdDir, { recursive: true });
+  writeFileSync(join(cmdDir, "1-emit.json"), JSON.stringify({ op: "emit", text: "今日累计 8 小时", title: "工时", at: new Date().toISOString() }));
+  assert.equal(await core.drainCommands(), 1);
+  assert.equal(replies[0].text, "📣📣📣 工时\n今日累计 8 小时");
+  const notice = core.state.notices[Object.keys(core.state.notices)[0]];
+  assert.equal(notice.text, "📣📣📣 工时\n今日累计 8 小时");
+});
+
+test("TC-NT8 inbound text is never parsed as a command: /stop queues behind the running turn", async () => {
+  const spawned = [];
+  const { core } = harness({
+    adapterOverrides: { maxWorkers: 1 },
+    spawn: () => {
+      const child = controlledChild();
+      spawned.push(child);
+      return child;
+    },
+  });
+  await core.handle(inbound({ dedupeId: "a", text: "做点事" }));
+  assert.equal(await core.handle(inbound({ dedupeId: "b", text: "/stop" })), "accepted");
+  const first = core.state.jobs[core.state.seen.a];
+  assert.equal(first.status, "running", "the running turn keeps running");
+  assert.equal(spawned.length, 1);
+  const queued = Object.values(core.state.jobs).find((job) => job.id !== first.id);
+  assert.equal(queued.status, "queued");
+  assert.equal(queued.inbound.text, "/stop");
+  assert.notEqual(core.state.seen.b, "legacy");
 });
