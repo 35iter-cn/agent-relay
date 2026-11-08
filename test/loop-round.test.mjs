@@ -450,3 +450,44 @@ test("TC-LR17 a dense cron expression stays under the hourly round budget", () =
   assert.equal(count, 12);
   assert.ok(count < LOOP_ROUNDS_PER_HOUR);
 });
+
+test("TC-LR18 a file-backed loop reads the file at each round start", async () => {
+  const file = join(mkdtempSync(join(tmpdir(), "relay-lrfile-")), "prompt.md");
+  writeFileSync(file, "第一版规则");
+  const captured = [];
+  const { core } = harness({
+    state: { loops: { "loop-fake-1": seededLoop({ prompt: "", promptFile: file }) } },
+    spawn: () => fakeChild({ stdout: "NOOP" }),
+    adapterOverrides: {
+      buildWorker: ({ prompt, session }) => (captured.push({ prompt, session }), { bin: "/bin/true", args: [] }),
+    },
+  });
+  await core.startDueLoops();
+  await settle();
+  assert.equal(captured.length, 1);
+  assert.match(captured[0].prompt, /PROMPT-BEGIN\n第一版规则\nPROMPT-END/);
+
+  writeFileSync(file, "第二版规则");
+  core.state.loops["loop-fake-1"].lastRunAt = agoMinutes(30);
+  await core.startDueLoops();
+  await settle();
+  assert.equal(captured.length, 2);
+  assert.match(captured[1].prompt, /PROMPT-BEGIN\n第二版规则\nPROMPT-END/, "the edit landed with no loop update");
+});
+
+test("TC-LR19 an unreadable prompt file fails the round, posts nothing and counts towards the pause", async () => {
+  const file = join(mkdtempSync(join(tmpdir(), "relay-lrfile-")), "prompt.md");
+  const { core, replies, config } = harness({ state: { loops: { "loop-fake-1": seededLoop({ prompt: "", promptFile: file }) } } });
+  await core.startDueLoops();
+  await settle();
+  const round = Object.values(core.state.jobs).find((item) => item.origin === "loop");
+  assert.ok(round);
+  assert.equal(round.status, "failed");
+  assert.equal(round.error, "prompt-unreadable");
+  assert.equal(replies.length, 0, "a failed prompt resolution posts nothing");
+  assert.equal(core.state.loops["loop-fake-1"].lastOutcome, "failed");
+  assert.equal(core.state.loops["loop-fake-1"].failStreak, 1);
+  const rounds = listRounds(config.loopHistoryDir, "loop-fake-1");
+  assert.equal(rounds[0].outcome, "failed");
+  assert.equal(rounds[0].error, "prompt-unreadable");
+});

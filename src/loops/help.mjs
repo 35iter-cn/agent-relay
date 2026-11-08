@@ -4,16 +4,19 @@ export const LOOP_VERBS = [
   {
     verb: "create",
     usage:
-      'loop create --platform <p> (--every <dur> | --at <iso> | --cron "<expr>") (--prompt <text> | --prompt-file <path>) [--no-thread]',
+      'loop create --platform <p> (--every <dur> | --at <iso> | --cron "<expr>") (--prompt <text> | --prompt-file <path>) [--slug <name>] [--no-thread]',
     detail: [
       "三种 schedule 互斥，恰好给一个。",
       "  --every <dur>     间隔，下一轮从上一轮实际起跑时刻算起（30m / 2h），最小 10 分钟",
       "  --at <iso>        一次性定点（2026-11-08T13:00:00+08:00），跑完 loop 变 done",
       '  --cron "<expr>"   5 字段（分 时 日 月 周），按 Asia/Shanghai 定点，如 "0 13 * * *" 是每天 13:00',
+      "  --prompt <text>   内联文本，存进 state（上限 4 KiB）",
+      "  --prompt-file <p> 只存路径，每轮现读：改文件下一轮就生效，删掉/清空/超 64 KiB 则该轮 failed",
+      "--slug <name> 让 id 可读：<name>-<platform>（如 intake-slack）；不给就是 loop-<platform>-<n>。",
       "每轮是新会话，输出作为一条消息发出；只输出 NOOP（或什么都不输出）的轮次不发消息。",
       "--no-thread 不给轮次消息开 thread（默认开，平台支持才生效）。",
     ],
-    example: 'agent-relay loop create --platform discord --cron "0 13 * * *" --prompt-file ./digest.txt',
+    example: 'agent-relay loop create --platform slack --slug intake --cron "*/30 * * * *" --prompt-file ~/.config/agent-relay/prompts/loops/intake-slack/prompt.md',
   },
   { verb: "list", usage: "loop list [--platform <p>] [--all]", detail: ["不带 --platform 时合并所有平台；--all 连已删除的也列出来。"] },
   { verb: "show", usage: "loop show <id>", detail: ["打一条 loop 的定义、状态、下一次触发点与最近一轮结果。"] },
@@ -23,6 +26,7 @@ export const LOOP_VERBS = [
     detail: [
       "给任意一种 schedule 就会替换全部三种（--every 会清掉 --cron，反之亦然）。",
       "只改 prompt 时 schedule 与 lastRunAt 不动；done 的 loop 改了 schedule 会自动回到 armed。",
+      "--prompt 与 --prompt-file 互斥：后者只存路径、每轮现读，切换时另一侧被清掉。",
     ],
     example: "agent-relay loop update loop-discord-1 --cron \"0 13 * * *\"",
   },
