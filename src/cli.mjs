@@ -15,6 +15,7 @@ import { loopDueAt } from "./loops/schedule.mjs";
 import { validatePromptFile } from "./loops/prompt.mjs";
 import { loopHelp } from "./loops/help.mjs";
 import { jobHelp } from "./jobs/help.mjs";
+import { stallHelp } from "./stall/help.mjs";
 import { findRound, listRounds } from "./loops/history.mjs";
 import { withTitle } from "./notices/title.mjs";
 
@@ -538,6 +539,10 @@ export async function main(argv = process.argv.slice(2)) {
     return;
   }
   if (mode === "stall") {
+    if (rest[0] === "help") {
+      process.stdout.write(stallHelp());
+      return;
+    }
     const [platform, action, key, ...words] = rest;
     if (!isPlatform(platform) || !ACTION_NAMES.has(action) || !key) usage();
     const result = await sendCommand(config, platform, { op: "action", action, key, text: words.join(" ").trim() });

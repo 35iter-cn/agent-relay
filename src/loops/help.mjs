@@ -69,6 +69,12 @@ const SECTIONS = [
   { heading: "exit", lines: ["0 已受理（或本地打印）；1 daemon 没在跑；3 refused:<reason>"] },
 ];
 
+const SUMMARY = [
+  "模型读这三行就够：一段提示词按计划反复跑，每轮新会话，输出就是一条消息",
+  "空轮 = 整个输出恰好 NOOP，不发消息；连续 3 轮失败自动暂停",
+  "参数、闸、退出码见下面的表",
+];
+
 export function loopHelp(verb = "") {
-  return renderHelp({ title: "agent-relay loop — 一段提示词按计划反复跑", verbs: LOOP_VERBS, sections: SECTIONS, verb });
+  return renderHelp({ title: "agent-relay loop — 一段提示词按计划反复跑", summary: SUMMARY, verbs: LOOP_VERBS, sections: SECTIONS, verb });
 }

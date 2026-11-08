@@ -83,4 +83,7 @@ test("TC-JH4 the job help table and the dispatch table hold the same verbs", () 
   assert.deepEqual([...JOB_ACTIONS].sort(), helpVerbs.sort());
   for (const verb of ["help", ...helpVerbs]) assert.ok(jobHelp(verb), `${verb} renders`);
   assert.equal(jobHelp("nope"), null);
+  assert.match(jobHelp(), /模型读这三行就够/);
+  assert.match(jobHelp(), /没有静默这回事/);
+  assert.doesNotMatch(jobHelp("start"), /模型读这三行就够/);
 });
