@@ -33,6 +33,12 @@ const SECTIONS = [
   { heading: "exit", lines: ["0 已受理（scheduled / started / cancelled）；1 daemon 没在跑；3 refused:<reason>"] },
 ];
 
+const SUMMARY = [
+  "模型读这三行就够：一次性延后做一件事用 job start，同一个 --dedupe 只能排一次",
+  "结果回到 --key 指的那个会话；没有静默这回事，总要给一句交代",
+  "参数、闸、退出码见下面的表",
+];
+
 export function jobHelp(verb = "") {
-  return renderHelp({ title: "agent-relay job — 把一次会话轮次放到时钟上", verbs: JOB_VERBS, sections: SECTIONS, verb });
+  return renderHelp({ title: "agent-relay job — 把一次会话轮次放到时钟上", summary: SUMMARY, verbs: JOB_VERBS, sections: SECTIONS, verb });
 }

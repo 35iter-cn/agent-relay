@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtempSync, readdirSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { ACTION_NAMES, dueFrom, durationMs, jobArgs, jobCancelDedupe, listJobs, parseFlags, precheckJob, sendCommand, textFlag } from "../src/cli.mjs";
+import { ACTION_NAMES, dueFrom, durationMs, jobArgs, jobCancelDedupe, listJobs, main, parseFlags, precheckJob, sendCommand, textFlag } from "../src/cli.mjs";
 import { readEnvFile } from "../src/config.mjs";
 
 test("readEnv parses KEY=value lines and ignores comments", () => {
@@ -128,4 +128,25 @@ test("TC-SJ17 job list prints the dedupe id, the due time and the brief head", (
   assert.deepEqual(lines, ["scheduled\t2026-11-05T21:00:00+08:00\td-later\t看进度"]);
   assert.equal(listJobs(file, null).length, 2);
   assert.deepEqual(listJobs(join(dir, "missing.json"), null), []);
+});
+
+test("TC-ST21 stall help covers every action and forbids a manual kill", async () => {
+  const out = [];
+  const stdout = process.stdout.write;
+  const previous = process.exitCode;
+  process.stdout.write = (chunk) => (out.push(String(chunk)), true);
+  process.exitCode = 0;
+  try {
+    await main(["stall", "help"]);
+  } finally {
+    process.stdout.write = stdout;
+  }
+  const text = out.join("");
+  const exit = process.exitCode ?? 0;
+  process.exitCode = previous;
+  assert.equal(exit, 0);
+  for (const action of ACTION_NAMES) assert.match(text, new RegExp(`\\b${action}\\b`));
+  assert.match(text, /stall <platform> cancel <key>/);
+  assert.match(text, /stall <platform> restart <key>/);
+  assert.match(text, /不要自己 kill/);
 });
