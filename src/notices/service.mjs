@@ -1,4 +1,5 @@
 import { isoAt } from "../shared/time.mjs";
+import { withTitle } from "./title.mjs";
 
 export const MAX_PROMPT_BYTES = 8 * 1024;
 export const REPLY_MODES = new Set(["prompt", "conversation"]);
@@ -38,19 +39,19 @@ export function createNoticeService({ state, save, adapter, now = () => Date.now
   state.meta = state.meta ?? {};
 
   function post(text) {
-    const send = adapter.postNotice ?? adapter.notify;
-    if (typeof send !== "function") throw new Error(`platform ${adapter.name} cannot post notices`);
-    return send.call(adapter, text);
+    if (typeof adapter.postNotice !== "function") throw new Error(`platform ${adapter.name} cannot post notices`);
+    return adapter.postNotice(text);
   }
 
-  async function emit({ text = "", prompt = "", reply = null } = {}) {
+  async function emit({ text = "", prompt = "", reply = null, title = "" } = {}) {
     const binding = normalizeReply(reply);
     const bound = binding?.mode === "conversation";
     const body = String(text ?? "").trim();
     if (!body) throw new Error("notice needs text");
+    const shown = withTitle(title, body);
     const kept = bound ? { prompt: "", truncated: false } : truncatePrompt(prompt);
     if (kept.truncated) log("warn", "notice-prompt", `truncated to ${MAX_PROMPT_BYTES} bytes`);
-    const sent = await post(body);
+    const sent = await post(shown);
     const seq = Number(state.meta.noticeSeq ?? 0) + 1;
     state.meta.noticeSeq = seq;
     const notice = {
@@ -61,7 +62,7 @@ export function createNoticeService({ state, save, adapter, now = () => Date.now
     };
     if (bound) notice.reply = binding;
     else {
-      notice.text = body;
+      notice.text = shown;
       notice.prompt = kept.prompt;
     }
     state.notices[notice.id] = notice;

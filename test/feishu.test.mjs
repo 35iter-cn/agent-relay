@@ -506,7 +506,7 @@ test("TC-B2 the notice time is rendered in Asia/Shanghai with a 00-23 hour", () 
   assert.equal(localStamp(Date.parse("2026-10-23T16:00:00Z")), "2026-10-24 00:00:00");
   assert.equal(
     bootNoticeText(new Date("2026-10-23T22:58:00Z"), (date) => localStamp(date.getTime())),
-    "🟢 系统已启动，Agent 已准备好接收任务\n上线时间：2026-10-24 06:58:00",
+    "系统已启动，Agent 已准备好接收任务\n上线时间：2026-10-24 06:58:00",
   );
 });
 

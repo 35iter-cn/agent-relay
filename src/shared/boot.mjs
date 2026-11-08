@@ -16,5 +16,5 @@ export function shouldAnnounceBoot(previousId, currentId) {
 }
 
 export function bootNoticeText(date, format) {
-  return `🟢 系统已启动，Agent 已准备好接收任务\n上线时间：${format(date)}`;
+  return `系统已启动，Agent 已准备好接收任务\n上线时间：${format(date)}`;
 }

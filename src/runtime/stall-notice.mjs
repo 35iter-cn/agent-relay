@@ -3,8 +3,8 @@ export const RESTART_PROMPT = "上一轮似乎卡住了，继续，不要犯相�
 export function stallNoticeText({ silenceMs = 0, local, session, key, pid, reason = "silent", tool = null } = {}) {
   const minutes = Math.max(1, Math.round(Number(silenceMs) / 60_000));
   const head = reason === "tool" && tool
-    ? [`⏸ 任务疑似卡住：工具 ${tool.name} 已运行 ${minutes} 分钟没有返回`, `工具：${tool.name} · ${tool.head}`]
-    : [`⏸ 任务疑似卡住：${minutes} 分钟没有进展`];
+    ? [`任务疑似卡住：工具 ${tool.name} 已运行 ${minutes} 分钟没有返回`, `工具：${tool.name} · ${tool.head}`]
+    : [`任务疑似卡住：${minutes} 分钟没有进展`];
   return [
     ...head,
     `会话：${session}`,

@@ -16,6 +16,7 @@ import { validatePromptFile } from "./loops/prompt.mjs";
 import { loopHelp } from "./loops/help.mjs";
 import { jobHelp } from "./jobs/help.mjs";
 import { findRound, listRounds } from "./loops/history.mjs";
+import { withTitle } from "./notices/title.mjs";
 
 export const ACTION_NAMES = new Set(["cancel", "restart"]);
 export const LOOP_ACTIONS = new Set(["create", "list", "show", "update", "pause", "resume", "delete", "run", "log", "show-run", "doctor"]);
@@ -28,8 +29,7 @@ export function usage(stream = process.stderr) {
     [
       "usage:",
       "  agent-relay serve <discord|feishu|mattermost|slack|telegram>",
-      "  agent-relay notice emit --platform <p> (--text <text> | --text-file <path>) [--prompt <text> | --prompt-file <path>] [--reply-mode conversation --reply-key <key>]",
-      "  agent-relay notify <platform> <text>",
+      "  agent-relay notice emit --platform <p> (--text <text> | --text-file <path>) [--title <text>] [--prompt <text> | --prompt-file <path>] [--reply-mode conversation --reply-key <key>]",
       "  agent-relay stall <platform> <cancel|restart> <key> [text]",
       "  agent-relay job help | agent-relay job start|cancel|list …",
       "  agent-relay loop help | agent-relay loop create|list|show|update|pause|resume|delete|run|log|show-run …",
@@ -144,14 +144,14 @@ export function textFlag(flags, name) {
   return typeof flags[name] === "string" ? flags[name].trim() : "";
 }
 
-export async function emitNotice(config, platform, text, prompt = "", log = createLog(), reply = null) {
-  const sent = await sendCommand(config, platform, { op: "emit", text, prompt, reply }).catch((error) => {
+export async function emitNotice(config, platform, text, prompt = "", log = createLog(), reply = null, title = "") {
+  const sent = await sendCommand(config, platform, { op: "emit", text, prompt, reply, title }).catch((error) => {
     log("warn", "notice-command", String(error?.message ?? error));
     return { delivered: false };
   });
   if (sent.delivered) return { delivered: true };
   const adapter = await loadPlatform(platform, config, log);
-  const posted = await (adapter.postNotice ?? adapter.notify).call(adapter, text);
+  const posted = await adapter.postNotice(withTitle(title, text));
   return { delivered: false, messageId: posted?.messageId ?? null };
 }
 
@@ -528,20 +528,13 @@ export async function main(argv = process.argv.slice(2)) {
     const platform = flags.platform;
     const text = textFlag(flags, "text");
     const prompt = textFlag(flags, "prompt");
+    const title = typeof flags.title === "string" ? flags.title : "";
     if (!isPlatform(platform) || !text) usage();
     const replyMode = typeof flags["reply-mode"] === "string" ? flags["reply-mode"] : "";
     const replyKey = typeof flags["reply-key"] === "string" ? flags["reply-key"] : "";
     const reply = replyMode ? { mode: replyMode, key: replyKey || undefined } : null;
-    const result = await emitNotice(config, platform, text, prompt, log, reply);
+    const result = await emitNotice(config, platform, text, prompt, log, reply, title);
     process.stdout.write(`${result.delivered ? "delivered" : `sent ${result.messageId ? 1 : 0}`}\n`);
-    return;
-  }
-  if (mode === "notify") {
-    const [platform, ...words] = rest;
-    if (!isPlatform(platform)) usage();
-    const text = words.join(" ").trim();
-    if (!text) usage();
-    await emitNotice(config, platform, text, "", log);
     return;
   }
   if (mode === "stall") {

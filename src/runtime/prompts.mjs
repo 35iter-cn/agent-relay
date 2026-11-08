@@ -3,7 +3,6 @@ import { join } from "node:path";
 import { renderPrompt } from "../shared/prompt.mjs";
 import { localStamp } from "../shared/time.mjs";
 
-export const CANDIDATE_LINE = /^[ \t]*\[\d{8}-\d{4}-\d+\][ \t]+\S/m;
 export const SECTIONS_DIR = "sections";
 export const SECTION_FILE = /^(\d{2})-(.+)\.md$/;
 
@@ -18,11 +17,6 @@ export function rootSectionText(root, message) {
   if (!value) return "";
   if (value === String(message ?? "").trim()) return "";
   return `\n本会话的起点（不是你这条）：\n${value}`;
-}
-
-export function promptVariant(root) {
-  if (CANDIDATE_LINE.test(String(root ?? ""))) return "candidate";
-  return "task";
 }
 
 export function stallSection({ platform, cli, configDir = "~/.config/agent-relay", running = [] }) {
@@ -45,7 +39,6 @@ function platformMatches(name, platform) {
 }
 
 function anyoneSelects(name) {
-  if (name === "candidate") return true;
   if (name.startsWith("platform-")) return true;
   return Object.values(ENTRY_SECTIONS).some((list) => list.includes(name));
 }
@@ -117,10 +110,9 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
     return renderPrompt(read("stall-actions.md").trim(), { platform, cli, config_dir: configDir });
   }
 
-  function selectSections({ entry, platform, variant }) {
+  function selectSections({ entry, platform }) {
     const listed = new Set(ENTRY_SECTIONS[entry] ?? []);
     return listSections().filter((section) => {
-      if (section.name === "candidate") return variant === "candidate";
       const match = platformMatches(section.name, platform);
       if (match !== null) return match;
       return listed.has(section.name);
@@ -143,11 +135,10 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
     };
   }
 
-  function buildPrompt({ entry, platform, adapter, inbound, root, notice = null, loop = null, running = [], variant = null }) {
+  function buildPrompt({ entry, platform, adapter, inbound, root, notice = null, loop = null, running = [] }) {
     const sections = listSections();
     audit(sections);
-    const resolved = variant ?? promptVariant(root);
-    const bodies = selectSections({ entry, platform, variant: resolved })
+    const bodies = selectSections({ entry, platform })
       .map((section) => read(join(SECTIONS_DIR, section.file)).trim())
       .filter(Boolean);
     const values = {

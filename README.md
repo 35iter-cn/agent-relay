@@ -24,8 +24,10 @@ has the same two fields:
   user replies to that notice: what to do, which job key it belongs to, which
   command to run
 
-A notice has no kind, no actions and no refs. The relay records it in the
-platform state file together with the message id it was posted as; when the user
+A notice has no kind, no actions and no refs. Every notice opens with a fixed title
+line (`📣📣📣 <类型>`, chosen by the sender via `--title`) so a chat preview says what
+the message is about before any of its body is read. The relay records the notice in
+the platform state file together with the message id it was posted as; when the user
 replies, the adapter reports the parent message id, the relay resolves it back to
 the notice and opens a session scoped to it (`notice-ntc-12`). The fixed
 `prompts/sections/` notice sections then render just `text`, `prompt` and the platform
@@ -36,9 +38,10 @@ That means:
 - adding a new notification type is a change in the sender, not in this repo:
   `agent-relay notice emit --platform feishu --text "$(…)" --prompt-file …`
 - the policy for acting on a notice lives in that `prompt`; the relay itself only
-  knows `agent-relay stall <platform> cancel|restart <key>`, the two in-conversation
-  commands `/stop` (cancel the running turn) and `/重跑` (re-run it), and the
-  scheduled-turn entry described below — each entry point validates its own arguments
+  knows `agent-relay stall <platform> cancel|restart <key>` and the scheduled-turn
+  entry described below — each entry point validates its own arguments. Inbound text
+  is never parsed: `/stop`, `/重跑` or any other word in a reply is plain text for the
+  agent, which cancels through the stall command if it decides to.
 - the notice body is data, not instructions — the notice task section says so, because the
   text can carry third-party content (issue titles, chat excerpts)
 
@@ -52,7 +55,7 @@ A conversation turn can be put on the clock: `agent-relay job start --platform s
 `--grace 6h`). The job is created straight into `status: "scheduled"` and the daemon
 moves it to `queued` once `dueAt` passes **and the thread is free** — a due job never
 sits in the queue and never pushes a user message out of it. From there it is an
-ordinary job: same lease, serialisation per key, stall watchdog, delivery, `/stop`.
+ordinary job: same lease, serialisation per key, stall watchdog, delivery.
 `job list` shows the scheduled and running turns, `job cancel` drops one that has not
 started. A turn that starts later than its `dueAt` records `lateMs` and the prompt says
 how late it is; one that is still waiting past `expiresAt` is cancelled instead of
@@ -103,7 +106,7 @@ A loop is scheduled and delivered only by its own platform's daemon, which keeps
 
 ```
 src/
-├── cli.mjs                 entry: serve | notice | notify | stall | job | loop
+├── cli.mjs                 entry: serve | notice | stall | job | loop
 ├── help.mjs                subcommand help renderer shared by the command families
 ├── config.mjs              paths, env files, state/command locations
 ├── shared/                 chunking, json, time, logging, retention, prompts, env, fs, boot
