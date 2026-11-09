@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { spawn as spawnProcess } from "node:child_process";
 
 export const HANDSHAKE_MS = 10_000;
@@ -155,4 +156,19 @@ export function createRpcWorker({ bin, session, cwd, env = {}, log = () => {}, d
       });
     },
   };
+}
+
+export function expandAttachments({ prompt, attachments }) {
+  const images = [];
+  const others = [];
+  for (const file of attachments ?? []) {
+    if (!file?.path) continue;
+    if (String(file.mime ?? "").startsWith("image/")) {
+      images.push({ type: "image", data: readFileSync(file.path).toString("base64"), mimeType: file.mime });
+      continue;
+    }
+    others.push(file.path);
+  }
+  const text = others.length ? `${prompt}\n\n${others.join("\n")}` : prompt;
+  return { text, images };
 }
