@@ -221,7 +221,7 @@ test("TC-7 log files older than 72h are pruned, fresh ones kept", () => {
   assert.deepEqual(readdirSync(dir), ["fresh.jsonl"]);
 });
 
-test("TC-5 a worker over its timeout is killed as a process group", async () => {
+test("TC-5 a worker over an explicitly configured timeout is killed as a process group", async () => {
   const { spawn } = await import("node:child_process");
   const replies = [];
   const started = Date.now();
@@ -239,6 +239,27 @@ test("TC-5 a worker over its timeout is killed as a process group", async () => 
   assert.ok(Date.now() - started < 5000, "timeout path took too long");
   assert.equal(replies.length, 1);
   assert.match(replies[0].text, /已终止/);
+});
+
+test("TC-44 without a configured timeout a long worker is left to finish", async () => {
+  const { spawn } = await import("node:child_process");
+  const replies = [];
+  const started = Date.now();
+  const { core } = harness({
+    spawn,
+    replies,
+    adapterOverrides: {
+      timeoutMs: 0,
+      chunkLimit: 500,
+      buildWorker: () => ({ bin: process.execPath, args: ["-e", "setTimeout(() => console.log('finished'), 400)"] }),
+    },
+  });
+  await core.handle(inbound());
+  while (!replies.length && Date.now() - started < 5000) await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.ok(Date.now() - started >= 400, "the worker was cut short");
+  assert.equal(replies.length, 1);
+  assert.doesNotMatch(replies[0].text, /已终止|超过/);
+  assert.match(replies[0].text, /finished/);
 });
 
 test("reply failures are logged and do not throw", async () => {

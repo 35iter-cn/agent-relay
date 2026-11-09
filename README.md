@@ -9,7 +9,7 @@ detects stalled runs, and posts **notices** that users can reply to.
 ```
 user message ──▶ platform adapter ──▶ relay core ──▶ agent session (pi --print)
                         ▲                  │
-                        │                  ├─ job queue, leases, timeouts
+                        │                  ├─ job queue, leases, stall detection
                         └── chunked reply ─┘  stall watchdog, event log
 ```
 
