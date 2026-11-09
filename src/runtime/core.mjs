@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { spawn as spawnProcess } from "node:child_process";
+import { runPrintWorker } from "./worker-print.mjs";
 import { join } from "node:path";
 import { appendDailyJsonl, createLog } from "../shared/log.mjs";
 import { relayEnv } from "../shared/env.mjs";
@@ -71,6 +72,7 @@ export function createCore({ adapter, config, deps = {} }) {
   const notices = deps.notices ?? createNoticeService({ state, save, adapter, now, log });
   const prompts = deps.prompts ?? createPrompts({ dir: config.promptsDir, userDir: config.userPromptsDir, log, cli: config.cli, configDir: config.configDir });
   const children = new Map();
+  const stallTimers = new Map();
   const notes = new Map();
   const runtimeInbounds = new Map();
   const running = new Set();
@@ -433,6 +435,36 @@ export function createCore({ adapter, config, deps = {} }) {
     return run(built);
   }
 
+  function workerMode() {
+    return adapter.workerMode === "rpc" ? "rpc" : "print";
+  }
+
+  function armStallTimer(job, key) {
+    const timer = setInterval(() => {
+      checkStall(job).catch((error) => log("warn", "stall", String(error?.message ?? error)));
+    }, STALL_CHECK_MS);
+    timer.unref?.();
+    stallTimers.set(key, timer);
+  }
+
+  function disarmStallTimer(key) {
+    const timer = stallTimers.get(key);
+    if (timer) clearInterval(timer);
+    stallTimers.delete(key);
+  }
+
+  function startProgress(job) {
+    const progressPromise = Promise.resolve(adapter.onProgress?.(ctxOf(job)))
+      .then((progress) => {
+        if (!progress) return;
+        job.progress = progress;
+        job.updatedAt = isoNow();
+        save();
+      })
+      .catch((error) => log("warn", "progress", String(error?.message ?? error)));
+    void progressPromise;
+  }
+
   function spawnWorker(job, entry, inbound, prompt, full) {
     const refs = (inbound.attachments ?? []).map((attachment) => `@${attachment.path}`);
     const args = adapter.worker === "stub" ? ["-e", `console.log("[stub] session=${entry.session} full=${full}")`] : ["--print", "--session-id", entry.session, "--", ...refs, prompt];
@@ -440,84 +472,71 @@ export function createCore({ adapter, config, deps = {} }) {
     const command = adapter.buildWorker ? adapter.buildWorker({ prompt, full, session: entry.session }) : { bin, args };
     const started = now();
     const timeoutMs = optInTimeoutMs();
-    appendLog({ event: "dispatch", job: job.id, key: inbound.key, session: entry.session, full });
+    const mode = workerMode();
+    const env = { ...process.env, AGENT_RELAY_SELF_CHAIN: String(job.chain ?? 0) };
+    appendLog({ event: "dispatch", job: job.id, key: inbound.key, session: entry.session, full, mode });
 
     return new Promise((resolve) => {
-      const child = spawn(command.bin, command.args, {
-        cwd: config.cwd,
-        detached: true,
-        stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, AGENT_RELAY_SELF_CHAIN: String(job.chain ?? 0) },
-      });
-      let stdout = "";
-      let stderr = "";
-      let killed = false;
-      children.set(inbound.key, child);
-      job.lease = { pid: child.pid ?? null, startTicks: child.pid ? readStartTicks(child.pid) : null, startedAt: now() };
-      job.startedAt = started;
-      job.updatedAt = isoNow();
-      save();
-      const stallTimer = setInterval(() => {
-        checkStall(job).catch((error) => log("warn", "stall", String(error?.message ?? error)));
-      }, STALL_CHECK_MS);
-      stallTimer.unref?.();
-      const timer =
-        timeoutMs === null
-          ? null
-          : setTimeout(() => {
-              killed = true;
-              terminate(inbound.key, "").catch((error) => log("warn", "timeout-stop", String(error?.message ?? error)));
-            }, timeoutMs);
-      const progressPromise = Promise.resolve(adapter.onProgress?.(ctxOf(job))).then((progress) => {
-        if (!progress) return;
-        job.progress = progress;
+      const settle = (result) => resolve(finishJob(job, entry, inbound, { started, timeoutMs, ...result }));
+      const onSpawn = (handle) => {
+        children.set(inbound.key, handle);
+        job.lease = { pid: handle.pid ?? null, startTicks: handle.pid ? readStartTicks(handle.pid) : null, startedAt: now() };
+        job.startedAt = started;
         job.updatedAt = isoNow();
         save();
-      }).catch((error) => log("warn", "progress", String(error?.message ?? error)));
-      void progressPromise;
-      child.stdout.on("data", (chunk) => (stdout += chunk));
-      child.stderr.on("data", (chunk) => (stderr += chunk));
-      child.on("error", (error) => stderr += `${error}\n`);
-      child.on("close", async (code) => {
-        if (timer) clearTimeout(timer);
-        clearInterval(stallTimer);
-        children.delete(inbound.key);
-        appendLog({ event: "done", job: job.id, key: inbound.key, session: entry.session, exit: code, killed, elapsedMs: now() - started });
-        const body = stdout.trim();
-        const note = notes.get(inbound.key);
-        notes.delete(inbound.key);
-        if (isScheduled(job) && !note && !killed && code === 0 && !body) {
-          job.answer = null;
-          job.status = "done";
-          job.lease = null;
-          job.updatedAt = isoNow();
-          save();
-          appendLog({ event: "job-empty", job: job.id, key: inbound.key });
-          runtimeInbounds.delete(job.id);
-          resolve();
-          return;
-        }
-        const text = note
-          ? note
-          : killed
-            ? `已终止：本轮超过 ${Math.round(timeoutMs / 60_000)} 分钟未结束。回复「继续」可以接着做，前面已完成的改动都在。\n\n${body.slice(-1500)}`.trim()
-            : body || `[无输出] exit=${code}\n${stderr.trim().split("\n").slice(-10).join("\n")}`;
-        job.answer = text;
-        job.status = note ? "cancelled" : killed || code !== 0 ? "failed" : "answered";
-        job.lease = null;
-        job.updatedAt = isoNow();
-        if (job.origin === "loop") {
-          job.loopOutput = text;
-          job.loopRoundStatus = job.status;
-        }
-        save();
-        if (job.origin === "loop") await deliverRound(job);
-        else await deliver(job);
-        if (job.origin === "loop") await finishRound(job);
-        runtimeInbounds.delete(job.id);
-        resolve();
+        armStallTimer(job, inbound.key);
+        startProgress(job);
+      };
+      runPrintWorker({
+        config,
+        command,
+        env,
+        timeoutMs,
+        onSpawn,
+        onTimeout: () => {
+          terminate(inbound.key, "").catch((error) => log("warn", "timeout-stop", String(error?.message ?? error)));
+        },
+        onClose: settle,
+        deps: { spawn },
       });
     });
+  }
+
+  async function finishJob(job, entry, inbound, { code, killed, stdout, stderr, started, timeoutMs }) {
+    disarmStallTimer(inbound.key);
+    children.delete(inbound.key);
+    appendLog({ event: "done", job: job.id, key: inbound.key, session: entry.session, exit: code, killed, elapsedMs: now() - started });
+    const body = String(stdout ?? "").trim();
+    const note = notes.get(inbound.key);
+    notes.delete(inbound.key);
+    if (isScheduled(job) && !note && !killed && code === 0 && !body) {
+      job.answer = null;
+      job.status = "done";
+      job.lease = null;
+      job.updatedAt = isoNow();
+      save();
+      appendLog({ event: "job-empty", job: job.id, key: inbound.key });
+      runtimeInbounds.delete(job.id);
+      return;
+    }
+    const text = note
+      ? note
+      : killed
+        ? `已终止：本轮超过 ${Math.round(timeoutMs / 60_000)} 分钟未结束。回复「继续」可以接着做，前面已完成的改动都在。\n\n${body.slice(-1500)}`.trim()
+        : body || `[无输出] exit=${code}\n${String(stderr ?? "").trim().split("\n").slice(-10).join("\n")}`;
+    job.answer = text;
+    job.status = note ? "cancelled" : killed || code !== 0 ? "failed" : "answered";
+    job.lease = null;
+    job.updatedAt = isoNow();
+    if (job.origin === "loop") {
+      job.loopOutput = text;
+      job.loopRoundStatus = job.status;
+    }
+    save();
+    if (job.origin === "loop") await deliverRound(job);
+    else await deliver(job);
+    if (job.origin === "loop") await finishRound(job);
+    runtimeInbounds.delete(job.id);
   }
 
   function describeDeliveryFailure(error) {
