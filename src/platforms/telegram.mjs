@@ -194,7 +194,7 @@ export function createPlatform({ config, log: baseLog }) {
     surface: "本 topic",
     allowedUser,
     chunkLimit: CHUNK_LIMIT,
-    timeoutMs: relayEnv("TIMEOUT_MS", 2 * 60 * 60_000),
+    timeoutMs: relayEnv("TIMEOUT_MS", 0),
     maxWorkers: relayEnv("MAX_WORKERS", 5),
     queueDepth: relayEnv("QUEUE_DEPTH", 3),
     worker: relayEnv("WORKER", "pi"),

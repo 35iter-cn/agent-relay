@@ -21,7 +21,7 @@ import { RESTART_PROMPT, stallNoticePrompt, stallNoticeText } from "./stall-noti
 import { createPrompts } from "./prompts.mjs";
 import { activeLoopCount, createLoop, isLoopId, platformOfLoopId, validateLoopChange, validateLoopPromptSource, validateSchedule } from "../loops/model.mjs";
 import { resolveLoopPrompt } from "../loops/prompt.mjs";
-import { LOOP_ROUNDS_PER_HOUR, LOOP_TIMEOUT_MS, loopLateMs, roundSkipReason, roundsInLastHour } from "../loops/schedule.mjs";
+import { LOOP_ROUNDS_PER_HOUR, loopLateMs, roundSkipReason, roundsInLastHour } from "../loops/schedule.mjs";
 import { roundKeyFor, roundTitle, truncateOutput } from "../loops/round.mjs";
 import { appendRound, findRound, listRounds, pruneHistory } from "../loops/history.mjs";
 
@@ -38,7 +38,6 @@ const STATUS_TEXT = { done: "完成", failed: "失败", cancelled: "取消", int
 const BRIEF_MAX_BYTES = 8 * 1024;
 const DEFAULT_GRACE_MS = 6 * 3_600_000;
 const RUNAWAY_PER_HOUR = relayEnv("RUNAWAY_PER_HOUR", 12);
-const SELF_TIMEOUT_MS = 15 * 60_000;
 const REAP_POLL_MS = 50;
 const MAX_DELIVERY_ATTEMPTS = 3;
 export const DELIVERY_BACKOFF_MS = [1_500, 5_000, 15_000];
@@ -372,10 +371,9 @@ export function createCore({ adapter, config, deps = {} }) {
     return job.origin === "self" || job.origin === "external";
   }
 
-  function jobTimeoutMs(job) {
-    if (job.origin === "loop") return Math.min(adapter.timeoutMs, LOOP_TIMEOUT_MS);
-    if (isScheduled(job)) return Math.min(adapter.timeoutMs, SELF_TIMEOUT_MS);
-    return adapter.timeoutMs;
+  function optInTimeoutMs() {
+    const configured = Number(adapter.timeoutMs ?? 0);
+    return Number.isFinite(configured) && configured > 0 ? configured : null;
   }
 
   function buildPrompt(job, entry) {
@@ -441,7 +439,7 @@ export function createCore({ adapter, config, deps = {} }) {
     const bin = adapter.worker === "stub" ? process.execPath : adapter.piBin;
     const command = adapter.buildWorker ? adapter.buildWorker({ prompt, full, session: entry.session }) : { bin, args };
     const started = now();
-    const timeoutMs = jobTimeoutMs(job);
+    const timeoutMs = optInTimeoutMs();
     appendLog({ event: "dispatch", job: job.id, key: inbound.key, session: entry.session, full });
 
     return new Promise((resolve) => {
@@ -463,10 +461,13 @@ export function createCore({ adapter, config, deps = {} }) {
         checkStall(job).catch((error) => log("warn", "stall", String(error?.message ?? error)));
       }, STALL_CHECK_MS);
       stallTimer.unref?.();
-      const timer = setTimeout(() => {
-        killed = true;
-        terminate(inbound.key, "").catch((error) => log("warn", "timeout-stop", String(error?.message ?? error)));
-      }, timeoutMs);
+      const timer =
+        timeoutMs === null
+          ? null
+          : setTimeout(() => {
+              killed = true;
+              terminate(inbound.key, "").catch((error) => log("warn", "timeout-stop", String(error?.message ?? error)));
+            }, timeoutMs);
       const progressPromise = Promise.resolve(adapter.onProgress?.(ctxOf(job))).then((progress) => {
         if (!progress) return;
         job.progress = progress;
@@ -478,7 +479,7 @@ export function createCore({ adapter, config, deps = {} }) {
       child.stderr.on("data", (chunk) => (stderr += chunk));
       child.on("error", (error) => stderr += `${error}\n`);
       child.on("close", async (code) => {
-        clearTimeout(timer);
+        if (timer) clearTimeout(timer);
         clearInterval(stallTimer);
         children.delete(inbound.key);
         appendLog({ event: "done", job: job.id, key: inbound.key, session: entry.session, exit: code, killed, elapsedMs: now() - started });

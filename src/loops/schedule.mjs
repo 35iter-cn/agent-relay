@@ -2,7 +2,6 @@ import { loopIntervalMs } from "./model.mjs";
 import { cronNext, parseCron } from "./cron.mjs";
 
 export const LOOP_ROUNDS_PER_HOUR = 20;
-export const LOOP_TIMEOUT_MS = 15 * 60_000;
 
 export function loopDueAt(loop) {
   const at = Date.parse(loop?.at ?? "");
