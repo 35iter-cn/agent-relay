@@ -22,7 +22,7 @@ const DOWNLOAD_TIMEOUT_MS = 15_000;
 export const FILES_ALERT = "relay: Slack 附件下载失败，检查 app 是否有 files:read 且已 Reinstall";
 
 export const PROGRESS_EMOJI = "thinking_face";
-export const RECEIPT_EMOJI = "twisted_rightwards_arrows";
+export const RECEIPT_EMOJI = "inbox_tray";
 const PLACEHOLDER_TEXT = "⏳ 正在处理…";
 const PERMANENT_REPLY_ERRORS = new Set([
   "invalid_thread_ts",
