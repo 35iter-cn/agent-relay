@@ -12,6 +12,7 @@ const CARD_LIMIT = 3000;
 const MAX_TABLES = 5;
 const DOWNLOAD_TIMEOUT_MS = 15_000;
 const PROGRESS_EMOJI = "THINKING";
+const RECEIPT_EMOJI = "OK";
 const PERMISSION_ERRORS = new Set([99991672, 99991663, 99991400, 1061045]);
 
 export function conversationKey(message) {
@@ -137,6 +138,35 @@ export function createRuntime({ client, log, chatId, allowedUser = null, chunkLi
       } catch (error) {
         log("warn", "progress", String(error));
         return null;
+      }
+    },
+
+    async addReceipt(ctx) {
+      if (!ctx.messageId) return null;
+      try {
+        const res = await client.im.v1.messageReaction.create({
+          path: { message_id: ctx.messageId },
+          data: { reaction_type: { emoji_type: RECEIPT_EMOJI } },
+        });
+        if (res.code !== 0) {
+          log("warn", "receipt-add", res.code, res.msg);
+          return null;
+        }
+        return { messageId: ctx.messageId, reactionId: res.data?.reaction_id ?? null };
+      } catch (error) {
+        log("warn", "receipt-add", String(error));
+        return null;
+      }
+    },
+
+    async removeReceipt(ctx) {
+      const receipt = ctx.receipt;
+      if (!receipt?.reactionId || !receipt?.messageId) return;
+      try {
+        const res = await client.im.v1.messageReaction.delete({ path: { message_id: receipt.messageId, reaction_id: receipt.reactionId } });
+        if (res.code !== 0) log("warn", "receipt-delete", res.code, res.msg);
+      } catch (error) {
+        log("warn", "receipt-delete", String(error));
       }
     },
 
@@ -501,6 +531,14 @@ export function createPlatform({ config, log: baseLog, createClient = defaultCli
 
     async onProgress(ctx) {
       return (await ensureRuntime()).onProgress(ctx);
+    },
+
+    async addReceipt(ctx) {
+      return (await ensureRuntime()).addReceipt(ctx);
+    },
+
+    async removeReceipt(ctx) {
+      return (await ensureRuntime()).removeReceipt(ctx);
     },
 
     async onProgressDone(ctx) {

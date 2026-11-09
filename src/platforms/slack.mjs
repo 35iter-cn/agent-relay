@@ -22,6 +22,7 @@ const DOWNLOAD_TIMEOUT_MS = 15_000;
 export const FILES_ALERT = "relay: Slack 附件下载失败，检查 app 是否有 files:read 且已 Reinstall";
 
 export const PROGRESS_EMOJI = "thinking_face";
+export const RECEIPT_EMOJI = "writing_hand";
 const PLACEHOLDER_TEXT = "⏳ 正在处理…";
 const PERMANENT_REPLY_ERRORS = new Set([
   "invalid_thread_ts",
@@ -164,6 +165,23 @@ export function createRuntime({ api, log, channel, emoji = PROGRESS_EMOJI }) {
       }
       log("warn", "progress-unavailable", res.error ?? "unknown");
       return null;
+    },
+
+    async addReceipt(ctx) {
+      if (!api || !ctx.messageId) return null;
+      const res = await api("reactions.add", { channel, timestamp: ctx.messageId, name: RECEIPT_EMOJI });
+      if (!res.ok && !ALREADY_CLEANED.has(res.error)) {
+        log("warn", "receipt-add", res.error);
+        return null;
+      }
+      return { messageId: ctx.messageId, name: RECEIPT_EMOJI };
+    },
+
+    async removeReceipt(ctx) {
+      const receipt = ctx.receipt;
+      if (!api || !receipt?.messageId) return;
+      const res = await api("reactions.remove", { channel, timestamp: receipt.messageId, name: receipt.name ?? RECEIPT_EMOJI });
+      if (!res.ok && !ALREADY_CLEANED.has(res.error)) log("warn", "receipt-remove", res.error);
     },
 
     async onProgressDone(ctx) {
@@ -698,6 +716,14 @@ export function createPlatform({ config, log: baseLog }) {
 
     async onProgress(ctx) {
       return runtime.onProgress(ctx);
+    },
+
+    async addReceipt(ctx) {
+      return runtime.addReceipt(ctx);
+    },
+
+    async removeReceipt(ctx) {
+      return runtime.removeReceipt(ctx);
     },
 
     async onProgressDone(ctx) {
