@@ -134,6 +134,11 @@ Design rules:
   platform.
 - **The ledger is not relay's.** Relay decides which job runs when and how it
   stops; the pi extension and the agent-hours service own every ledger row.
+- **A conversation key is the name a message will share with its own thread.** A root
+  message has no thread yet, so its key is `th-<its own message id>`; the replies that
+  later form its thread carry that id as `root_id`, which lands them on the same key.
+  Never fall back to a per-message key for a root message: it splits one conversation
+  into two sessions and makes steering impossible.
 - **A lease is identity, not a liveness pulse.** A worker's lease is `pid` plus
   the process start ticks read once at spawn; nothing refreshes it on a timer,
   and no elapsed time makes it expire. A job is alive only while that exact

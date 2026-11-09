@@ -567,7 +567,7 @@ export function createPlatform({ config, log: baseLog }) {
     maxWorkers: relayEnv("MAX_WORKERS", 5),
     queueDepth: relayEnv("QUEUE_DEPTH", 3),
     worker: relayEnv("WORKER", "pi"),
-    workerMode: relayEnv("WORKER_MODE", "print"),
+    workerMode: relayEnv("WORKER_MODE", "rpc"),
     steer: relayEnv("STEER", "on"),
     piBin: config.workerBin,
     sessionFor,

@@ -18,7 +18,7 @@ export function conversationKey(message) {
   if (message?.thread_id) return `th-${message.thread_id}`;
   if (message?.root_id) return `th-${message.root_id}`;
   if (message?.parent_id) return `th-${message.parent_id}`;
-  return `ms-${message?.message_id}`;
+  return `th-${message?.message_id}`;
 }
 
 export function sessionFor(key) {
@@ -410,7 +410,7 @@ export function createPlatform({ config, log: baseLog, createClient = defaultCli
     maxWorkers: relayEnv("MAX_WORKERS", 5),
     queueDepth: relayEnv("QUEUE_DEPTH", 3),
     worker: relayEnv("WORKER", "pi"),
-    workerMode: relayEnv("WORKER_MODE", "print"),
+    workerMode: relayEnv("WORKER_MODE", "rpc"),
     steer: relayEnv("STEER", "on"),
     piBin: config.workerBin,
     sessionFor,
