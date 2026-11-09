@@ -559,6 +559,7 @@ export function createCore({ adapter, config, deps = {} }) {
     save();
     if (job.origin === "loop") await deliverRound(job);
     else await deliver(job);
+    await dropReceipts(job);
     if (job.origin === "loop") await finishRound(job);
     runtimeInbounds.delete(job.id);
   }
@@ -733,7 +734,9 @@ export function createCore({ adapter, config, deps = {} }) {
       log("warn", "steer-clear", String(error?.message ?? error));
     }
     for (const steer of pending) steer.consumed = true;
+    await dropReceipts(job);
     const text = pending.map((steer) => steer.text).filter(Boolean).join("\n\n");
+    const messageId = pending.map((steer) => steer.messageId).filter(Boolean).at(-1) ?? job.inbound?.messageId ?? null;
     save();
     if (!text) return;
     const inbound = {
@@ -744,6 +747,7 @@ export function createCore({ adapter, config, deps = {} }) {
       dedupeId: `steer-resend-${job.id}-${pending.length}`,
       text,
       rootText: job.inbound?.rootText ?? text,
+      messageId,
       attachments: [],
     };
     const next = createJob(state, inbound, isoNow);
@@ -869,9 +873,10 @@ export function createCore({ adapter, config, deps = {} }) {
         job.status = "failed";
         job.error = String(error?.message ?? error);
       })
-      .finally(() => {
+      .finally(async () => {
         running.delete(job.id);
         if (entry.activeJob === job.id) entry.activeJob = null;
+        await dropReceipts(job);
         job.updatedAt = isoNow();
         runtimeInbounds.delete(job.id);
         save();
@@ -1460,6 +1465,30 @@ export function createCore({ adapter, config, deps = {} }) {
     }
   }
 
+  async function addReceipt(inbound) {
+    if (typeof adapter.addReceipt !== "function") return null;
+    try {
+      const receipt = await adapter.addReceipt({ messageId: inbound.messageId ?? null, chatId: inbound.chatId ?? null, threadId: inbound.threadId ?? null });
+      return receipt ? { ...receipt, messageId: receipt.messageId ?? inbound.messageId ?? null } : null;
+    } catch (error) {
+      log("warn", "receipt-add", String(error?.message ?? error));
+      return null;
+    }
+  }
+
+  async function dropReceipts(job) {
+    const receipts = job.receipts ?? [];
+    job.receipts = [];
+    if (!receipts.length) return;
+    for (const receipt of receipts) {
+      try {
+        await adapter.removeReceipt?.({ messageId: receipt.messageId ?? null, receipt });
+      } catch (error) {
+        log("warn", "receipt-remove", String(error?.message ?? error));
+      }
+    }
+  }
+
   async function deliveredAsSteer(inbound) {
     const target = await steerTarget(inbound);
     if (!target) return false;
@@ -1475,7 +1504,12 @@ export function createCore({ adapter, config, deps = {} }) {
       delete state.seen[inbound.dedupeId];
       return false;
     }
-    target.job.steers = [...(target.job.steers ?? []), { ts: inbound.dedupeId, at: isoNow(), text: inbound.text, chars: String(inbound.text ?? "").length, disposition, consumed: false }];
+    const receipt = await addReceipt(inbound);
+    target.job.steers = [...(target.job.steers ?? []), { ts: inbound.dedupeId, messageId: inbound.messageId ?? null, at: isoNow(), text: inbound.text, chars: String(inbound.text ?? "").length, disposition, consumed: false }];
+    if (receipt) {
+      target.job.receipts = [...(target.job.receipts ?? []), receipt];
+      if (isFinished(target.job)) await dropReceipts(target.job);
+    }
     target.job.updatedAt = isoNow();
     save();
     appendLog({ event: "steer", job: target.job.id, key: inbound.key, chars: String(inbound.text ?? "").length, disposition });

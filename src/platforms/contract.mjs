@@ -1,7 +1,7 @@
 export const PLATFORMS = ["discord", "feishu", "mattermost", "slack", "telegram"];
 
 const REQUIRED = { name: "string", start: "function", reply: "function", sessionFor: "function" };
-const OPTIONAL = ["postNotice", "postMedia", "edit", "onProgress", "onProgressDone", "buildWorker", "prune", "selfContext", "openRoundThread", "locateReply"];
+const OPTIONAL = ["postNotice", "postMedia", "edit", "onProgress", "onProgressDone", "addReceipt", "removeReceipt", "buildWorker", "prune", "selfContext", "openRoundThread", "locateReply"];
 const VALUES = { workerMode: "string", steer: "string" };
 
 export function definePlatform(platform) {

@@ -1479,7 +1479,7 @@ test("TC-NT8 inbound text is never parsed as a command: /stop queues behind the 
   assert.notEqual(core.state.seen.b, "legacy");
 });
 
-function fakeRpcChild({ sessionId = "fs-th-abc", isStreaming = true, answer = "答案", stopReason = "stop", aborted = false, messageCount = 3 } = {}) {
+function fakeRpcChild({ sessionId = "fs-th-abc", isStreaming = true, answer = "答案", stopReason = "stop", aborted = false, messageCount = 3, pendingMessageCount = 0, hold = false } = {}) {
   const child = new EventEmitter();
   child.pid = 888001;
   child.written = [];
@@ -1493,16 +1493,18 @@ function fakeRpcChild({ sessionId = "fs-th-abc", isStreaming = true, answer = "�
       const record = JSON.parse(String(chunk).trim());
       child.written.push(record);
       const respond = (data) => setImmediate(() => child.stdout.emit("data", `${JSON.stringify({ id: record.id, type: "response", command: record.type, success: true, data })}\n`));
-      if (record.type === "get_state") return respond({ sessionId, messageCount, isStreaming: streaming || isStreaming });
+      if (record.type === "get_state") return respond({ sessionId, messageCount, isStreaming: streaming || isStreaming, pendingMessageCount: child.pendingMessageCount ?? pendingMessageCount });
       if (record.type === "prompt") {
         child.prompted += 1;
         streaming = true;
         respond({ disposition: "started" });
-        setImmediate(() => {
+        const settle = () => {
           if (answer !== null) child.stdout.emit("data", `${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: answer }], stopReason } })}\n`);
           streaming = false;
           child.stdout.emit("data", `${JSON.stringify({ type: "agent_settled", aborted })}\n`);
-        });
+        };
+        if (hold) child.settle = settle;
+        else setImmediate(settle);
         return;
       }
       if (record.type === "steer") return respond({ disposition: "queued" });
@@ -1586,4 +1588,57 @@ test("TC-RPC10 the same key reuses one rpc child across turns", async () => {
   await core.handle(inbound({ text: "二", dedupeId: "m2" }));
   await tick();
   assert.equal(spawned, 1);
+});
+
+test("TC-RPC12 a steer gets a receipt on the steered message and the receipt is removed after delivery", async () => {
+  const child = fakeRpcChild({ answer: "答案", hold: true });
+  const receipts = [];
+  const removed = [];
+  const { core } = harness({
+    spawn: () => child,
+    adapterOverrides: {
+      worker: "pi",
+      workerMode: "rpc",
+      addReceipt: async ({ messageId }) => (receipts.push(messageId), { messageId, name: "mark" }),
+      removeReceipt: async ({ receipt }) => removed.push(receipt.messageId),
+    },
+  });
+  await core.handle(inbound({ text: "第一句", messageId: "m-1", chatId: "c1" }));
+  await tick();
+  await core.handle(inbound({ text: "插一句", dedupeId: "m2", messageId: "m-2", chatId: "c1" }));
+  await tick();
+  child.settle();
+  await tick();
+  assert.deepEqual(receipts, ["m-2"]);
+  assert.deepEqual(removed, ["m-2"]);
+  const job = Object.values(core.state.jobs)[0];
+  assert.deepEqual(job.receipts, []);
+  assert.equal(job.steers[0].messageId, "m-2");
+});
+
+test("TC-RPC13 an unconsumed steer drops its receipt and re-sends on the steered message", async () => {
+  const child = fakeRpcChild({ answer: "答案", pendingMessageCount: 1, hold: true });
+  child.pendingMessageCount = 1;
+  const removed = [];
+  const { core } = harness({
+    spawn: () => child,
+    adapterOverrides: {
+      worker: "pi",
+      workerMode: "rpc",
+      addReceipt: async ({ messageId }) => ({ messageId, name: "mark" }),
+      removeReceipt: async ({ receipt }) => removed.push(receipt.messageId),
+    },
+  });
+  await core.handle(inbound({ text: "第一句", messageId: "m-1", chatId: "c1" }));
+  await tick();
+  await core.handle(inbound({ text: "插一句", dedupeId: "m2", messageId: "m-2", chatId: "c1" }));
+  await tick();
+  child.pendingMessageCount = 1;
+  child.settle();
+  await tick();
+  await tick();
+  const jobs = Object.values(core.state.jobs);
+  const resend = jobs.find((job) => job.auto === "steer-resend");
+  assert.ok(removed.includes("m-2"), "the receipt is dropped before the resend job starts");
+  if (resend) assert.equal(resend.inbound.messageId, "m-2");
 });
