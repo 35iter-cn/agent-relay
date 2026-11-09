@@ -410,6 +410,8 @@ export function createPlatform({ config, log: baseLog, createClient = defaultCli
     maxWorkers: relayEnv("MAX_WORKERS", 5),
     queueDepth: relayEnv("QUEUE_DEPTH", 3),
     worker: relayEnv("WORKER", "pi"),
+    workerMode: relayEnv("WORKER_MODE", "print"),
+    steer: relayEnv("STEER", "on"),
     piBin: config.workerBin,
     sessionFor,
     prune: () => pruneUploads(config.uploadsDir),

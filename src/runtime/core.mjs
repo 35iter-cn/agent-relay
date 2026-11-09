@@ -1,5 +1,7 @@
 import { readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { spawn as spawnProcess } from "node:child_process";
+import { runPrintWorker } from "./worker-print.mjs";
+import { createRpcWorker, expandAttachments } from "./worker-rpc.mjs";
 import { join } from "node:path";
 import { appendDailyJsonl, createLog } from "../shared/log.mjs";
 import { relayEnv } from "../shared/env.mjs";
@@ -39,6 +41,7 @@ const BRIEF_MAX_BYTES = 8 * 1024;
 const DEFAULT_GRACE_MS = 6 * 3_600_000;
 const RUNAWAY_PER_HOUR = relayEnv("RUNAWAY_PER_HOUR", 12);
 const REAP_POLL_MS = 50;
+const RPC_IDLE_MS = relayEnv("RPC_IDLE_MS", 10 * 60_000);
 const MAX_DELIVERY_ATTEMPTS = 3;
 export const DELIVERY_BACKOFF_MS = [1_500, 5_000, 15_000];
 
@@ -71,6 +74,9 @@ export function createCore({ adapter, config, deps = {} }) {
   const notices = deps.notices ?? createNoticeService({ state, save, adapter, now, log });
   const prompts = deps.prompts ?? createPrompts({ dir: config.promptsDir, userDir: config.userPromptsDir, log, cli: config.cli, configDir: config.configDir });
   const children = new Map();
+  const stallTimers = new Map();
+  const workers = new Map();
+  const idleTimers = new Map();
   const notes = new Map();
   const runtimeInbounds = new Map();
   const running = new Set();
@@ -113,6 +119,10 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   function progress(job, session) {
+    const activity = job.activity;
+    if (activity && Number.isFinite(activity.at)) {
+      return activity.open ? { kind: "tool", at: activity.at, tool: activity.open } : { kind: "entry", at: activity.at, tool: null };
+    }
     const signal = readSessionSignal(sessionFileFor(session));
     if (signal.ok) {
       if (signal.open && Number.isFinite(signal.open.startedAt)) return { kind: "tool", at: signal.open.startedAt, tool: signal.open };
@@ -433,6 +443,36 @@ export function createCore({ adapter, config, deps = {} }) {
     return run(built);
   }
 
+  function workerMode() {
+    return adapter.workerMode === "rpc" ? "rpc" : "print";
+  }
+
+  function armStallTimer(job, key) {
+    const timer = setInterval(() => {
+      checkStall(job).catch((error) => log("warn", "stall", String(error?.message ?? error)));
+    }, STALL_CHECK_MS);
+    timer.unref?.();
+    stallTimers.set(key, timer);
+  }
+
+  function disarmStallTimer(key) {
+    const timer = stallTimers.get(key);
+    if (timer) clearInterval(timer);
+    stallTimers.delete(key);
+  }
+
+  function startProgress(job) {
+    const progressPromise = Promise.resolve(adapter.onProgress?.(ctxOf(job)))
+      .then((progress) => {
+        if (!progress) return;
+        job.progress = progress;
+        job.updatedAt = isoNow();
+        save();
+      })
+      .catch((error) => log("warn", "progress", String(error?.message ?? error)));
+    void progressPromise;
+  }
+
   function spawnWorker(job, entry, inbound, prompt, full) {
     const refs = (inbound.attachments ?? []).map((attachment) => `@${attachment.path}`);
     const args = adapter.worker === "stub" ? ["-e", `console.log("[stub] session=${entry.session} full=${full}")`] : ["--print", "--session-id", entry.session, "--", ...refs, prompt];
@@ -440,84 +480,280 @@ export function createCore({ adapter, config, deps = {} }) {
     const command = adapter.buildWorker ? adapter.buildWorker({ prompt, full, session: entry.session }) : { bin, args };
     const started = now();
     const timeoutMs = optInTimeoutMs();
-    appendLog({ event: "dispatch", job: job.id, key: inbound.key, session: entry.session, full });
+    const mode = workerMode();
+    const env = { ...process.env, AGENT_RELAY_SELF_CHAIN: String(job.chain ?? 0) };
+    appendLog({ event: "dispatch", job: job.id, key: inbound.key, session: entry.session, full, mode });
+    if (mode === "rpc" && adapter.worker !== "stub") return runRpcJob(job, entry, inbound, prompt, full);
 
     return new Promise((resolve) => {
-      const child = spawn(command.bin, command.args, {
-        cwd: config.cwd,
-        detached: true,
-        stdio: ["ignore", "pipe", "pipe"],
-        env: { ...process.env, AGENT_RELAY_SELF_CHAIN: String(job.chain ?? 0) },
-      });
-      let stdout = "";
-      let stderr = "";
-      let killed = false;
-      children.set(inbound.key, child);
-      job.lease = { pid: child.pid ?? null, startTicks: child.pid ? readStartTicks(child.pid) : null, startedAt: now() };
-      job.startedAt = started;
-      job.updatedAt = isoNow();
-      save();
-      const stallTimer = setInterval(() => {
-        checkStall(job).catch((error) => log("warn", "stall", String(error?.message ?? error)));
-      }, STALL_CHECK_MS);
-      stallTimer.unref?.();
-      const timer =
-        timeoutMs === null
-          ? null
-          : setTimeout(() => {
-              killed = true;
-              terminate(inbound.key, "").catch((error) => log("warn", "timeout-stop", String(error?.message ?? error)));
-            }, timeoutMs);
-      const progressPromise = Promise.resolve(adapter.onProgress?.(ctxOf(job))).then((progress) => {
-        if (!progress) return;
-        job.progress = progress;
+      const settle = (result) => resolve(finishJob(job, entry, inbound, { started, timeoutMs, ...result }));
+      const onSpawn = (handle) => {
+        children.set(inbound.key, handle);
+        job.lease = { pid: handle.pid ?? null, startTicks: handle.pid ? readStartTicks(handle.pid) : null, startedAt: now() };
+        job.startedAt = started;
         job.updatedAt = isoNow();
         save();
-      }).catch((error) => log("warn", "progress", String(error?.message ?? error)));
-      void progressPromise;
-      child.stdout.on("data", (chunk) => (stdout += chunk));
-      child.stderr.on("data", (chunk) => (stderr += chunk));
-      child.on("error", (error) => stderr += `${error}\n`);
-      child.on("close", async (code) => {
-        if (timer) clearTimeout(timer);
-        clearInterval(stallTimer);
-        children.delete(inbound.key);
-        appendLog({ event: "done", job: job.id, key: inbound.key, session: entry.session, exit: code, killed, elapsedMs: now() - started });
-        const body = stdout.trim();
-        const note = notes.get(inbound.key);
-        notes.delete(inbound.key);
-        if (isScheduled(job) && !note && !killed && code === 0 && !body) {
-          job.answer = null;
-          job.status = "done";
-          job.lease = null;
-          job.updatedAt = isoNow();
-          save();
-          appendLog({ event: "job-empty", job: job.id, key: inbound.key });
-          runtimeInbounds.delete(job.id);
-          resolve();
-          return;
-        }
-        const text = note
-          ? note
-          : killed
-            ? `已终止：本轮超过 ${Math.round(timeoutMs / 60_000)} 分钟未结束。回复「继续」可以接着做，前面已完成的改动都在。\n\n${body.slice(-1500)}`.trim()
-            : body || `[无输出] exit=${code}\n${stderr.trim().split("\n").slice(-10).join("\n")}`;
-        job.answer = text;
-        job.status = note ? "cancelled" : killed || code !== 0 ? "failed" : "answered";
-        job.lease = null;
-        job.updatedAt = isoNow();
-        if (job.origin === "loop") {
-          job.loopOutput = text;
-          job.loopRoundStatus = job.status;
-        }
-        save();
-        if (job.origin === "loop") await deliverRound(job);
-        else await deliver(job);
-        if (job.origin === "loop") await finishRound(job);
-        runtimeInbounds.delete(job.id);
-        resolve();
+        armStallTimer(job, inbound.key);
+        startProgress(job);
+      };
+      runPrintWorker({
+        config,
+        command,
+        env,
+        timeoutMs,
+        onSpawn,
+        onTimeout: () => {
+          terminate(inbound.key, "").catch((error) => log("warn", "timeout-stop", String(error?.message ?? error)));
+        },
+        onClose: settle,
+        deps: { spawn },
       });
     });
+  }
+
+  async function finishJob(job, entry, inbound, { code, killed, stdout, stderr, started, timeoutMs }) {
+    const body = String(stdout ?? "").trim();
+    const note = notes.get(inbound.key);
+    notes.delete(inbound.key);
+    if (isScheduled(job) && !note && !killed && code === 0 && !body) {
+      job.answer = null;
+      job.status = "done";
+      job.lease = null;
+      job.updatedAt = isoNow();
+      save();
+      appendLog({ event: "job-empty", job: job.id, key: inbound.key });
+      runtimeInbounds.delete(job.id);
+      return;
+    }
+    const text = note
+      ? note
+      : killed
+        ? `已终止：本轮超过 ${Math.round(timeoutMs / 60_000)} 分钟未结束。回复「继续」可以接着做，前面已完成的改动都在。\n\n${body.slice(-1500)}`.trim()
+        : body || `[无输出] exit=${code}\n${String(stderr ?? "").trim().split("\n").slice(-10).join("\n")}`;
+    const status = note ? "cancelled" : killed || code !== 0 ? "failed" : "answered";
+    await applyWorkerResult(job, entry, inbound, { text, status, started, mode: "print", exit: code, killed });
+  }
+
+  async function applyWorkerResult(job, entry, inbound, { text, status, started, mode = "print", exit = 0, killed = false, empty = false }) {
+    disarmStallTimer(inbound.key);
+    children.delete(inbound.key);
+    appendLog({ event: "done", job: job.id, key: inbound.key, session: entry.session, exit, killed, elapsedMs: now() - started, mode });
+    if (empty && isScheduled(job)) {
+      job.answer = null;
+      job.status = "done";
+      job.lease = null;
+      job.updatedAt = isoNow();
+      save();
+      appendLog({ event: "job-empty", job: job.id, key: inbound.key });
+      runtimeInbounds.delete(job.id);
+      return;
+    }
+    job.answer = text;
+    job.status = status;
+    job.lease = null;
+    job.updatedAt = isoNow();
+    if (job.origin === "loop") {
+      job.loopOutput = text;
+      job.loopRoundStatus = status;
+    }
+    save();
+    if (job.origin === "loop") await deliverRound(job);
+    else await deliver(job);
+    if (job.origin === "loop") await finishRound(job);
+    runtimeInbounds.delete(job.id);
+  }
+
+  function timeoutOfArgs(args) {
+    const seconds = Number(args?.timeout);
+    return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null;
+  }
+
+  function clearIdleTimer(key) {
+    const timer = idleTimers.get(key);
+    if (timer) clearTimeout(timer);
+    idleTimers.delete(key);
+  }
+
+  function scheduleIdleClose(key) {
+    clearIdleTimer(key);
+    const timer = setTimeout(() => {
+      idleTimers.delete(key);
+      if (keyIsBusy(key)) return;
+      const worker = workers.get(key);
+      if (!worker) return;
+      workers.delete(key);
+      worker.close().catch((error) => log("warn", "rpc-idle-close", String(error?.message ?? error)));
+    }, RPC_IDLE_MS);
+    timer.unref?.();
+    idleTimers.set(key, timer);
+  }
+
+  async function acquireWorker(key, session, chain) {
+    clearIdleTimer(key);
+    let worker = workers.get(key);
+    if (worker && !worker.exited()) return worker;
+    if (worker) workers.delete(key);
+    worker = createRpcWorker({
+      bin: adapter.worker === "stub" ? process.execPath : adapter.piBin,
+      session,
+      cwd: config.cwd,
+      env: { ...process.env, AGENT_RELAY_SELF_CHAIN: String(chain ?? 0) },
+      log,
+      deps: { spawn },
+    });
+    workers.set(key, worker);
+    const snapshot = await worker.state();
+    if (snapshot?.sessionId && snapshot.sessionId !== session) {
+      const file = sessionFileFor(session);
+      if (file) await worker.command("switch_session", { sessionPath: file });
+      else await worker.command("new_session", {});
+    }
+    return worker;
+  }
+
+  function runRpcJob(job, entry, inbound, prompt, full) {
+    const key = inbound.key;
+    const started = now();
+    const timeoutMs = optInTimeoutMs();
+    return (async () => {
+      let worker;
+      try {
+        worker = await acquireWorker(key, entry.session, job.chain);
+      } catch (error) {
+        log("error", "rpc-handshake", String(error?.message ?? error));
+        return applyWorkerResult(job, entry, inbound, {
+          text: `[无输出] stop=rpc-handshake\n${String(error?.message ?? error)}`,
+          status: "failed",
+          started,
+          mode: "rpc",
+        });
+      }
+      const run = { text: "", stopReason: null };
+      let settle;
+      const settled = new Promise((resolve) => (settle = resolve));
+      const offEvent = worker.onEvent((record) => {
+        if (record.type === "agent_settled") {
+          settle({ aborted: Boolean(record.aborted) });
+          return;
+        }
+        if (record.type === "tool_execution_start") {
+          job.activity = { at: now(), open: { name: record.toolName ?? null, startedAt: now(), declaredMs: record.toolName === "bash" ? timeoutOfArgs(record.args) : null, callIds: [record.toolCallId].filter(Boolean), head: "", tools: [] } };
+          return;
+        }
+        if (record.type === "tool_execution_end") {
+          job.activity = { at: now(), open: null };
+          return;
+        }
+        if (record.type === "turn_start" || record.type === "message_start" || record.type === "message_update" || record.type === "turn_end") {
+          job.activity = { at: now(), open: job.activity?.open ?? null };
+          return;
+        }
+        if (record.type === "message_end" && record.message?.role === "assistant") {
+          const content = Array.isArray(record.message.content) ? record.message.content : [];
+          const reason = record.message.stopReason ?? null;
+          if (reason && reason !== "toolUse") {
+            run.text = content.filter((part) => part && part.type === "text").map((part) => part.text).join("");
+            run.stopReason = reason;
+          }
+        }
+      });
+      const offExit = worker.onExit(({ code, signal }) => settle({ exit: true, code, signal }));
+      children.set(key, worker);
+      job.lease = { pid: worker.pid ?? null, startTicks: worker.pid ? readStartTicks(worker.pid) : null, startedAt: now() };
+      job.startedAt = started;
+      job.activity = { at: now(), open: null };
+      job.updatedAt = isoNow();
+      save();
+      armStallTimer(job, key);
+      startProgress(job);
+      const timer = timeoutMs === null ? null : setTimeout(() => {
+        terminate(key, "").catch((error) => log("warn", "timeout-stop", String(error?.message ?? error)));
+      }, timeoutMs);
+
+      let disposition = "started";
+      try {
+        disposition = await worker.prompt(expandAttachments({ prompt, attachments: inbound.attachments }));
+      } catch (error) {
+        if (timer) clearTimeout(timer);
+        offEvent();
+        offExit();
+        return applyWorkerResult(job, entry, inbound, {
+          text: `[无输出] stop=rpc-prompt\n${String(error?.message ?? error)}`,
+          status: "failed",
+          started,
+          mode: "rpc",
+        });
+      }
+
+      const outcome = disposition === "handled" ? { handled: true } : await settled;
+      if (timer) clearTimeout(timer);
+      offEvent();
+      offExit();
+      scheduleIdleClose(key);
+      const note = notes.get(key);
+      notes.delete(key);
+      await drainUnconsumedSteers(job, worker);
+      if (note) return applyWorkerResult(job, entry, inbound, { text: note, status: "cancelled", started, mode: "rpc" });
+      if (outcome.handled) return applyWorkerResult(job, entry, inbound, { text: "[无输出] stop=handled", status: "answered", started, mode: "rpc", empty: true });
+      if (outcome.exit) {
+        const tail = worker.stderrTail().trim().split("\n").slice(-10).join("\n");
+        const text = `[无输出] exit=${outcome.code ?? "signal"}${tail ? `\n${tail}` : ""}`;
+        return applyWorkerResult(job, entry, inbound, { text, status: "failed", started, mode: "rpc", exit: outcome.code ?? null, killed: true });
+      }
+      if (outcome.aborted || run.stopReason === "error") {
+        return applyWorkerResult(job, entry, inbound, {
+          text: run.text || `[无输出] stop=${run.stopReason ?? "aborted"}`,
+          status: "failed",
+          started,
+          mode: "rpc",
+        });
+      }
+      if (!run.text) return applyWorkerResult(job, entry, inbound, { text: `[无输出] stop=${run.stopReason ?? "stop"}`, status: "answered", started, mode: "rpc", empty: true });
+      return applyWorkerResult(job, entry, inbound, { text: run.text, status: "answered", started, mode: "rpc" });
+    })();
+  }
+
+  async function drainUnconsumedSteers(job, worker) {
+    const pending = (job.steers ?? []).filter((steer) => !steer.consumed);
+    if (!pending.length) return;
+    let snapshot = null;
+    try {
+      snapshot = await worker.state();
+    } catch (error) {
+      log("warn", "steer-state", String(error?.message ?? error));
+    }
+    if (!snapshot || !snapshot.pendingMessageCount) {
+      for (const steer of pending) steer.consumed = true;
+      save();
+      return;
+    }
+    try {
+      await worker.command("clear_queue");
+    } catch (error) {
+      log("warn", "steer-clear", String(error?.message ?? error));
+    }
+    for (const steer of pending) steer.consumed = true;
+    const text = pending.map((steer) => steer.text).filter(Boolean).join("\n\n");
+    save();
+    if (!text) return;
+    const inbound = {
+      ...job.inbound,
+      key: job.key,
+      session: job.session,
+      noticeId: null,
+      dedupeId: `steer-resend-${job.id}-${pending.length}`,
+      text,
+      rootText: job.inbound?.rootText ?? text,
+      attachments: [],
+    };
+    const next = createJob(state, inbound, isoNow);
+    next.auto = "steer-resend";
+    state.jobs[next.id] = next;
+    state.inbox.push(next.id);
+    state.seen[inbound.dedupeId] = next.id;
+    save();
+    appendLog({ event: "steer-resend", job: next.id, from: job.id, key: job.key });
+    drainInbox();
   }
 
   function describeDeliveryFailure(error) {
@@ -1203,6 +1439,49 @@ export function createCore({ adapter, config, deps = {} }) {
     return "accepted";
   }
 
+  function adapterSteerEnabled() {
+    return adapter.steer !== "off" && adapter.steer !== false;
+  }
+
+  async function steerTarget(inbound) {
+    if (workerMode() !== "rpc" || adapter.worker === "stub") return null;
+    if (!adapterSteerEnabled()) return null;
+    const worker = workers.get(inbound.key);
+    if (!worker || worker.exited()) return null;
+    const activeId = state.convs[inbound.key]?.activeJob;
+    const active = activeId ? state.jobs[activeId] : null;
+    if (!active || isFinished(active) || active.origin !== "user") return null;
+    try {
+      const snapshot = await worker.state();
+      return snapshot?.isStreaming ? { worker, job: active } : null;
+    } catch (error) {
+      log("warn", "steer-state", String(error?.message ?? error));
+      return null;
+    }
+  }
+
+  async function deliveredAsSteer(inbound) {
+    const target = await steerTarget(inbound);
+    if (!target) return false;
+    state.seen[inbound.dedupeId] = target.job.id;
+    const payload = expandAttachments({ prompt: inbound.text, attachments: inbound.attachments });
+    let disposition = null;
+    try {
+      disposition = await target.worker.steer(payload);
+    } catch (error) {
+      log("warn", "steer", String(error?.message ?? error));
+    }
+    if (!disposition) {
+      delete state.seen[inbound.dedupeId];
+      return false;
+    }
+    target.job.steers = [...(target.job.steers ?? []), { ts: inbound.dedupeId, at: isoNow(), text: inbound.text, chars: String(inbound.text ?? "").length, disposition, consumed: false }];
+    target.job.updatedAt = isoNow();
+    save();
+    appendLog({ event: "steer", job: target.job.id, key: inbound.key, chars: String(inbound.text ?? "").length, disposition });
+    return true;
+  }
+
   async function handle(inbound) {
     if (adapter.allowedUser && inbound.authorId && inbound.authorId !== adapter.allowedUser) {
       log("ignore", "author", inbound.authorId);
@@ -1220,6 +1499,7 @@ export function createCore({ adapter, config, deps = {} }) {
       return "duplicate";
     }
     if (notice) return handleNoticeReply(inbound, notice);
+    if (await deliveredAsSteer(inbound)) return "steered";
 
     const job = acceptJob(inbound);
     if (running.size >= adapter.maxWorkers && state.inbox.length > adapter.queueDepth) {

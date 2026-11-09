@@ -1478,3 +1478,112 @@ test("TC-NT8 inbound text is never parsed as a command: /stop queues behind the 
   assert.equal(queued.inbound.text, "/stop");
   assert.notEqual(core.state.seen.b, "legacy");
 });
+
+function fakeRpcChild({ sessionId = "fs-th-abc", isStreaming = true, answer = "答案", stopReason = "stop", aborted = false, messageCount = 3 } = {}) {
+  const child = new EventEmitter();
+  child.pid = 888001;
+  child.written = [];
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.prompted = 0;
+  let streaming = false;
+  child.stdin = {
+    writable: true,
+    write: (chunk) => {
+      const record = JSON.parse(String(chunk).trim());
+      child.written.push(record);
+      const respond = (data) => setImmediate(() => child.stdout.emit("data", `${JSON.stringify({ id: record.id, type: "response", command: record.type, success: true, data })}\n`));
+      if (record.type === "get_state") return respond({ sessionId, messageCount, isStreaming: streaming || isStreaming });
+      if (record.type === "prompt") {
+        child.prompted += 1;
+        streaming = true;
+        respond({ disposition: "started" });
+        setImmediate(() => {
+          if (answer !== null) child.stdout.emit("data", `${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: answer }], stopReason } })}\n`);
+          streaming = false;
+          child.stdout.emit("data", `${JSON.stringify({ type: "agent_settled", aborted })}\n`);
+        });
+        return;
+      }
+      if (record.type === "steer") return respond({ disposition: "queued" });
+      if (record.type === "clear_queue") return respond({ steering: [], followUp: [] });
+      return respond({});
+    },
+    end: () => {},
+    on: () => {},
+  };
+  child.kill = () => {};
+  return child;
+}
+
+test("TC-RPC6 rpc mode sends the rendered prompt over the protocol and delivers the run's answer", async () => {
+  const child = fakeRpcChild({ answer: "改好了" });
+  const { core, replies } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await core.handle(inbound({ text: "改一下" }));
+  await tick();
+  const prompt = child.written.find((record) => record.type === "prompt");
+  assert.ok(prompt, "a prompt command was sent");
+  assert.match(prompt.message, /conversation=th-abc/);
+  assert.equal(replies.at(-1).text, "改好了");
+});
+
+test("TC-RPC7 images travel as image blocks with an untouched body; other files are appended as paths", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "relay-attach-"));
+  writeFileSync(join(dir, "a.png"), Buffer.from([1, 2, 3]));
+  writeFileSync(join(dir, "b.pdf"), "pdf-bytes");
+  const child = fakeRpcChild({ answer: "ok" });
+  const { core } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await core.handle(inbound({ text: "看图", attachments: [{ path: join(dir, "a.png"), mime: "image/png" }, { path: join(dir, "b.pdf"), mime: "application/pdf" }] }));
+  await tick();
+  const prompt = child.written.find((record) => record.type === "prompt");
+  assert.equal(prompt.images.length, 1);
+  assert.equal(prompt.images[0].mimeType, "image/png");
+  assert.equal(prompt.images[0].data, Buffer.from([1, 2, 3]).toString("base64"));
+  assert.match(prompt.message, /看图/);
+  assert.ok(prompt.message.endsWith("b.pdf"), "the non-image path is appended at the end");
+  assert.doesNotMatch(prompt.message, /pdf-bytes/);
+  assert.doesNotMatch(prompt.message, /a\.png/);
+});
+
+test("TC-RPC8 an empty run reports the stop reason and an aborted run fails", async () => {
+  const empty = fakeRpcChild({ answer: null });
+  const first = harness({ spawn: () => empty, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await first.core.handle(inbound({ text: "做点事" }));
+  await tick();
+  assert.equal(first.replies.at(-1).text, "[无输出] stop=stop");
+
+  const aborted = fakeRpcChild({ answer: "一半", aborted: true });
+  const second = harness({ spawn: () => aborted, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await second.core.handle(inbound({ text: "做点事" }));
+  await tick();
+  assert.equal(second.replies.at(-1).text, "一半");
+  assert.equal(Object.values(second.core.state.jobs).at(-1).status, "failed");
+});
+
+test("TC-RPC9 a second message lands as a steer on the running job instead of a new job", async () => {
+  const child = fakeRpcChild({ answer: "答案" });
+  const { core, replies } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await core.handle(inbound({ text: "第一句" }));
+  await core.handle(inbound({ text: "第二句", dedupeId: "m2" }));
+  await tick();
+  const jobs = Object.values(core.state.jobs);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].steers.length, 1);
+  assert.equal(jobs[0].steers[0].text, "第二句");
+  assert.equal(child.written.filter((record) => record.type === "steer").length, 1);
+  assert.equal(replies.length, 1);
+});
+
+test("TC-RPC10 the same key reuses one rpc child across turns", async () => {
+  let spawned = 0;
+  const { core } = harness({
+    spawn: () => (spawned += 1, fakeRpcChild({ answer: "ok" })),
+    adapterOverrides: { worker: "pi", workerMode: "rpc" },
+    sessions: ["fs-th-abc"],
+  });
+  await core.handle(inbound({ text: "一" }));
+  await tick();
+  await core.handle(inbound({ text: "二", dedupeId: "m2" }));
+  await tick();
+  assert.equal(spawned, 1);
+});
