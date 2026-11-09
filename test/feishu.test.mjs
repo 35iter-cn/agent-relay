@@ -48,7 +48,7 @@ test("TC-8 four message shapes map to four conversation keys", () => {
   assert.equal(conversationKey({ thread_id: "t1", root_id: "r1", parent_id: "p1", message_id: "m1" }), "th-t1");
   assert.equal(conversationKey({ root_id: "r1", parent_id: "p1", message_id: "m1" }), "th-r1");
   assert.equal(conversationKey({ parent_id: "p1", message_id: "m1" }), "th-p1");
-  assert.equal(conversationKey({ message_id: "m1" }), "ms-m1");
+  assert.equal(conversationKey({ message_id: "m1" }), "th-m1");
   assert.equal(sessionFor("th-x"), "fs-th-x");
 });
 
@@ -650,4 +650,19 @@ test("TC-TB1 a table becomes a card table element with the header as columns", (
       rows: [{ c1: "协议", c2: "UDP" }, { c1: "端口", c2: "41641" }],
     },
   ]);
+});
+
+test("TC-FK1 a root message is keyed by the thread its own id will name", () => {
+  assert.equal(conversationKey({ message_id: "om_root", chat_id: "c1" }), "th-om_root");
+});
+
+test("TC-FK2 a reply inside that thread lands on the same key", () => {
+  assert.equal(conversationKey({ message_id: "om_reply", root_id: "om_root", parent_id: "om_root" }), "th-om_root");
+});
+
+test("TC-FK3 root and thread keys are equal, so one conversation keeps one session", () => {
+  const root = conversationKey({ message_id: "om_root" });
+  const reply = conversationKey({ message_id: "om_reply", root_id: "om_root" });
+  assert.equal(root, reply);
+  assert.equal(sessionFor(root), sessionFor(reply));
 });
