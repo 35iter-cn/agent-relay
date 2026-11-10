@@ -63,7 +63,7 @@ const stubSections = {
 test("TC-P1 every built-in section file carries a number prefix and a name", () => {
   const prompts = builtinPrompts();
   const sections = prompts.listSections();
-  assert.equal(sections.length, 18);
+  assert.equal(sections.length, 15);
   assert.deepEqual(sections.map((section) => section.order), [...sections.map((section) => section.order)].sort((a, b) => a - b));
   assert.equal(new Set(sections.map((section) => section.name)).size, sections.length);
 });
@@ -111,7 +111,7 @@ test("TC-P6 the stall fragment is pulled in through exactly one placeholder", ()
 });
 
 test("TC-P7 a rendered conversation carries one record section and no unresolved placeholder", () => {
-  const texts = ["slack", "feishu", "telegram"].map((platform) => render(builtinPrompts(), platform));
+  const texts = ["slack", "feishu"].map((platform) => render(builtinPrompts(), platform));
   for (const text of texts) {
     assert.equal(text.split("## 记录").length - 1, 1);
     assert.doesNotMatch(text, /\{\{/);
@@ -135,21 +135,20 @@ test("TC-P9 stallSection lists a single running job", () => {
 
 test("TC-P10 stallSection keeps the caller's order for several jobs", () => {
   const text = stallSection({
-    platform: "telegram",
+    platform: "feishu",
     cli: "agent-relay",
     running: [{ label: "job-1，已跑 3 分钟" }, { label: "job-2，已跑 1 分钟" }],
   });
   const list = text.split("\n").filter((line) => /^- job-\d+/.test(line));
   assert.deepEqual(list, ["- job-1，已跑 3 分钟", "- job-2，已跑 1 分钟"]);
-  assert.match(text, /agent-relay stall telegram cancel\|restart <key>/);
+  assert.match(text, /agent-relay stall feishu cancel\|restart <key>/);
 });
 
 test("TC-P11 the built-in first-turn prompt stays within the first-turn budget with no running job", () => {
-  for (const platform of ["slack", "discord"]) {
+  for (const platform of ["slack", "feishu"]) {
     const text = render(builtinPrompts(), platform);
     assert.ok(text.length <= FIRST_TURN_PROMPT_BUDGET, `${platform} rendered ${text.length} characters`);
     assert.match(text, /## 处置卡住的 job/);
-    assert.match(text, /单独一行写 `!\[\]\(\/绝对路径\.png\)`/);
     assert.doesNotMatch(text, /\{\{/);
     assert.match(text, /agent-relay loop help/);
     assert.match(text, /agent-relay job help/);
@@ -217,11 +216,9 @@ test("TC-P14 without an override the prompt falls back to the documented default
   assert.match(builtinPrompts().stallActions("slack"), /~\/\.config\/agent-relay\/relay-slack\.json/);
 });
 
-test("TC-P15 only the slack and discord prompts teach the image reference, other platforms stay text-only", () => {
+test("TC-P15 only the slack prompt teaches the image reference, feishu stays text-only", () => {
   assert.match(render(builtinPrompts(), "slack"), /!\[\]\(\/绝对路径\.png\)/);
-  assert.match(render(builtinPrompts(), "discord"), /!\[\]\(\/绝对路径\.png\)/);
   assert.doesNotMatch(render(builtinPrompts(), "feishu"), /!\[\]\(\/绝对路径\.png\)/);
-  assert.doesNotMatch(render(builtinPrompts(), "telegram"), /!\[\]\(\/绝对路径\.png\)/);
 });
 
 test("TC-P16 each entry selects its documented sections plus its own platform reply section, in file order", () => {
@@ -231,7 +228,7 @@ test("TC-P16 each entry selects its documented sections plus its own platform re
     const allowed = new Set([...ENTRY_SECTIONS[entry], `platform-${platform}-reply`]);
     return fileOrder.filter((name) => allowed.has(name));
   };
-  for (const platform of ["slack", "feishu", "telegram", "discord"]) {
+  for (const platform of ["slack", "feishu"]) {
     assert.deepEqual(sectionsByName(prompts, { entry: "conversation", platform }), withPlatform("conversation", platform));
     assert.deepEqual(sectionsByName(prompts, { entry: "notice", platform }), withPlatform("notice", platform));
   }
@@ -239,7 +236,7 @@ test("TC-P16 each entry selects its documented sections plus its own platform re
 
 test("TC-P17 every platform-* section renders only for its own platform", () => {
   const prompts = builtinPrompts();
-  for (const platform of ["slack", "feishu", "telegram", "discord"]) {
+  for (const platform of ["slack", "feishu"]) {
     for (const entry of ["conversation", "notice"]) {
       const names = sectionsByName(prompts, { entry, platform });
       const platformSections = names.filter((name) => name.startsWith("platform-"));

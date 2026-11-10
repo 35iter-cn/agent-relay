@@ -30,17 +30,17 @@ test("parseFlags splits flags from positional words", () => {
 });
 
 test("TC-J1 job cancel reads the dedupe from the positional word, never the verb", () => {
-  const { flags, positional } = jobArgs(["cancel", "--platform", "discord", "abc-123"]);
+  const { flags, positional } = jobArgs(["cancel", "--platform", "slack", "abc-123"]);
   assert.equal(jobCancelDedupe(flags, positional), "abc-123");
 });
 
 test("TC-J2 job cancel prefers --dedupe when both forms are given", () => {
-  const { flags, positional } = jobArgs(["cancel", "--platform", "discord", "--dedupe", "xyz", "abc"]);
+  const { flags, positional } = jobArgs(["cancel", "--platform", "slack", "--dedupe", "xyz", "abc"]);
   assert.equal(jobCancelDedupe(flags, positional), "xyz");
 });
 
 test("TC-J3 job cancel has no target when the dedupe is missing", () => {
-  const { flags, positional } = jobArgs(["cancel", "--platform", "discord"]);
+  const { flags, positional } = jobArgs(["cancel", "--platform", "slack"]);
   assert.equal(jobCancelDedupe(flags, positional), "");
 });
 

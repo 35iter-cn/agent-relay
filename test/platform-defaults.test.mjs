@@ -1,10 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createPlatform as slack } from "../src/platforms/slack.mjs";
-import { createPlatform as discord } from "../src/platforms/discord.mjs";
 import { createPlatform as feishu } from "../src/platforms/feishu.mjs";
-import { createPlatform as telegram } from "../src/platforms/telegram.mjs";
-import { createPlatform as mattermost } from "../src/platforms/mattermost.mjs";
 
 const platform = "tc";
 const config = {
@@ -25,10 +22,7 @@ const config = {
 
 const factories = [
   ["slack", slack],
-  ["discord", discord],
   ["feishu", feishu],
-  ["telegram", telegram],
-  ["mattermost", mattermost],
 ];
 
 test("TC-RPC11 every platform defaults to the rpc worker with steer on", () => {

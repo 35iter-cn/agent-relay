@@ -41,26 +41,14 @@ test("TC-13 feishu legacy state keeps seen and convs", () => {
   assert.deepEqual(state.seen, { m1: "t" });
 });
 
-test("TC-13 telegram legacy state carries offset, convs and mirror map", () => {
-  const dir = seed({ "tgd.json": { offset: 845040408, alias: { a: 1 }, convs: { ch21: { session: "tg-ch21" } }, alerts: { poll: 2 }, lastConv: "ch21", channelPosts: { 21: 99 } } });
-  const result = migrate({ platform: "telegram", stateDir: dir });
-  assert.equal(result.migrated, true);
-  const state = JSON.parse(readFileSync(join(dir, "relay-telegram.json"), "utf8"));
-  assert.equal(state.cursor, 845040408);
-  assert.deepEqual(state.convs, { ch21: { session: "tg-ch21" } });
-  assert.deepEqual(state.meta.channelPosts, { 21: 99 });
-  assert.equal(state.meta.lastConv, "ch21");
-  assert.deepEqual(state.seen, {});
-});
-
 test("TC-13 migration is idempotent and never overwrites the target", () => {
-  const dir = seed({ "tgd.json": { offset: 5, convs: {} } });
-  migrate({ platform: "telegram", stateDir: dir });
-  const first = readFileSync(join(dir, "relay-telegram.json"), "utf8");
-  const second = migrate({ platform: "telegram", stateDir: dir });
+  const dir = seed({ "slackd.json": { dedup: { e1: "t" }, threads: {} } });
+  migrate({ platform: "slack", stateDir: dir });
+  const first = readFileSync(join(dir, "relay-slack.json"), "utf8");
+  const second = migrate({ platform: "slack", stateDir: dir });
   assert.equal(second.migrated, false);
   assert.equal(second.reason, "target-exists");
-  assert.equal(readFileSync(join(dir, "relay-telegram.json"), "utf8"), first);
+  assert.equal(readFileSync(join(dir, "relay-slack.json"), "utf8"), first);
 });
 
 test("TC-13 corrupt legacy state throws and leaves the file untouched", () => {
@@ -78,11 +66,11 @@ test("TC-13 a missing legacy file seeds an empty relay state", () => {
 });
 
 test("TC-13 dry run inspects without writing", () => {
-  const dir = seed({ "tgd.json": { offset: 7, convs: { ch1: {} } } });
-  const result = migrate({ platform: "telegram", stateDir: dir, dryRun: true });
+  const dir = seed({ "feishud.json": { convs: { "th-x": {} }, seen: { m1: "t" } } });
+  const result = migrate({ platform: "feishu", stateDir: dir, dryRun: true });
   assert.equal(result.reason, "dry-run");
-  assert.equal(result.payload.cursor, 7);
-  assert.equal(existsSync(join(dir, "relay-telegram.json")), false);
+  assert.deepEqual(result.payload.seen, { m1: "t" });
+  assert.equal(existsSync(join(dir, "relay-feishu.json")), false);
 });
 
 test("unknown platform is rejected", () => {

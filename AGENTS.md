@@ -38,7 +38,7 @@ Code changes do nothing until the daemon restarts:
 
 ```bash
 git -C ~/code/agent-relay pull --ff-only
-agent-relay-upgrade <feishu|slack|telegram>
+agent-relay-upgrade <feishu|slack>
 ```
 
 The script waits for in-flight jobs to drain, then restarts the unit and verifies

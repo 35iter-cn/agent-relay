@@ -44,13 +44,13 @@ test("TC-LP2 a prompt over four kilobytes or an empty one is refused", () => {
 });
 
 test("TC-LP3 ids carry the platform and continue from the highest sequence", () => {
-  const loops = { "loop-slack-2": {}, "loop-slack-7": {}, "loop-discord-1": {} };
+  const loops = { "loop-slack-2": {}, "loop-slack-7": {}, "loop-feishu-1": {} };
   assert.equal(nextLoopId(loops, "slack"), "loop-slack-8");
-  assert.equal(nextLoopId(loops, "telegram"), "loop-telegram-1");
+  assert.equal(nextLoopId(loops, "feishu"), "loop-feishu-2");
   assert.equal(platformOfLoopId("loop-slack-7"), "slack");
   assert.equal(platformOfLoopId("loop-7"), null);
-  assert.equal(isLoopId("loop-mattermost-12"), true);
-  assert.equal(isLoopId("loop-mattermost-x"), false);
+  assert.equal(isLoopId("loop-feishu-12"), true);
+  assert.equal(isLoopId("loop-feishu-x"), false);
   assert.equal(activeLoopCount({ ...loops, "loop-slack-3": { state: "deleted" } }), 3);
   assert.equal(MAX_LOOPS, 20);
 });
@@ -140,11 +140,13 @@ test("TC-LP9 history appends, reads back newest first, finds a run and keeps the
 
 test("TC-LP12 a slug turns the id into a readable handle, and the numeric form still parses", () => {
   assert.equal(loopIdForSlug("intake", "slack"), "intake-slack");
-  assert.equal(loopIdForSlug("media-archive", "discord"), "media-archive-discord");
+  assert.equal(loopIdForSlug("media-archive", "feishu"), "media-archive-feishu");
   assert.equal(loopIdForSlug("intake-", "slack"), "");
   assert.equal(platformOfLoopId("intake-slack"), "slack");
-  assert.equal(platformOfLoopId("media-archive-discord"), "discord");
-  assert.equal(platformOfLoopId("loop-mattermost-12"), "mattermost");
+  assert.equal(platformOfLoopId("media-archive-feishu"), "feishu");
+  assert.equal(platformOfLoopId("loop-telegram-12"), "telegram");
+  assert.equal(platformOfLoopId("media-archive-discord"), null);
+  assert.equal(isLoopId("media-archive-discord"), false);
   assert.equal(platformOfLoopId("intake"), null);
   assert.equal(platformOfLoopId("intake-slack-r3"), null);
   assert.equal(isLoopId("intake-slack"), true);

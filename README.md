@@ -91,7 +91,7 @@ The shape is enforced rather than documented: `--slug` is required, and the only
 
 The three schedules answer different questions and none replaces another: `every` schedules one interval after the previous round **started** (any duration, and "wait 30m after it finishes"); `at` fires once and leaves the loop `done`; `cron "<5 fields>"` fires on wall-clock minutes in `Asia/Shanghai` (`0 13 * * *` is every day at 13:00). Only one is set at a time — updating one clears the other two — and a cron loop never becomes `done`.
 
-Every round is a **fresh session**: the round's conversation key is `<loopId>-r<round>`, so nothing from the previous round leaks in. The round's output goes out through the **notice entry** with a conversation binding (`reply: { mode: "conversation", key }`), which is the one deliberate difference to an ordinary notice: a reply to it continues *that round's* session instead of opening a `notice-<id>` conversation. On discord the round message additionally gets a thread, and talking inside it lands on the same key.
+Every round is a **fresh session**: the round's conversation key is `<loopId>-r<round>`, so nothing from the previous round leaks in. The round's output goes out through the **notice entry** with a conversation binding (`reply: { mode: "conversation", key }`), which is the one deliberate difference to an ordinary notice: a reply to it continues *that round's* session instead of opening a `notice-<id>` conversation.
 
 A notice is never pruned on its own. A bound notice stores only its binding, not the body — the round's text already lives in the history file, and keeping a copy in the state file would mean rewriting it on every job change.
 
@@ -117,7 +117,7 @@ src/
 ├── runtime/                core loop, prompts, stall notice, instance lock
 ├── notices/                notice service (emit / match / prune)
 ├── prompts/                prompt sections (one file per block) + stall fragments
-└── platforms/              discord | feishu | mattermost | slack | telegram adapters + shared helpers
+└── platforms/              feishu | slack adapters + shared helpers
 ```
 
 Design rules:
@@ -150,23 +150,8 @@ Design rules:
 
 | platform | transport | reply identity |
 | --- | --- | --- |
-| discord | Gateway WebSocket (heartbeat + resume) | one thread per conversation: a message in the parent channel opens a thread, everything said inside it continues that conversation |
 | feishu | Lark WS long connection | `parent_id` / `root_id` |
-| mattermost | WebSocket events (`posted`) | `root_id` — the thread is the conversation |
 | slack | Socket Mode | `thread_ts` |
-| telegram | long polling | `reply_to_message.message_id` — a reply joins the conversation it answers |
-
-On telegram the group is a plain chat: every message from the allowed user is a
-turn, a plain message opens a conversation keyed by its own id, and replying to
-any message in that chain continues it — the relay answers with a reply, so the
-thread stays visible as quoting rather than as a separate topic.
-
-On discord the parent channel is only a door: a top-level message from the allowed
-user opens a thread named after its first line, and the thread channel id becomes
-the conversation key — so every topic is a thread, and replying inside it is enough
-to continue. Threads auto-archive after 7 days; the adapter unarchives before
-sending when a thread has gone quiet that long. `MESSAGE_CONTENT` must be enabled
-for the application, otherwise the gateway delivers messages with empty content.
 
 Adapter contract (`src/platforms/contract.mjs`): `name`, `start`, `reply`,
 `sessionFor` are required; `postNotice`, `postMedia`, `edit`, `onProgress`,
@@ -185,8 +170,7 @@ skipped by their hash.
 
 Attachments: feishu downloads message resources through the SDK, slack downloads
 `url_private_download` with the bot token — that token needs the `files:read` scope,
-and a 200 `text/html` body means the scope is missing, while discord messages already
-carry signed CDN urls that need no credential at all. All write into
+and a 200 `text/html` body means the scope is missing. All write into
 `uploads/<chat>/<yyyymmdd>/` and share the same limits (4 files, 20 MB each, 7-day
 retention) from `src/platforms/shared/uploads.mjs`; the landed paths reach the
 worker as `@path` arguments. `.slack-xoxc.tmp` is unrelated to this — it only feeds
@@ -199,11 +183,7 @@ sends every text chunk first and the images after, and only the adapters that im
 `postMedia` upload anything — slack walks `files.getUploadURLExternal` → upload →
 `files.completeUploadExternal` into the same thread, so that token also needs the
 `files:write` scope; without it the image degrades into a text note plus one alert.
-Discord is one request instead of three: `multipart/form-data` with `files[n]` parts
-and a `payload_json` part, posted into the current thread (or the parent channel as a
-reply), with images grouped so that no request carries more than 20 MB; a missing
-Attach Files permission or an oversized file degrades into the same kind of text note.
-Feishu and telegram keep the reference as plain text.
+Feishu keeps the reference as plain text.
 
 ## Run
 
@@ -217,7 +197,7 @@ Configuration lives in `~/.config/agent-relay/` (override with
 `AGENT_RELAY_CONFIG_DIR`):
 
 ```
-feishu.env | slack-app.env | telegram.env
+feishu.env | slack-app.env
 .slack-xoxc.tmp                     # slack root-text reads only
 relay-<platform>.json               # state: conversations, jobs, notices
 relay-<platform>.cmd/               # CLI → daemon command queue
@@ -248,7 +228,7 @@ Restart a running instance without killing the job that is doing the restart:
 ```bash
 git -C ~/code/agent-relay pull --ff-only
 bun scripts/install.mjs
-agent-relay-upgrade telegram
+agent-relay-upgrade feishu
 ```
 
 `scripts/relay-upgrade.sh` (linked as `agent-relay-upgrade`) does four things:
