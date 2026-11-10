@@ -5,7 +5,8 @@ export function roundKeyFor(loopId, round) {
 }
 
 export function roundTitle(loop, round) {
-  return `${loop.id} 第 ${round} 轮`;
+  const name = String(loop?.title ?? "").trim() || loop.id;
+  return `${name} · 第 ${round} 轮`;
 }
 
 export function truncateOutput(text, limit = MAX_OUTPUT_BYTES) {

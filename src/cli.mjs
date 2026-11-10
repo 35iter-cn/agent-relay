@@ -10,7 +10,7 @@ import { definePlatform, isPlatform, PLATFORMS } from "./platforms/contract.mjs"
 import { durationMs } from "./shared/duration.mjs";
 import { readJson } from "./shared/json.mjs";
 import { localStamp } from "./shared/time.mjs";
-import { MAX_LOOPS, MIN_EVERY_MS, canonicalPromptPath, isLoopId, loopIdForSlug, platformOfLoopId, validateLoopPromptSource, validateSchedule, validateSlug } from "./loops/model.mjs";
+import { MAX_LOOPS, MIN_EVERY_MS, canonicalPromptPath, isLoopId, loopIdForSlug, platformOfLoopId, validateLoopPromptSource, validateLoopTitle, validateSchedule, validateSlug } from "./loops/model.mjs";
 import { loopDueAt } from "./loops/schedule.mjs";
 import { validatePromptFile } from "./loops/prompt.mjs";
 import { loopHelp } from "./loops/help.mjs";
@@ -432,9 +432,11 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
     const at = typeof flags.at === "string" ? flags.at : null;
     const cron = typeof flags.cron === "string" ? flags.cron : null;
     const id = loopIdForSlug(slug, platform);
+    const title = typeof flags.title === "string" ? flags.title.trim() : null;
     const refused =
       validateSchedule({ every, at, cron }) ??
       (slug ? validateSlug(slug) : "slug-required") ??
+      validateLoopTitle(title) ??
       validateLoopPromptSource({ id, prompt: source.prompt, promptFile: source.promptFile, configDir: config.configDir, allowInline });
     if (refused) {
       refuse(refused);
@@ -456,6 +458,7 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
         loopAt: at,
         cron,
         thread: !flags["no-thread"],
+        title,
         createdBy: process.env.AGENT_RELAY_KEY ?? null,
       },
       platform,
@@ -535,6 +538,15 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
       command.prompt = source.prompt ?? "";
       command.promptFile = source.promptFile ?? null;
       command.promptInline = !source.promptFile && Boolean(source.prompt);
+    }
+    if (flags.title !== undefined) {
+      const title = String(flags.title).trim();
+      const refused = validateLoopTitle(title);
+      if (refused) {
+        refuse(refused);
+        return;
+      }
+      command.title = title;
     }
     if (flags.thread !== undefined || flags["no-thread"] !== undefined) command.thread = !flags["no-thread"];
     await send(command, owner);

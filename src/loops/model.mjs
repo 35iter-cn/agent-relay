@@ -74,6 +74,17 @@ export function validatePrompt(prompt) {
   return Buffer.byteLength(body) > MAX_PROMPT_BYTES ? "prompt-too-long" : null;
 }
 
+export function normalizeLoopTitle(title) {
+  const value = String(title ?? "").trim();
+  return value || null;
+}
+
+export function validateLoopTitle(title) {
+  const value = normalizeLoopTitle(title);
+  if (!value) return null;
+  return Buffer.byteLength(value) > MAX_TITLE_BYTES ? "title-too-long" : null;
+}
+
 export function canonicalPromptPath(configDir, id) {
   return join(String(configDir ?? ""), "prompts", "loops", String(id ?? ""), "prompt.md");
 }
@@ -101,11 +112,12 @@ export function validateLoopChange(change = {}) {
   return refused ?? null;
 }
 
-export function createLoop({ id, prompt, promptFile = null, promptInline = false, every = null, at = null, cron = null, thread = true, createdBy = null, nowIso }) {
+export function createLoop({ id, prompt, promptFile = null, promptInline = false, every = null, at = null, cron = null, thread = true, title = null, createdBy = null, nowIso }) {
   const file = String(promptFile ?? "").trim();
   const text = file ? "" : String(prompt ?? "").trim();
   return {
     id,
+    title: normalizeLoopTitle(title),
     prompt: text,
     promptFile: file || null,
     promptInline: file ? false : Boolean(promptInline && text),

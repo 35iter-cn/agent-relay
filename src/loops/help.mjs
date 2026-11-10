@@ -4,7 +4,7 @@ export const LOOP_VERBS = [
   {
     verb: "create",
     usage:
-      'loop create --platform <p> --slug <name> (--every <dur> | --at <iso> | --cron "<expr>") --prompt-file <path> [--no-thread]',
+      'loop create --platform <p> --slug <name> (--every <dur> | --at <iso> | --cron "<expr>") --prompt-file <path> [--title <text>] [--no-thread]',
     detail: [
       "三种 schedule 互斥，恰好给一个。",
       "  --every <dur>     间隔，下一轮从上一轮实际起跑时刻算起（30m / 2h），最小 10 分钟",
@@ -14,6 +14,7 @@ export const LOOP_VERBS = [
       "--slug <name> 必填：id = <name>-<platform>（如 intake-slack）。先写 prompt.md，再建 loop。",
       "路径不在那个目录下会被 refused: prompt-file-not-canonical；内联 --prompt 需要 --allow-inline。",
       "每轮是新会话，输出作为一条消息发出；只输出 NOOP（或什么都不输出）的轮次不发消息。",
+      "--title <text> 每轮消息头的可读名字（≤80 字节，如「每日简报」）。不给就回落到 loop id。",
       "--no-thread 不给轮次消息开 thread（默认开，平台支持才生效）。",
     ],
     example: 'agent-relay loop create --platform slack --slug intake --cron "*/30 * * * *" --prompt-file ~/.config/agent-relay/prompts/loops/intake-slack/prompt.md',
@@ -22,11 +23,12 @@ export const LOOP_VERBS = [
   { verb: "show", usage: "loop show <id>", detail: ["打一条 loop 的定义、状态、下一次触发点与最近一轮结果。"] },
   {
     verb: "update",
-    usage: 'loop update <id> [--every <dur> | --at <iso> | --cron "<expr>" | --prompt-file <path> | --prompt <text> --allow-inline | --thread | --no-thread]',
+    usage: 'loop update <id> [--every <dur> | --at <iso> | --cron "<expr>" | --prompt-file <path> | --prompt <text> --allow-inline | --title <text> | --thread | --no-thread]',
     detail: [
       "给任意一种 schedule 就会替换全部三种（--every 会清掉 --cron，反之亦然）。",
       "只改 prompt 时 schedule 与 lastRunAt 不动；done 的 loop 改了 schedule 会自动回到 armed。",
       "--prompt-file 只存路径、每轮现读，切换时清掉内联文本；改回内联要加 --allow-inline。",
+      "--title 改每轮消息头的名字，--title \"\" 清空并回落到 loop id。",
     ],
     example: "agent-relay loop update media-archive-feishu --cron \"0 13 * * *\"",
   },
