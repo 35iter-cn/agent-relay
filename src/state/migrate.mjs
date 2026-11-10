@@ -7,7 +7,6 @@ import { emptyState } from "./schema.mjs";
 const LEGACY = {
   feishu: { file: "feishud.json", migrate: migrateFeishu },
   slack: { file: "slackd.json", migrate: migrateSlack },
-  telegram: { file: "tgd.json", migrate: migrateTelegram },
 };
 
 export function emptyRelayState() {
@@ -36,20 +35,6 @@ function migrateFeishu(legacy) {
     convs: legacy.convs ?? {},
     alerts: {},
     meta: {},
-  };
-}
-
-function migrateTelegram(legacy) {
-  return {
-    cursor: legacy.offset ?? null,
-    seen: {},
-    convs: legacy.convs ?? {},
-    alerts: legacy.alerts ?? {},
-    meta: {
-      alias: legacy.alias ?? {},
-      channelPosts: legacy.channelPosts ?? {},
-      lastConv: legacy.lastConv ?? null,
-    },
   };
 }
 
@@ -86,7 +71,7 @@ if (import.meta.main) {
   const platform = process.argv[2];
   const stateDir = process.env.TASKRADAR_CONFIG ?? join(process.env.HOME, ".config/taskradar");
   if (!platform) {
-    process.stderr.write("usage: migrate-state.mjs <feishu|slack|telegram> [--dry-run]\n");
+    process.stderr.write(`usage: migrate-state.mjs <${Object.keys(LEGACY).join("|")}> [--dry-run]\n`);
     process.exit(2);
   }
   const result = migrate({ platform, stateDir, dryRun: process.argv.includes("--dry-run") });

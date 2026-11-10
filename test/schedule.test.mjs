@@ -11,7 +11,6 @@ import { pruneState } from "../src/state/prune.mjs";
 import { createJob } from "../src/jobs/model.mjs";
 import { definePlatform } from "../src/platforms/contract.mjs";
 import { createPlatform as createSlack } from "../src/platforms/slack.mjs";
-import { createPlatform as createDiscord } from "../src/platforms/discord.mjs";
 import { writeJsonAtomic } from "../src/shared/json.mjs";
 
 function fakeChild({ stdout = "", code = 0 } = {}) {
@@ -280,7 +279,7 @@ test("TC-SJ13 a platform without selfContext cannot be scheduled", async () => {
   assert.deepEqual(core.scheduleJob({ ...brief({ dedupe: "no-ctx" }), dueAt: null }), { rejected: "platform" });
 });
 
-test("TC-SJ14 slack and discord address a thread without a message; contract keeps selfContext optional", () => {
+test("TC-SJ14 slack addresses a thread without a message; contract keeps selfContext optional", () => {
   const slack = createSlack({
     config: {
       readEnv: () => ({ SLACK_APP_TOKEN: "xapp", SLACK_BOT_TOKEN: "xoxb", AGENT_RELAY_SLACK_CHANNEL: "C1", AGENT_RELAY_ALLOWED_USER: "U1" }),
@@ -292,17 +291,6 @@ test("TC-SJ14 slack and discord address a thread without a message; contract kee
   });
   assert.deepEqual(slack.selfContext("1793850902.242119"), { chatId: "C1", threadId: null, replyTo: "1793850902.242119" });
 
-  const discord = createDiscord({
-    config: {
-      readEnv: () => ({ AGENT_RELAY_DISCORD_TOKEN: "token", AGENT_RELAY_DISCORD_CHANNEL: "500", AGENT_RELAY_ALLOWED_USER: "42" }),
-      envFile: (name) => `/nonexistent/${name}`,
-      home: tmpdir(),
-      configDir: tmpdir(),
-    },
-    log: () => {},
-  });
-  assert.deepEqual(discord.selfContext("t901"), { chatId: "901", threadId: "901", replyTo: null });
-  assert.equal(discord.selfContext("nonsense"), null);
 
   const base = { name: "slack", start: () => {}, reply: () => {}, sessionFor: (key) => key };
   assert.doesNotThrow(() => definePlatform(base));

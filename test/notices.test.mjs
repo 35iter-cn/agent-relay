@@ -15,13 +15,14 @@ test("matchNotice resolves a reply id to the newest matching notice only", () =>
   const notices = {
     "ntc-1": { id: "ntc-1", platform: "feishu", messageId: "m-1", sentAt: iso(1) },
     "ntc-2": { id: "ntc-2", platform: "feishu", messageId: "m-1", sentAt: iso(2) },
-    "ntc-3": { id: "ntc-3", platform: "slack", messageId: "m-1", sentAt: iso(3) },
+    "ntc-3": { id: "ntc-3", platform: "slack", messageId: "m-9", sentAt: iso(3) },
     "ntc-4": { id: "ntc-4", platform: "feishu", messageId: null, sentAt: iso(4) },
   };
   assert.equal(matchNotice(notices, "feishu", ["m-1"]).id, "ntc-2");
   assert.equal(matchNotice(notices, "feishu", ["m-2"]), null);
   assert.equal(matchNotice(notices, "feishu", []), null);
-  assert.equal(matchNotice(notices, "telegram", ["m-1"]), null);
+  assert.equal(matchNotice(notices, "feishu", ["m-9"]), null);
+  assert.equal(matchNotice(notices, "slack", ["m-9"]).id, "ntc-3");
 });
 
 test("TC-NT3 a conversation binding keeps no text or prompt, a prompt notice keeps both", async () => {

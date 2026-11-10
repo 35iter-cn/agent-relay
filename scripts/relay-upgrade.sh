@@ -3,7 +3,7 @@ set -euo pipefail
 
 platform="${1:-}"
 if [[ -z "$platform" ]]; then
-  echo "usage: relay-upgrade.sh <feishu|slack|telegram>" >&2
+  echo "usage: relay-upgrade.sh <feishu|slack>" >&2
   exit 2
 fi
 

@@ -28,7 +28,7 @@ export const LOOP_VERBS = [
       "只改 prompt 时 schedule 与 lastRunAt 不动；done 的 loop 改了 schedule 会自动回到 armed。",
       "--prompt-file 只存路径、每轮现读，切换时清掉内联文本；改回内联要加 --allow-inline。",
     ],
-    example: "agent-relay loop update loop-discord-1 --cron \"0 13 * * *\"",
+    example: "agent-relay loop update media-archive-feishu --cron \"0 13 * * *\"",
   },
   { verb: "pause", usage: "loop pause <id>", detail: ["停掉定时，正在跑的一轮照常收尾。"] },
   { verb: "resume", usage: "loop resume <id>", detail: ["重新进入调度，并按当前 schedule 算下一次；failStreak 归零。"] },

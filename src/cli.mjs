@@ -29,7 +29,7 @@ export function usage(stream = process.stderr) {
   stream.write(
     [
       "usage:",
-      "  agent-relay serve <discord|feishu|mattermost|slack|telegram>",
+      `  agent-relay serve <${PLATFORMS.join("|")}>`,
       "  agent-relay notice emit --platform <p> (--text <text> | --text-file <path>) [--title <text>] [--prompt <text> | --prompt-file <path>] [--reply-mode conversation --reply-key <key>]",
       "  agent-relay stall <platform> <cancel|restart> <key> [text]",
       "  agent-relay job help | agent-relay job start|cancel|list|redeliver …",

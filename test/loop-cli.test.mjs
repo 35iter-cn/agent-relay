@@ -107,20 +107,20 @@ test("TC-LC1 create validates before dispatch and routes to the requested platfo
 
 test("TC-LC2 the platform defaults to AGENT_RELAY_PLATFORM and the loop id decides the owner", async () => {
   const config = makeConfig();
-  seed(config, "discord", { "loop-discord-3": loopOf({ id: "loop-discord-3", lastRunAt: new Date().toISOString() }) });
+  seed(config, "feishu", { "loop-feishu-3": loopOf({ id: "loop-feishu-3", lastRunAt: new Date().toISOString() }) });
   seed(config, "slack", {});
   const sent = [];
   const env = { AGENT_RELAY_PLATFORM: "slack" };
   assert.equal(loopPlatform({}, env), "slack");
   assert.equal(loopPlatform({}, {}), "");
-  assert.equal(loopPlatform({ platform: "discord" }, env), "discord");
+  assert.equal(loopPlatform({ platform: "feishu" }, env), "feishu");
   const created = await run(["create", "--every", "30m", "--slug", "probe", "--prompt", "p", "--allow-inline"], config, sent, env);
   assert.equal(created.code, 0);
   assert.equal(sent.at(-1).platform, "slack");
-  const paused = await run(["pause", "loop-discord-3"], config, sent);
+  const paused = await run(["pause", "loop-feishu-3"], config, sent);
   assert.equal(paused.code, 0);
-  assert.equal(sent.at(-1).platform, "discord");
-  assert.deepEqual(sent.at(-1).command, { op: "loop-state", id: "loop-discord-3", state: "paused" });
+  assert.equal(sent.at(-1).platform, "feishu");
+  assert.deepEqual(sent.at(-1).command, { op: "loop-state", id: "loop-feishu-3", state: "paused" });
 });
 
 test("TC-LC3 an unknown or deleted loop is refused instead of dispatched", async () => {
@@ -160,9 +160,9 @@ test("TC-LC5 list merges platforms, marks overdue loops and hides deleted ones u
     "loop-slack-1": loopOf({ id: "loop-slack-1", lastRunAt: stale, lastOutcome: "ok", lastRound: 4 }),
     "loop-slack-2": loopOf({ id: "loop-slack-2", state: "deleted" }),
   });
-  seed(config, "discord", { "loop-discord-1": loopOf({ id: "loop-discord-1", every: null, at: new Date(Date.now() + 3_600_000).toISOString() }) });
-  const rows = listLoopRows(config, ["discord", "slack"]);
-  assert.deepEqual(rows.map((row) => row.id), ["loop-discord-1", "loop-slack-1"]);
+  seed(config, "feishu", { "loop-feishu-1": loopOf({ id: "loop-feishu-1", every: null, at: new Date(Date.now() + 3_600_000).toISOString() }) });
+  const rows = listLoopRows(config, ["slack", "feishu"]);
+  assert.deepEqual(rows.map((row) => row.id), ["loop-feishu-1", "loop-slack-1"]);
   assert.equal(rows.find((row) => row.id === "loop-slack-1").overMs > 5 * 60_000, true);
   const lines = formatLoopRows(rows);
   assert.equal(lines.length, 2);
