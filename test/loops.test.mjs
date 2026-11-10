@@ -15,6 +15,7 @@ import {
   platformOfLoopId,
   validateLoopPrompt,
   validateLoopPromptSource,
+  validateLoopTitle,
   validatePrompt,
   validateSchedule,
   validateSlug,
@@ -90,7 +91,8 @@ test("TC-LP6 a tick skips on state, schedule, a running round, the worker ceilin
 
 test("TC-LP7 a round key is derived from the loop id and the round number", () => {
   assert.equal(roundKeyFor("loop-slack-3", 12), "loop-slack-3-r12");
-  assert.equal(roundTitle({ id: "loop-slack-3" }, 12), "loop-slack-3 第 12 轮");
+  assert.equal(roundTitle({ id: "loop-slack-3" }, 12), "loop-slack-3 · 第 12 轮");
+  assert.equal(roundTitle({ id: "loop-slack-3", title: "每日简报" }, 12), "每日简报 · 第 12 轮");
   assert.equal(truncateOutput("abc"), "abc");
   const big = "轮".repeat(20_000);
   assert.ok(Buffer.byteLength(truncateOutput(big)) <= 32 * 1024);
@@ -197,4 +199,17 @@ test("TC-LP14 the prompt source is refused unless it is the canonical file for t
   assert.equal(validateLoopPromptSource({ id, prompt: "x".repeat(4097), configDir: dir, allowInline: true }), "prompt-too-long");
   assert.equal(validateLoopPromptSource({ id, configDir: dir }), "empty-prompt");
   assert.equal(validateLoopPromptSource({ id: "not-a-loop", promptFile: canonical, configDir: dir }), "bad-loop-id");
+});
+
+test("TC-LP15 a loop carries a readable title, bounded and cleared by the caller", () => {
+  assert.equal(validateLoopTitle(null), null);
+  assert.equal(validateLoopTitle("  "), null, "blank means no title, not an empty one");
+  assert.equal(validateLoopTitle("每日简报"), null);
+  assert.equal(validateLoopTitle("日".repeat(26)), null, "78 bytes fit under the eighty-byte ceiling");
+  assert.equal(validateLoopTitle("日".repeat(27)), "title-too-long");
+
+  const loop = createLoop({ id: "daily-briefing-slack", prompt: "跑一轮", every: "24h", title: " 每日简报 ", nowIso: "2026-11-10T00:00:00.000Z" });
+  assert.equal(loop.title, "每日简报", "the stored title is trimmed");
+  const bare = createLoop({ id: "intake-slack", prompt: "扫一轮", every: "30m", nowIso: "2026-11-10T00:00:00.000Z" });
+  assert.equal(bare.title, null, "a loop without a title stores null and falls back to its id at render time");
 });

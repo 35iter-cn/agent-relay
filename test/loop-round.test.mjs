@@ -128,7 +128,7 @@ test("TC-LR1 a due loop starts a round in a fresh session and posts it to the ch
   assert.equal(core.state.loops["loop-fake-1"].lastOutcome, "ok");
   assert.equal(replies.length, 1);
   assert.equal(replies[0].key, "notice");
-  assert.equal(replies[0].text, "📣📣📣 播报\n轮次输出");
+  assert.equal(replies[0].text, "📣📣📣 loop-fake-1 · 第 1 轮\n轮次输出");
   const notice = core.state.notices[Object.keys(core.state.notices)[0]];
   assert.equal(notice.messageId, replies[0].messageId);
   assert.deepEqual(notice.reply, { mode: "conversation", key: "loop-fake-1-r1" });
@@ -252,7 +252,7 @@ test("TC-LR8 the thread hook receives the round key and is optional", async () =
   assert.equal(calls.length, 1);
   assert.equal(calls[0].key, "loop-fake-1-r1");
   assert.equal(calls[0].messageId, "n-1");
-  assert.match(calls[0].name, /loop-fake-1 第 1 轮/);
+  assert.match(calls[0].name, /loop-fake-1 · 第 1 轮/);
 
   const plain = harness({ state: { loops: { "loop-fake-1": seededLoop({ thread: false }) } }, adapterOverrides: { openRoundThread: async (args) => (calls.push(args), null) } });
   await plain.core.startDueLoops();
@@ -517,4 +517,22 @@ test("TC-LR19 an unreadable prompt file fails the round, posts nothing and count
   const rounds = listRounds(config.loopHistoryDir, "loop-fake-1");
   assert.equal(rounds[0].outcome, "failed");
   assert.equal(rounds[0].error, "prompt-unreadable");
+});
+
+test("TC-LR22 the delivered header names the loop by its title and the thread uses the same name", async () => {
+  const calls = [];
+  const { core, replies } = harness({
+    state: { loops: { "loop-fake-1": seededLoop({ title: "每日简报" }) } },
+    adapterOverrides: { openRoundThread: async (args) => (calls.push(args), { threadId: "t-9", key: args.key }) },
+  });
+  await core.startDueLoops();
+  await settle();
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].text, "📣📣📣 每日简报 · 第 1 轮\n轮次输出");
+  assert.equal(calls[0].name, "每日简报 · 第 1 轮", "the thread name and the notice header agree");
+
+  const cleared = harness({ state: { loops: { "loop-fake-1": seededLoop({ title: null }) } } });
+  await cleared.core.startDueLoops();
+  await settle();
+  assert.equal(cleared.replies[0].text, "📣📣📣 loop-fake-1 · 第 1 轮\n轮次输出", "no title falls back to the id");
 });

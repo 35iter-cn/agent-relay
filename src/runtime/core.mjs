@@ -21,7 +21,7 @@ import { createNoticeService } from "../notices/service.mjs";
 import { NOTICE_TITLES } from "../notices/title.mjs";
 import { RESTART_PROMPT, stallNoticePrompt, stallNoticeText } from "./stall-notice.mjs";
 import { createPrompts } from "./prompts.mjs";
-import { activeLoopCount, createLoop, isLoopId, platformOfLoopId, validateLoopChange, validateLoopPromptSource, validateSchedule } from "../loops/model.mjs";
+import { activeLoopCount, createLoop, isLoopId, normalizeLoopTitle, platformOfLoopId, validateLoopChange, validateLoopPromptSource, validateLoopTitle, validateSchedule } from "../loops/model.mjs";
 import { resolveLoopPrompt } from "../loops/prompt.mjs";
 import { LOOP_ROUNDS_PER_HOUR, loopLateMs, roundSkipReason, roundsInLastHour } from "../loops/schedule.mjs";
 import { roundKeyFor, roundTitle, truncateOutput } from "../loops/round.mjs";
@@ -1129,6 +1129,7 @@ export function createCore({ adapter, config, deps = {} }) {
     job.lateMs = lateMs;
     job.loop = {
       id: loop.id,
+      title: loop.title ?? null,
       round,
       prompt: source.text ?? "",
       promptFile: loop.promptFile ?? null,
@@ -1176,7 +1177,11 @@ export function createCore({ adapter, config, deps = {} }) {
     }
     for (let attempt = 1; attempt <= MAX_DELIVERY_ATTEMPTS; attempt += 1) {
       try {
-        const notice = await notices.emit({ text, title: NOTICE_TITLES.round, reply: { mode: "conversation", key: job.key } });
+        const notice = await notices.emit({
+          text,
+          title: roundTitle(job.loop, job.loop.round),
+          reply: { mode: "conversation", key: job.key },
+        });
         job.noticeId = notice.id;
         job.parts = [{ i: 0, messageId: notice.messageId ?? null, hash: hashOf(text), sentAt: isoNow() }];
         job.status = "done";
@@ -1311,6 +1316,7 @@ export function createCore({ adapter, config, deps = {} }) {
       const allowInline = Boolean(command.promptInline);
       const refused =
         validateSchedule({ every: command.every, at: command.loopAt, cron: command.cron }) ??
+        validateLoopTitle(command.title) ??
         validateLoopPromptSource({ id, prompt: command.prompt, promptFile, configDir: config.configDir, allowInline });
       if (refused) return { op, refused };
       if (loops[id]) return { op, refused: "duplicate", id };
@@ -1324,6 +1330,7 @@ export function createCore({ adapter, config, deps = {} }) {
         at: command.loopAt ?? null,
         cron: command.cron ?? null,
         thread: command.thread !== false,
+        title: command.title ?? null,
         createdBy: command.createdBy ?? null,
         nowIso: isoNow(),
       });
@@ -1371,6 +1378,11 @@ export function createCore({ adapter, config, deps = {} }) {
           loop.prompt = String(command.prompt ?? "").trim();
           loop.promptInline = Boolean(loop.prompt);
         }
+      }
+      if (command.title !== undefined) {
+        const refused = validateLoopTitle(command.title);
+        if (refused) return { op, refused };
+        loop.title = normalizeLoopTitle(command.title);
       }
       if (command.thread !== undefined) loop.thread = command.thread !== false;
       save();

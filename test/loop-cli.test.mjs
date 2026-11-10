@@ -337,3 +337,27 @@ test("TC-LC10 show and list name the prompt file instead of pretending to carry 
   assert.equal(rows.length, 1);
   assert.match(rows[0], new RegExp(file.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
 });
+
+test("TC-LC13 --title rides along on create and update, and an oversized one is refused", async () => {
+  const config = makeConfig();
+  seed(config, "slack", { "daily-briefing-slack": loopOf({ id: "daily-briefing-slack" }) });
+  const file = promptFileFor(config, "digest-slack");
+  const sent = [];
+
+  const created = await run(["create", "--platform", "slack", "--cron", "0 8 * * *", "--slug", "digest", "--prompt-file", file, "--title", "每日简报"], config, sent);
+  assert.equal(created.code, 0);
+  assert.equal(sent.at(-1).command.title, "每日简报");
+
+  const renamed = await run(["update", "daily-briefing-slack", "--title", "早报"], config, sent);
+  assert.equal(renamed.code, 0);
+  assert.equal(sent.at(-1).command.title, "早报");
+
+  const cleared = await run(["update", "daily-briefing-slack", "--title", ""], config, sent);
+  assert.equal(cleared.code, 0);
+  assert.equal(sent.at(-1).command.title, "", "an empty flag clears the title so the id takes over");
+
+  const tooLong = await run(["update", "daily-briefing-slack", "--title", "日".repeat(27)], config, sent);
+  assert.equal(tooLong.code, 3);
+  assert.match(tooLong.out, /refused: title-too-long/);
+  assert.equal(sent.at(-1).command.title, "", "a refused title is never dispatched");
+});
