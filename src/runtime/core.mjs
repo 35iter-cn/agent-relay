@@ -938,37 +938,41 @@ export function createCore({ adapter, config, deps = {} }) {
     const canEdit = typeof adapter.edit === "function";
     let touched = 0;
     for (const job of Object.values(state.jobs)) {
-      if (isFinished(job) || job.status === "interrupted") {
-        if (state.inbox.includes(job.id)) state.inbox = state.inbox.filter((id) => id !== job.id);
-        continue;
-      }
-      if (job.instanceId === instanceId) continue;
-      const action = nextAction(job, { canEdit, chunkLimit: adapter.chunkLimit, media: mediaFor(job), readStartTicks, probeAlive });
-      if (action.type === "none") continue;
-      if (action.type === "rerun") {
-        if (!state.inbox.includes(job.id)) state.inbox.push(job.id);
+      try {
+        if (isFinished(job) || job.status === "interrupted") {
+          if (state.inbox.includes(job.id)) state.inbox = state.inbox.filter((id) => id !== job.id);
+          continue;
+        }
+        if (job.instanceId === instanceId) continue;
+        const action = nextAction(job, { canEdit, chunkLimit: adapter.chunkLimit, media: mediaFor(job), readStartTicks, probeAlive });
+        if (action.type === "none") continue;
+        if (action.type === "rerun") {
+          if (!state.inbox.includes(job.id)) state.inbox.push(job.id);
+          touched += 1;
+          continue;
+        }
+        if (action.type === "reap-then-interrupt") {
+          await reapWorker(action.pid);
+          await interrupt(job);
+          touched += 1;
+          continue;
+        }
+        if (action.type === "interrupt") {
+          await interrupt(job);
+          touched += 1;
+          continue;
+        }
+        if (action.type === "resend") {
+          await deliver(job);
+          touched += 1;
+          continue;
+        }
+        job.answer = undefined;
+        job.progress = null;
         touched += 1;
-        continue;
+      } catch (error) {
+        log("error", "recover-job", job.id, String(error?.message ?? error));
       }
-      if (action.type === "reap-then-interrupt") {
-        await reapWorker(action.pid);
-        await interrupt(job);
-        touched += 1;
-        continue;
-      }
-      if (action.type === "interrupt") {
-        await interrupt(job);
-        touched += 1;
-        continue;
-      }
-      if (action.type === "resend") {
-        await deliver(job);
-        touched += 1;
-        continue;
-      }
-      job.answer = undefined;
-      job.progress = null;
-      touched += 1;
     }
     if (touched) save();
     drainInbox();

@@ -729,6 +729,55 @@ test("TC-21d a dispatched job records the dispatching instance", async () => {
   assert.equal(job.instanceId, "inst-1");
 });
 
+test("TC-21e recover leaves a live worker this process dispatched alone", async () => {
+  const killed = [];
+  const state = jobState({ lease: { pid: 4242, startTicks: "777", startedAt: 0 } });
+  state.jobs["job-1"].instanceId = "inst-1";
+  const { core, replies } = harness({
+    state,
+    deps: {
+      instanceId: "inst-1",
+      readStartTicks: () => "777",
+      kill: (target, signal) => killed.push([target, signal]),
+      probeAlive: () => true,
+      stallGraceMs: 200,
+    },
+  });
+  assert.equal(await core.recover(), 0);
+  assert.deepEqual(killed, [], "a live worker of a round this process dispatched is not stopped");
+  assert.equal(core.state.jobs["job-1"].status, "running");
+  assert.equal(core.state.jobs["job-1"].noticeSent, false);
+  assert.equal(replies.length, 0);
+});
+
+test("TC-21f one job that fails to settle does not leave the rest of recover unrun", async () => {
+  const state = jobState({ lease: { pid: 4242, startTicks: "777", startedAt: 0 } });
+  const second = structuredClone(state.jobs["job-1"]);
+  second.id = "job-2";
+  second.key = "th-xyz";
+  second.session = "fs-th-xyz";
+  second.lease = { pid: null, startTicks: null, startedAt: 0 };
+  state.jobs["job-2"] = second;
+  state.convs["th-xyz"] = { session: "fs-th-xyz", rootText: "hello", lastMsgTs: "", activeJob: "job-2" };
+  const { core, replies } = harness({
+    state,
+    deps: {
+      instanceId: "inst-1",
+      readStartTicks: (pid) => {
+        if (pid === 4242) throw new Error("boom");
+        return "777";
+      },
+      kill: () => {},
+      probeAlive: () => true,
+      stallGraceMs: 200,
+    },
+  });
+  assert.equal(await core.recover(), 1);
+  assert.equal(core.state.jobs["job-1"].status, "running", "the job that failed is left for the next restart");
+  assert.equal(core.state.jobs["job-2"].status, "interrupted");
+  assert.equal(replies.length, 1);
+});
+
 test("TC-22 a live orphan worker is stopped before the run is reported", async () => {
   const killed = [];
   let alive = true;

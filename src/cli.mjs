@@ -341,19 +341,19 @@ async function serve(platform, config, log) {
   const boot = async () => {
     if (booted) return;
     booted = true;
+    setInterval(tick, 15_000).unref();
     try {
       await core.recover();
     } catch (error) {
       log("error", "recover", String(error?.stack ?? error));
     }
-    await tick();
-    setInterval(tick, 15_000).unref();
+    tick();
   };
   await adapter.start({
     onMessage: (inbound) => core.handle(inbound),
     onReady: () => {
       core.onReady().catch((error) => log("error", "boot-notice", String(error?.stack ?? error)));
-      boot().catch((error) => log("error", "recover", String(error?.stack ?? error)));
+      boot().catch((error) => log("error", "boot", String(error?.stack ?? error)));
     },
     core,
   });
