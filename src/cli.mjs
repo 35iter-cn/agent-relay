@@ -337,13 +337,23 @@ async function serve(platform, config, log) {
       .then(() => core.startDueJobs())
       .then(() => core.startDueLoops())
       .catch((error) => log("error", "command", String(error?.stack ?? error)));
-  tick();
-  setInterval(tick, 15_000).unref();
+  let booted = false;
+  const boot = async () => {
+    if (booted) return;
+    booted = true;
+    setInterval(tick, 15_000).unref();
+    try {
+      await core.recover();
+    } catch (error) {
+      log("error", "recover", String(error?.stack ?? error));
+    }
+    tick();
+  };
   await adapter.start({
     onMessage: (inbound) => core.handle(inbound),
     onReady: () => {
       core.onReady().catch((error) => log("error", "boot-notice", String(error?.stack ?? error)));
-      core.recover().catch((error) => log("error", "recover", String(error?.stack ?? error)));
+      boot().catch((error) => log("error", "boot", String(error?.stack ?? error)));
     },
     core,
   });

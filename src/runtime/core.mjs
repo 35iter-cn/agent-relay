@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { spawn as spawnProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { runPrintWorker } from "./worker-print.mjs";
 import { createRpcWorker, expandAttachments } from "./worker-rpc.mjs";
 import { join } from "node:path";
@@ -47,6 +48,7 @@ export const DELIVERY_BACKOFF_MS = [1_500, 5_000, 15_000];
 
 export function createCore({ adapter, config, deps = {} }) {
   const now = deps.now ?? (() => Date.now());
+  const instanceId = deps.instanceId ?? randomUUID();
   const spawn = deps.spawn ?? spawnProcess;
   const readStartTicks = deps.readStartTicks ?? readProcStartTicks;
   const readBootIdImpl = deps.readBootId ?? readBootId;
@@ -863,6 +865,7 @@ export function createCore({ adapter, config, deps = {} }) {
     entry.activeJob = job.id;
     state.convs[job.key] = entry;
     job.status = "running";
+    job.instanceId = instanceId;
     job.lease = { pid: null, startTicks: null, startedAt: now() };
     job.updatedAt = isoNow();
     running.add(job.id);
@@ -935,36 +938,41 @@ export function createCore({ adapter, config, deps = {} }) {
     const canEdit = typeof adapter.edit === "function";
     let touched = 0;
     for (const job of Object.values(state.jobs)) {
-      if (isFinished(job) || job.status === "interrupted") {
-        if (state.inbox.includes(job.id)) state.inbox = state.inbox.filter((id) => id !== job.id);
-        continue;
-      }
-      const action = nextAction(job, { canEdit, chunkLimit: adapter.chunkLimit, media: mediaFor(job), readStartTicks, probeAlive });
-      if (action.type === "none") continue;
-      if (action.type === "rerun") {
-        if (!state.inbox.includes(job.id)) state.inbox.push(job.id);
+      try {
+        if (isFinished(job) || job.status === "interrupted") {
+          if (state.inbox.includes(job.id)) state.inbox = state.inbox.filter((id) => id !== job.id);
+          continue;
+        }
+        if (job.instanceId === instanceId) continue;
+        const action = nextAction(job, { canEdit, chunkLimit: adapter.chunkLimit, media: mediaFor(job), readStartTicks, probeAlive });
+        if (action.type === "none") continue;
+        if (action.type === "rerun") {
+          if (!state.inbox.includes(job.id)) state.inbox.push(job.id);
+          touched += 1;
+          continue;
+        }
+        if (action.type === "reap-then-interrupt") {
+          await reapWorker(action.pid);
+          await interrupt(job);
+          touched += 1;
+          continue;
+        }
+        if (action.type === "interrupt") {
+          await interrupt(job);
+          touched += 1;
+          continue;
+        }
+        if (action.type === "resend") {
+          await deliver(job);
+          touched += 1;
+          continue;
+        }
+        job.answer = undefined;
+        job.progress = null;
         touched += 1;
-        continue;
+      } catch (error) {
+        log("error", "recover-job", job.id, String(error?.message ?? error));
       }
-      if (action.type === "reap-then-interrupt") {
-        await reapWorker(action.pid);
-        await interrupt(job);
-        touched += 1;
-        continue;
-      }
-      if (action.type === "interrupt") {
-        await interrupt(job);
-        touched += 1;
-        continue;
-      }
-      if (action.type === "resend") {
-        await deliver(job);
-        touched += 1;
-        continue;
-      }
-      job.answer = undefined;
-      job.progress = null;
-      touched += 1;
     }
     if (touched) save();
     drainInbox();
