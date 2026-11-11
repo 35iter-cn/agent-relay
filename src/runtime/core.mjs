@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
 import { spawn as spawnProcess } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { runPrintWorker } from "./worker-print.mjs";
 import { createRpcWorker, expandAttachments } from "./worker-rpc.mjs";
 import { join } from "node:path";
@@ -47,6 +48,7 @@ export const DELIVERY_BACKOFF_MS = [1_500, 5_000, 15_000];
 
 export function createCore({ adapter, config, deps = {} }) {
   const now = deps.now ?? (() => Date.now());
+  const instanceId = deps.instanceId ?? randomUUID();
   const spawn = deps.spawn ?? spawnProcess;
   const readStartTicks = deps.readStartTicks ?? readProcStartTicks;
   const readBootIdImpl = deps.readBootId ?? readBootId;
@@ -863,6 +865,7 @@ export function createCore({ adapter, config, deps = {} }) {
     entry.activeJob = job.id;
     state.convs[job.key] = entry;
     job.status = "running";
+    job.instanceId = instanceId;
     job.lease = { pid: null, startTicks: null, startedAt: now() };
     job.updatedAt = isoNow();
     running.add(job.id);
@@ -939,6 +942,7 @@ export function createCore({ adapter, config, deps = {} }) {
         if (state.inbox.includes(job.id)) state.inbox = state.inbox.filter((id) => id !== job.id);
         continue;
       }
+      if (job.instanceId === instanceId) continue;
       const action = nextAction(job, { canEdit, chunkLimit: adapter.chunkLimit, media: mediaFor(job), readStartTicks, probeAlive });
       if (action.type === "none") continue;
       if (action.type === "rerun") {

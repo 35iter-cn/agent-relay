@@ -697,6 +697,38 @@ test("TC-21 a restart reports an interrupted run instead of rerunning it", async
   assert.equal(replies.length, 1);
 });
 
+test("TC-21b recover leaves a job this process just dispatched alone", async () => {
+  const state = jobState({ lease: { pid: null, startTicks: null, startedAt: 0 } });
+  state.jobs["job-1"].instanceId = "inst-1";
+  const { core, replies } = harness({
+    state,
+    deps: { instanceId: "inst-1", readStartTicks: () => null, probeAlive: () => false },
+  });
+  assert.equal(await core.recover(), 0);
+  assert.equal(core.state.jobs["job-1"].status, "running");
+  assert.equal(core.state.jobs["job-1"].noticeSent, false);
+  assert.equal(replies.length, 0);
+});
+
+test("TC-21c recover still interrupts a job left by an earlier process", async () => {
+  const state = jobState({ lease: { pid: null, startTicks: null, startedAt: 0 } });
+  state.jobs["job-1"].instanceId = "inst-old";
+  const { core, replies } = harness({
+    state,
+    deps: { instanceId: "inst-1", readStartTicks: () => null, probeAlive: () => false },
+  });
+  assert.equal(await core.recover(), 1);
+  assert.equal(core.state.jobs["job-1"].status, "interrupted");
+  assert.equal(replies.length, 1);
+});
+
+test("TC-21d a dispatched job records the dispatching instance", async () => {
+  const { core } = harness({ deps: { instanceId: "inst-1" } });
+  await core.handle(inbound());
+  const job = Object.values(core.state.jobs)[0];
+  assert.equal(job.instanceId, "inst-1");
+});
+
 test("TC-22 a live orphan worker is stopped before the run is reported", async () => {
   const killed = [];
   let alive = true;
