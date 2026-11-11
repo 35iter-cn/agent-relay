@@ -536,6 +536,44 @@ export function createCore({ adapter, config, deps = {} }) {
     await applyWorkerResult(job, entry, inbound, { text, status, started, mode: "print", exit: code, killed });
   }
 
+  function isAnswerSegment(reason, text) {
+    if (reason !== "stop" && reason !== "length") return false;
+    return String(text ?? "").trim().length > 0;
+  }
+
+  async function sendAnswerSegment(job, segment, run) {
+    const plan = planParts({ answer: segment.text, parts: [], chunkLimit: adapter.chunkLimit, canEdit: false, media: null });
+    try {
+      let sent = 0;
+      for (const step of plan) {
+        if (step.action === "skip") continue;
+        await replyNow(job, step.text);
+        sent += 1;
+      }
+      appendLog({ event: "answer-sent", job: job.id, key: job.key, index: segment.index, chars: segment.text.length, parts: sent });
+    } catch (error) {
+      run.undelivered.push(segment.text);
+      appendLog({ event: "answer-failed", job: job.id, key: job.key, index: segment.index, error: String(error?.message ?? error) });
+    }
+  }
+
+  async function replyNow(job, text) {
+    let failure = null;
+    for (let attempt = 1; attempt <= MAX_DELIVERY_ATTEMPTS; attempt += 1) {
+      try {
+        await adapter.reply(ctxOf(job), text);
+        return;
+      } catch (error) {
+        failure = error;
+        if (!isRetryable(error)) break;
+        if (attempt < MAX_DELIVERY_ATTEMPTS) {
+          await new Promise((resolve) => setTimeout(resolve, deliveryBackoff[Math.min(attempt - 1, deliveryBackoff.length - 1)] ?? 0));
+        }
+      }
+    }
+    throw failure;
+  }
+
   async function applyWorkerResult(job, entry, inbound, { text, status, started, mode = "print", exit = 0, killed = false, empty = false }) {
     disarmStallTimer(inbound.key);
     children.delete(inbound.key);
@@ -631,7 +669,8 @@ export function createCore({ adapter, config, deps = {} }) {
           mode: "rpc",
         });
       }
-      const run = { text: "", stopReason: null };
+      const run = { text: "", stopReason: null, segments: [], undelivered: [], sending: Promise.resolve(), index: 0 };
+      const deliverSegments = job.origin === "user";
       let settle;
       const settled = new Promise((resolve) => (settle = resolve));
       const offEvent = worker.onEvent((record) => {
@@ -654,10 +693,20 @@ export function createCore({ adapter, config, deps = {} }) {
         if (record.type === "message_end" && record.message?.role === "assistant") {
           const content = Array.isArray(record.message.content) ? record.message.content : [];
           const reason = record.message.stopReason ?? null;
+          const text = content.filter((part) => part && part.type === "text").map((part) => part.text).join("");
           if (reason && reason !== "toolUse") {
-            run.text = content.filter((part) => part && part.type === "text").map((part) => part.text).join("");
+            run.text = text;
             run.stopReason = reason;
           }
+
+          if (!isAnswerSegment(reason, text)) return;
+          run.index += 1;
+          const segment = { index: run.index, text, stopReason: reason };
+          run.segments.push(segment);
+          appendLog({ event: "answer-segment", job: job.id, key: job.key, index: segment.index, chars: text.length, stopReason: reason });
+          if (reason === "length") appendLog({ event: "answer-truncated", job: job.id, key: job.key, index: segment.index });
+          if (!deliverSegments) return;
+          run.sending = run.sending.then(() => sendAnswerSegment(job, segment, run));
         }
       });
       const offExit = worker.onExit(({ code, signal }) => settle({ exit: true, code, signal }));
@@ -689,6 +738,7 @@ export function createCore({ adapter, config, deps = {} }) {
       }
 
       const outcome = disposition === "handled" ? { handled: true } : await settled;
+      await run.sending;
       if (timer) clearTimeout(timer);
       offEvent();
       offExit();
@@ -703,14 +753,18 @@ export function createCore({ adapter, config, deps = {} }) {
         const text = `[无输出] exit=${outcome.code ?? "signal"}${tail ? `\n${tail}` : ""}`;
         return applyWorkerResult(job, entry, inbound, { text, status: "failed", started, mode: "rpc", exit: outcome.code ?? null, killed: true });
       }
+      const pendingAnswer = run.undelivered.join("\n\n");
+      const deliveredSegments = deliverSegments && run.segments.length > 0;
       if (outcome.aborted || run.stopReason === "error") {
         return applyWorkerResult(job, entry, inbound, {
-          text: run.text || `[无输出] stop=${run.stopReason ?? "aborted"}`,
+          text: pendingAnswer || (deliveredSegments ? null : run.text || `[无输出] stop=${run.stopReason ?? "aborted"}`),
           status: "failed",
           started,
           mode: "rpc",
         });
       }
+      if (pendingAnswer) return applyWorkerResult(job, entry, inbound, { text: pendingAnswer, status: "answered", started, mode: "rpc" });
+      if (deliveredSegments) return applyWorkerResult(job, entry, inbound, { text: null, status: "answered", started, mode: "rpc" });
       if (!run.text) return applyWorkerResult(job, entry, inbound, { text: `[无输出] stop=${run.stopReason ?? "stop"}`, status: "answered", started, mode: "rpc", empty: true });
       return applyWorkerResult(job, entry, inbound, { text: run.text, status: "answered", started, mode: "rpc" });
     })();
@@ -775,6 +829,7 @@ export function createCore({ adapter, config, deps = {} }) {
     const canEdit = typeof adapter.edit === "function";
     const canLocate = typeof adapter.locateReply === "function";
     const media = mediaFor(job);
+    if (job.answer == null && !media) return;
     const plan = planParts({ answer: media ? media.text : job.answer ?? "", parts: job.parts, chunkLimit: adapter.chunkLimit, canEdit, media });
     for (const step of plan) {
       if (step.action === "skip") continue;

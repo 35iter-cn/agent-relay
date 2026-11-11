@@ -1560,7 +1560,7 @@ test("TC-NT8 inbound text is never parsed as a command: /stop queues behind the 
   assert.notEqual(core.state.seen.b, "legacy");
 });
 
-function fakeRpcChild({ sessionId = "fs-th-abc", isStreaming = true, answer = "答案", stopReason = "stop", aborted = false, messageCount = 3, pendingMessageCount = 0, hold = false } = {}) {
+function fakeRpcChild({ sessionId = "fs-th-abc", isStreaming = true, answer = "答案", stopReason = "stop", aborted = false, messageCount = 3, pendingMessageCount = 0, hold = false, frames = null } = {}) {
   const child = new EventEmitter();
   child.pid = 888001;
   child.written = [];
@@ -1580,7 +1580,11 @@ function fakeRpcChild({ sessionId = "fs-th-abc", isStreaming = true, answer = "�
         streaming = true;
         respond({ disposition: "started" });
         const settle = () => {
-          if (answer !== null) child.stdout.emit("data", `${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: answer }], stopReason } })}\n`);
+          const emitted = frames ?? (answer !== null ? [{ text: answer, stopReason }] : []);
+          for (const frame of emitted) {
+            const content = frame.text == null ? [] : [{ type: "text", text: frame.text }];
+            child.stdout.emit("data", `${JSON.stringify({ type: "message_end", message: { role: "assistant", content, stopReason: frame.stopReason ?? "stop" } })}\n`);
+          }
           streaming = false;
           child.stdout.emit("data", `${JSON.stringify({ type: "agent_settled", aborted })}\n`);
         };
@@ -1608,6 +1612,86 @@ test("TC-RPC6 rpc mode sends the rendered prompt over the protocol and delivers 
   assert.ok(prompt, "a prompt command was sent");
   assert.match(prompt.message, /conversation=th-abc/);
   assert.equal(replies.at(-1).text, "改好了");
+});
+
+test("TC-RPC21 two answer segments are both delivered, in order", async () => {
+  const child = fakeRpcChild({ frames: [{ text: "第一段", stopReason: "stop" }, { text: "第二段", stopReason: "stop" }] });
+  const { core, replies } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await core.handle(inbound({ text: "两个问题" }));
+  await tick();
+  assert.deepEqual(replies.map((reply) => reply.text), ["第一段", "第二段"]);
+});
+
+test("TC-RPC22 the text riding on a toolUse frame is not delivered", async () => {
+  const child = fakeRpcChild({ frames: [{ text: "我先查一下", stopReason: "toolUse" }, { text: "查完了", stopReason: "stop" }] });
+  const { core, replies } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await core.handle(inbound({ text: "查一下" }));
+  await tick();
+  assert.deepEqual(replies.map((reply) => reply.text), ["查完了"]);
+});
+
+test("TC-RPC23 an error frame is never delivered as an answer segment", async () => {
+  const child = fakeRpcChild({ frames: [{ text: "供应商拒答", stopReason: "error" }] });
+  const { core, replies } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await core.handle(inbound({ text: "做点事" }));
+  await tick();
+  assert.equal(replies.length, 1, "the failure path still reports one message");
+  assert.equal(replies[0].text, "供应商拒答");
+});
+
+test("TC-RPC24 a non-user origin job keeps one message per run", async () => {
+  const child = fakeRpcChild({ frames: [{ text: "第一段", stopReason: "stop" }, { text: "第二段", stopReason: "stop" }] });
+  const { core, replies } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await core.handle(inbound({ text: "两个问题", origin: "self" }));
+  await tick();
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].text, "第二段");
+});
+
+test("TC-RPC25 a segment that fails on its own is delivered by the settle fallback", async () => {
+  const child = fakeRpcChild({ frames: [{ text: "会失败的段", stopReason: "stop" }, { text: "能发出去的段", stopReason: "stop" }] });
+  let attempts = 0;
+  const { core, replies } = harness({
+    spawn: () => child,
+    adapterOverrides: {
+      worker: "pi",
+      workerMode: "rpc",
+      reply: async (ctx, text) => {
+        if (text === "会失败的段" && attempts < 3) {
+          attempts += 1;
+          const error = new Error("rate limited");
+          error.status = 429;
+          throw error;
+        }
+        replies.push({ key: ctx.key, text });
+        return { messageId: `m-${replies.length}` };
+      },
+    },
+    deps: { deliveryBackoffMs: [0, 0, 0] },
+  });
+  await core.handle(inbound({ text: "两个问题" }));
+  await tick();
+  assert.equal(attempts, 3, "every immediate attempt was used before the fallback");
+  assert.deepEqual(replies.map((reply) => reply.text), ["能发出去的段", "会失败的段"]);
+});
+
+test("TC-RPC26 a segment longer than the chunk limit is split the same way delivery splits it", async () => {
+  const long = "a".repeat(45);
+  const child = fakeRpcChild({ frames: [{ text: long, stopReason: "stop" }] });
+  const { core, replies } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await core.handle(inbound({ text: "长答案" }));
+  await tick();
+  assert.equal(replies.length, 3, "45 chars over a 20-char limit");
+  assert.equal(replies.map((reply) => reply.text).join(""), long);
+});
+
+test("TC-RPC27 a single answer segment is still exactly one message", async () => {
+  const child = fakeRpcChild({ frames: [{ text: "只有一个答案", stopReason: "stop" }] });
+  const { core, replies } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await core.handle(inbound({ text: "一个问题" }));
+  await tick();
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].text, "只有一个答案");
 });
 
 test("TC-RPC7 images travel as image blocks with an untouched body; other files are appended as paths", async () => {
