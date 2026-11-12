@@ -43,22 +43,21 @@ test("TC-MD7 a fenced table stays inside its text segment", () => {
   assert.deepEqual(splitTables(input), [{ type: "text", text: input }]);
 });
 
-test("TC-MD8 slack normalization repairs the two things the renderer requires", () => {
-  assert.equal(normalizeSlackMarkdown("上文\n| a | b |\n|---|---|\n| 1 | 2 |"), "上文\n\n| a | b |\n|---|---|\n| 1 | 2 |");
-  assert.equal(normalizeSlackMarkdown("| a | b |\n|---|---|"), "| a | b |\n|---|---|", "a table on the first line needs no blank line");
-  assert.equal(normalizeSlackMarkdown("```\n| a | b |\n|---|---|\nhttps://skip.me\n```"), "```\n| a | b |\n|---|---|\nhttps://skip.me\n```", "a fence is opaque");
-  assert.equal(normalizeSlackMarkdown("[已有](https://z.com)"), "[已有](https://z.com)");
-  assert.equal(normalizeSlackMarkdown("`https://a.com`"), "`https://a.com`");
-  assert.equal(normalizeSlackMarkdown("见 https://a.com/x)"), "见 [https://a.com/x](https://a.com/x))");
-  assert.equal(normalizeSlackMarkdown("见 https://a.com/x. 然后"), "见 [https://a.com/x](https://a.com/x). 然后");
-  assert.equal(normalizeSlackMarkdown("https://a.com/(x)"), "[https://a.com/(x)](https://a.com/(x))");
+test("TC-MD8 slack normalization puts the blank line after a table, not before it", () => {
+  const table = "| 列 | 值 |\n|---|---|\n| a | 1 |";
+  assert.equal(normalizeSlackMarkdown(`上文\n${table}\n表后正文`), `上文\n${table}\n\n表后正文`);
+  assert.equal(normalizeSlackMarkdown(`上文\n${table}\n\n表后正文`), `上文\n${table}\n\n表后正文`, "an existing blank line is not doubled");
+  assert.equal(normalizeSlackMarkdown(`上文\n${table}`), `上文\n${table}`, "a table at the end needs nothing");
+  assert.equal(normalizeSlackMarkdown("```\n| a | b |\n|---|---|\n尾\n```"), "```\n| a | b |\n|---|---|\n尾\n```", "a fence is opaque");
 });
 
-test("TC-MD9 an inline code span is opaque, and a span boundary is never swallowed", () => {
-  const inSpan = "- 匿名 `git ls-remote http://192.168.3.52:2222/hao/repo.git` 直接 could not read Username";
-  assert.equal(normalizeSlackMarkdown(inSpan), inSpan);
-  assert.equal(normalizeSlackMarkdown("`http://a.b/c`"), "`http://a.b/c`");
-  assert.equal(normalizeSlackMarkdown("见 `config.json` 里的 http://a.b/c"), "见 `config.json` 里的 [http://a.b/c](http://a.b/c)");
-  assert.equal(normalizeSlackMarkdown("`a` 与 `b http://a.b/c` 后 http://d.e/f"), "`a` 与 `b http://a.b/c` 后 [http://d.e/f](http://d.e/f)");
-  assert.equal(normalizeSlackMarkdown("`x`http://a.b/c`y`"), "`x`[http://a.b/c](http://a.b/c)`y`");
+test("TC-MD9 a bare url, a code span and a code fence are handed to Slack untouched", () => {
+  for (const source of [
+    "见 https://example.com/x。然后",
+    "`MessageSource.App`",
+    "`git ls-remote http://192.168.3.52:2222/hao/repo.git` 直接失败",
+    "[文字](https://example.com/x)",
+  ]) {
+    assert.equal(normalizeSlackMarkdown(source), source);
+  }
 });

@@ -528,15 +528,14 @@ test("AC-9 messages without files never download anything", () => {
   assert.equal(acceptsEvent({ ...base, user: "U-stranger", bot_id: "B1", files: [slackFile()] }, TEST_SCOPE).ok, false);
 });
 
-test("TC-12 the slack reply section keeps only the rules the renderer cannot repair itself", () => {
+test("TC-12 the slack reply section asks for a labelled link and leaves the rest to the renderer", () => {
   const rules = readFileSync(new URL("../src/prompts/sections/22-platform-slack-reply.md", import.meta.url), "utf8");
   assert.match(rules, /排版求紧/);
-  assert.match(rules, /空行只留换小节/);
-  assert.match(rules, /反斜杠/);
-  assert.match(rules, /单独一行写 `!\[\]\(\/绝对路径\.png\)`/);
+  assert.match(rules, /\[文字\]\(https:\/\/…\)/);
+  assert.match(rules, /裸地址/);
   assert.doesNotMatch(rules, /mrkdwn/);
   assert.doesNotMatch(rules, /表格/);
-  assert.doesNotMatch(rules, /\[文字\]\(https/);
+  assert.match(rules, /单独一行写 `!\[\]\(\/绝对路径\.png\)`/);
 });
 
 function slackPlatform(env = {}) {

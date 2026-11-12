@@ -11,10 +11,10 @@ const SECTIONS = join(HERE, "..", "src", "prompts", "sections");
 const readSection = (file) => readFileSync(join(SECTIONS, file), "utf8");
 const builtinPrompts = (configDir) => createPrompts({ dir: join(HERE, "..", "src", "prompts"), userDir: "/nonexistent-user-prompts", configDir });
 
-// 1960 -> 1200: the formatting rules the renderer can repair itself (table
-// spacing, bare links) moved into normalizeSlackMarkdown, and the duplicate
-// outbound rule went back to one home. Growth is now paid for by deleting a
-// rule, not by raising this number.
+// 1960 -> 1200, then held: link handling went back to the prompt because Slack
+// runs its own linkifier and a second one disagreed with it, so the room for
+// that line came from cutting the sections beside it. Growth is paid for by
+// deleting a rule, not by raising this number.
 const FIRST_TURN_PROMPT_BUDGET = 1200;
 
 function render(prompts, platform, entry = "conversation", extra = {}) {
@@ -189,7 +189,7 @@ test("TC-P24 the self-wake section keeps capabilities and pointers only", () => 
 });
 
 test("TC-P25 every section that carries a rule sits under its own character cap", () => {
-  const caps = { "21-surface.md": 90, "22-platform-slack-reply.md": 120, "45-self-wake.md": 120, "50-boundary.md": 180 };
+  const caps = { "21-surface.md": 90, "22-platform-slack-reply.md": 200, "45-self-wake.md": 120, "50-boundary.md": 180 };
   for (const [file, cap] of Object.entries(caps)) {
     const length = readSection(file).trim().length;
     assert.ok(length <= cap, `${file} is ${length} characters, cap ${cap}`);
