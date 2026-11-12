@@ -11,7 +11,11 @@ const SECTIONS = join(HERE, "..", "src", "prompts", "sections");
 const readSection = (file) => readFileSync(join(SECTIONS, file), "utf8");
 const builtinPrompts = (configDir) => createPrompts({ dir: join(HERE, "..", "src", "prompts"), userDir: "/nonexistent-user-prompts", configDir });
 
-const FIRST_TURN_PROMPT_BUDGET = 1760;
+// 1760 -> 1960: the Slack reply section now carries link form, escaping, image
+// semantics and the table spacing rule - markdown_text does not autolink a bare
+// URL, renders ![x](url) as a plain link, and only recognises a table that a
+// blank line separates from the paragraph above it.
+const FIRST_TURN_PROMPT_BUDGET = 1960;
 
 function render(prompts, platform, entry = "conversation", extra = {}) {
   const adapter = { surface: `本${platform}`, chunkLimit: 3500 };
