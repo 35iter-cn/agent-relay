@@ -51,12 +51,21 @@ test("TC-M5 a reference sharing a line with prose is left byte-for-byte alone", 
   assert.deepEqual(parsed.files, []);
 });
 
-test("TC-M6 a relative path or an http reference on its own line is dropped and counted", () => {
+test("TC-M6 a remote reference becomes a link while a relative path is still dropped and counted", () => {
   const make = sandbox();
   const png = make("a.png");
   const parsed = extractMedia(`结论\n![](./rel.png)\n![](https://example.com/x.png)\n${ref(png)}`);
-  assert.equal(parsed.text, `结论\n（2 张图片引用无法读取，未发送）`);
+  assert.equal(parsed.text, `结论\n[https://example.com/x.png](https://example.com/x.png)\n（1 张图片引用无法读取，未发送）`);
   assert.deepEqual(parsed.files.map((file) => file.path), [png]);
+});
+
+test("TC-M13 a reply that only points at a remote image keeps the link and uploads nothing", () => {
+  const parsed = extractMedia("看图 ![a](https://example.com/x.png)");
+  assert.equal(parsed.text, "看图 ![a](https://example.com/x.png)", "a mid-line reference is left alone");
+  const alone = extractMedia("结论\n![图](https://example.com/x.png)");
+  assert.equal(alone.text, "结论\n[图](https://example.com/x.png)");
+  assert.deepEqual(alone.files, []);
+  assert.deepEqual(alone.invalid, []);
 });
 
 test("TC-M7 an extension outside the image whitelist is dropped and counted", () => {

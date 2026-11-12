@@ -528,18 +528,15 @@ test("AC-9 messages without files never download anything", () => {
   assert.equal(acceptsEvent({ ...base, user: "U-stranger", bot_id: "B1", files: [slackFile()] }, TEST_SCOPE).ok, false);
 });
 
-test("TC-12 the slack reply section asks for standard markdown, the only dialect a markdown block renders", () => {
+test("TC-12 the slack reply section keeps only the rules the renderer cannot repair itself", () => {
   const rules = readFileSync(new URL("../src/prompts/sections/22-platform-slack-reply.md", import.meta.url), "utf8");
-  for (const fragment of ["`**粗体**`", "`- `", "`##`", "表格", "```lang", "`*x*`", "`• `"]) {
-    assert.ok(rules.includes(fragment), `the slack reply section never mentions ${fragment}`);
-  }
-  assert.match(rules, /用标准 Markdown/);
-  assert.doesNotMatch(rules, /mrkdwn/);
-  assert.doesNotMatch(rules, /标题和粗体都写/);
+  assert.match(rules, /排版求紧/);
+  assert.match(rules, /空行只留换小节/);
+  assert.match(rules, /反斜杠/);
   assert.match(rules, /单独一行写 `!\[\]\(\/绝对路径\.png\)`/);
-  assert.match(rules, /同一层意思连写一段/);
-  assert.match(rules, /空行、`##`、`---` 都撑开一截/);
-  assert.doesNotMatch(rules, /`##` 标题/);
+  assert.doesNotMatch(rules, /mrkdwn/);
+  assert.doesNotMatch(rules, /表格/);
+  assert.doesNotMatch(rules, /\[文字\]\(https/);
 });
 
 function slackPlatform(env = {}) {

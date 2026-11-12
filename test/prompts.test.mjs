@@ -11,11 +11,11 @@ const SECTIONS = join(HERE, "..", "src", "prompts", "sections");
 const readSection = (file) => readFileSync(join(SECTIONS, file), "utf8");
 const builtinPrompts = (configDir) => createPrompts({ dir: join(HERE, "..", "src", "prompts"), userDir: "/nonexistent-user-prompts", configDir });
 
-// 1760 -> 1960: the Slack reply section now carries link form, escaping, image
-// semantics and the table spacing rule - markdown_text does not autolink a bare
-// URL, renders ![x](url) as a plain link, and only recognises a table that a
-// blank line separates from the paragraph above it.
-const FIRST_TURN_PROMPT_BUDGET = 1960;
+// 1960 -> 1200: the formatting rules the renderer can repair itself (table
+// spacing, bare links) moved into normalizeSlackMarkdown, and the duplicate
+// outbound rule went back to one home. Growth is now paid for by deleting a
+// rule, not by raising this number.
+const FIRST_TURN_PROMPT_BUDGET = 1200;
 
 function render(prompts, platform, entry = "conversation", extra = {}) {
   const adapter = { surface: `本${platform}`, chunkLimit: 3500 };
@@ -96,8 +96,7 @@ test("TC-P3 the boundary section holds exactly three rules and no relay-state or
 test("TC-P4 long text lands in a topic, not in the log directory", () => {
   const text = readSection("21-surface.md");
   assert.doesNotMatch(text, /log_dir|logs\//);
-  assert.match(text, /using-topicbox/);
-  assert.match(text, /topicbox artifact-create/);
+  assert.match(text, /topicbox 文档/);
 });
 
 test("TC-P5 the notice task section marks the notice body as data", () => {
@@ -183,10 +182,36 @@ test("TC-P24 the self-wake section keeps capabilities and pointers only", () => 
   const text = readSection("45-self-wake.md");
   assert.match(text, /job help/);
   assert.match(text, /loop help/);
-  assert.match(text, /job start --platform \{\{platform\}\} --key \{\{conversation\}\}/);
-  assert.doesNotMatch(text, /--dedupe|--brief|--in 30m/);
+  assert.match(text, /写给下一次的自己/);
+  assert.doesNotMatch(text, /--dedupe|--brief|--in 30m|job start --platform/);
   assert.doesNotMatch(text, /NOOP/);
   assert.doesNotMatch(text, /连续 3 轮/);
+});
+
+test("TC-P25 every section that carries a rule sits under its own character cap", () => {
+  const caps = { "21-surface.md": 90, "22-platform-slack-reply.md": 120, "45-self-wake.md": 120, "50-boundary.md": 180 };
+  for (const [file, cap] of Object.entries(caps)) {
+    const length = readSection(file).trim().length;
+    assert.ok(length <= cap, `${file} is ${length} characters, cap ${cap}`);
+  }
+});
+
+test("TC-P26 one rule is stated once, measured across every entry and platform", () => {
+  const rules = [
+    { id: "outbound", marker: "不要再用 `notice emit`", entries: ["conversation", "notice", "loop"], platforms: ["slack", "feishu"] },
+    { id: "transport", marker: "只放最终回帖", entries: ["conversation", "loop"], platforms: ["slack", "feishu"] },
+    { id: "formatting", marker: "排版求紧", entries: ["conversation", "notice", "loop"], platforms: ["slack"] },
+    { id: "topic", marker: "using-topicbox", entries: ["conversation"], platforms: ["slack", "feishu"] },
+  ];
+  for (const platform of ["slack", "feishu"]) {
+    for (const rule of rules.filter((item) => item.platforms.includes(platform))) {
+      for (const entry of rule.entries) {
+        const text = render(builtinPrompts(), platform, entry);
+        const hits = text.split(rule.marker).length - 1;
+        assert.equal(hits, 1, `${rule.id} is stated ${hits} times in ${platform}/${entry}`);
+      }
+    }
+  }
 });
 
 test("TC-P14 the loop round sections point at loop help instead of repeating flags", () => {

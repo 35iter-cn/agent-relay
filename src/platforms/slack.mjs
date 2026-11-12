@@ -5,6 +5,7 @@ import { chunkText } from "../shared/chunk.mjs";
 import { deliveryError } from "../jobs/delivery.mjs";
 import { relayEnv } from "../shared/env.mjs";
 import { ensurePrivateDir } from "../shared/fs.mjs";
+import { normalizeSlackMarkdown } from "../shared/markdown.mjs";
 import { createRootCache } from "./shared/root-cache.mjs";
 import { MAX_ATTACHMENTS, MAX_BYTES, extFor, uploadDirFor, pruneUploads } from "./shared/uploads.mjs";
 
@@ -107,7 +108,7 @@ export function createMediaUploader({ channel, token, log = () => {}, reply, fet
 const MARKDOWN_REJECTED = new Set(["msg_too_long", "invalid_arguments", "invalid_blocks", "invalid_blocks_format", "msg_blocks_too_long"]);
 
 export async function sendMarkdown(api, method, { text, ...rest }, log = () => {}) {
-  const source = String(text ?? "");
+  const source = normalizeSlackMarkdown(text);
   const res = await api(method, { ...rest, markdown_text: source });
   if (res.ok || !MARKDOWN_REJECTED.has(res.error)) return res;
   log("warn", "markdown-rejected", method, res.error);
