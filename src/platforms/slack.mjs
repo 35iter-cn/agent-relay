@@ -248,7 +248,8 @@ export function acceptsEvent(event, { channel = null, allowedUser = null, botUse
   if (!event) return { ok: false, why: "empty" };
   if (!channel || !allowedUser) return { ok: false, why: "unconfigured" };
   if (event.channel !== channel) return { ok: false, why: "channel" };
-  if (event.bot_id || event.user === botUser) return { ok: false, why: "bot" };
+  if (event.user === botUser) return { ok: false, why: "bot" };
+  if (event.bot_id && event.user !== allowedUser) return { ok: false, why: "bot" };
   if (event.user !== allowedUser) return { ok: false, why: "author" };
   if (event.subtype && !PASSING_SUBTYPES.includes(event.subtype)) return { ok: false, why: "subtype" };
   if (!stripMentions(event.text) && !event.files?.length) return { ok: false, why: "empty-text" };

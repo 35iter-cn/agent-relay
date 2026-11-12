@@ -28,8 +28,14 @@ test("threads map to dot-free session names", () => {
 });
 
 test("TC-10 the bot's own messages are ignored", () => {
-  assert.deepEqual(acceptsEvent({ ...base, bot_id: "B123" }, TEST_SCOPE), { ok: false, why: "bot" });
+  assert.deepEqual(acceptsEvent({ ...base, user: "U-other-bot", bot_id: "B123" }, TEST_SCOPE), { ok: false, why: "bot" });
   assert.deepEqual(acceptsEvent({ ...base, user: TEST_SCOPE.botUser }, TEST_SCOPE), { ok: false, why: "bot" });
+});
+
+test("TC-10c a message the user sent through an app's user token keeps its author", () => {
+  // Slack tags chat.postMessage calls made with an OAuth app's user token with
+  // that app's bot_id, while leaving user on the human who authorised it.
+  assert.deepEqual(acceptsEvent({ ...base, bot_id: "B123" }, TEST_SCOPE), { ok: true, thread: base.ts });
 });
 
 test("TC-10 only the allowed author in the configured channel is accepted", () => {
@@ -519,7 +525,7 @@ test("AC-9 messages without files never download anything", () => {
   assert.match(source, /event\.files\?\.length \? await downloadAttachments\(event\.files\)/);
   assert.equal(acceptsEvent({ ...base, text: "   " }, TEST_SCOPE).ok, false);
   assert.equal(acceptsEvent({ ...base, user: "U-stranger", files: [slackFile()] }, TEST_SCOPE).ok, false);
-  assert.equal(acceptsEvent({ ...base, bot_id: "B1", files: [slackFile()] }, TEST_SCOPE).ok, false);
+  assert.equal(acceptsEvent({ ...base, user: "U-stranger", bot_id: "B1", files: [slackFile()] }, TEST_SCOPE).ok, false);
 });
 
 test("TC-12 the slack reply section asks for standard markdown, the only dialect a markdown block renders", () => {
