@@ -31,6 +31,7 @@ and event files, real command queue — only the IM delivery is faked. It is not
 part of `bun test`, because it takes seconds instead of milliseconds.
 
 - **The first-turn prompt has a budget** (`test/prompts.test.mjs` `FIRST_TURN_PROMPT_BUDGET`). Adding a capability the model must know about means raising the number on purpose and saying why in the PR, never letting the guard be the thing that decides.
+- **A rule the relay can enforce belongs in code.** Formatting the renderer requires, a retry, a fallback — if a function can do it, the model should not be asked to remember it. A new prompt line means deleting one, and `TC-P25` caps the sections that carry rules.
 
 ## Deploying
 

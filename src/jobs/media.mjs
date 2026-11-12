@@ -4,7 +4,8 @@ import { basename } from "node:path";
 import { MAX_BYTES, mimeForExt } from "../platforms/shared/uploads.mjs";
 
 export const MAX_MEDIA = 4;
-const LINE = /^!\[[^\]]*\]\(([^)\s]+)\)$/;
+const LINE = /^!\[([^\]]*)\]\(([^)\s]+)\)$/;
+const REMOTE = /^https?:\/\//;
 
 export function extractMedia(answer, { limit = MAX_MEDIA, maxBytes = MAX_BYTES } = {}) {
   const source = String(answer ?? "");
@@ -12,10 +13,17 @@ export function extractMedia(answer, { limit = MAX_MEDIA, maxBytes = MAX_BYTES }
   const invalid = [];
   const kept = [];
   let stripped = 0;
+  let linked = 0;
   for (const line of source.split("\n")) {
-    const ref = line.trim().match(LINE)?.[1];
-    if (!ref) {
+    const match = line.trim().match(LINE);
+    if (!match) {
       kept.push(line);
+      continue;
+    }
+    const [, alt, ref] = match;
+    if (REMOTE.test(ref)) {
+      kept.push(`[${alt || ref}](${ref})`);
+      linked += 1;
       continue;
     }
     stripped += 1;
@@ -23,7 +31,7 @@ export function extractMedia(answer, { limit = MAX_MEDIA, maxBytes = MAX_BYTES }
     if (file) files.push(file);
     else invalid.push(ref);
   }
-  if (!stripped) return { text: source, files: [], invalid: [], dropped: 0 };
+  if (!stripped && !linked) return { text: source, files: [], invalid: [], dropped: 0 };
   const picked = files.slice(0, limit);
   const dropped = files.length - picked.length;
   const notes = [];
