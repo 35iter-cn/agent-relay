@@ -542,12 +542,14 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   async function sendAnswerSegment(job, segment, run) {
-    const plan = planParts({ answer: segment.text, parts: [], chunkLimit: adapter.chunkLimit, canEdit: false, media: null });
+    const media = mediaFor({ answer: segment.text });
+    const plan = planParts({ answer: media ? media.text : segment.text, parts: [], chunkLimit: adapter.chunkLimit, canEdit: false, media });
     try {
       let sent = 0;
       for (const step of plan) {
         if (step.action === "skip") continue;
-        await replyNow(job, step.text);
+        if (step.kind === "media") await adapter.postMedia(ctxOf(job), step.files);
+        else await replyNow(job, step.text);
         sent += 1;
       }
       appendLog({ event: "answer-sent", job: job.id, key: job.key, index: segment.index, chars: segment.text.length, parts: sent });
@@ -822,7 +824,9 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   function mediaFor(job) {
-    return typeof adapter.postMedia === "function" ? extractMedia(job.answer ?? "") : null;
+    if (typeof adapter.postMedia !== "function") return null;
+    const media = extractMedia(job.answer ?? "");
+    return media.files.length || media.invalid.length ? media : null;
   }
 
   async function deliverParts(job, uncertain = new Map()) {

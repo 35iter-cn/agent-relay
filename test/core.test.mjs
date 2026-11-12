@@ -1603,6 +1603,57 @@ function fakeRpcChild({ sessionId = "fs-th-abc", isStreaming = true, answer = "�
   return child;
 }
 
+test("TC-RPC40 a streamed answer posts its image as an attachment, not as a path", async () => {
+  const posted = [];
+  let shot = null;
+  const { core, replies, dir } = harness({
+    spawn: () => fakeRpcChild({ frames: [{ text: `结论\n![](${shot})`, stopReason: "stop" }] }),
+    adapterOverrides: {
+      worker: "pi",
+      workerMode: "rpc",
+      postMedia: async (ctx, files) => {
+        posted.push({ files, replyTo: ctx.replyTo });
+        return { messageId: null, degraded: false };
+      },
+    },
+  });
+  shot = join(dir, "shot.png");
+  writeFileSync(shot, "png");
+  await core.handle(inbound({ replyTo: "1792.0001" }));
+  await tick();
+  assert.deepEqual(replies.map((reply) => reply.text), ["结论"], "the image line never reaches the text reply");
+  assert.equal(posted.length, 1);
+  assert.deepEqual(posted[0].files.map((file) => file.path), [shot]);
+  assert.equal(posted[0].replyTo, "1792.0001");
+});
+
+test("TC-RPC41 a streamed answer with no image ends done instead of retrying an empty send", async () => {
+  const empty = [];
+  const { core, replies } = harness({
+    spawn: () => fakeRpcChild({ answer: "只有文字" }),
+    adapterOverrides: {
+      worker: "pi",
+      workerMode: "rpc",
+      postMedia: async () => ({ messageId: null, degraded: false }),
+      reply: async (ctx, text) => {
+        if (!String(text).trim()) {
+          empty.push(text);
+          throw Object.assign(new Error("postMessage no_text"), { code: "no_text" });
+        }
+        replies.push({ key: ctx.key, text });
+        return { messageId: `m-${replies.length}` };
+      },
+    },
+    deps: { deliveryBackoffMs: [0, 0, 0] },
+  });
+  await core.handle(inbound());
+  await tick();
+  const job = core.state.jobs[core.state.seen.m1];
+  assert.equal(job.status, "done");
+  assert.deepEqual(empty, [], "no empty send is attempted");
+  assert.deepEqual(replies.map((reply) => reply.text), ["只有文字"]);
+});
+
 test("TC-RPC6 rpc mode sends the rendered prompt over the protocol and delivers the run's answer", async () => {
   const child = fakeRpcChild({ answer: "改好了" });
   const { core, replies } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
