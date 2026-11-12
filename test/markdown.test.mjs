@@ -53,3 +53,12 @@ test("TC-MD8 slack normalization repairs the two things the renderer requires", 
   assert.equal(normalizeSlackMarkdown("见 https://a.com/x. 然后"), "见 [https://a.com/x](https://a.com/x). 然后");
   assert.equal(normalizeSlackMarkdown("https://a.com/(x)"), "[https://a.com/(x)](https://a.com/(x))");
 });
+
+test("TC-MD9 an inline code span is opaque, and a span boundary is never swallowed", () => {
+  const inSpan = "- 匿名 `git ls-remote http://192.168.3.52:2222/hao/repo.git` 直接 could not read Username";
+  assert.equal(normalizeSlackMarkdown(inSpan), inSpan);
+  assert.equal(normalizeSlackMarkdown("`http://a.b/c`"), "`http://a.b/c`");
+  assert.equal(normalizeSlackMarkdown("见 `config.json` 里的 http://a.b/c"), "见 `config.json` 里的 [http://a.b/c](http://a.b/c)");
+  assert.equal(normalizeSlackMarkdown("`a` 与 `b http://a.b/c` 后 http://d.e/f"), "`a` 与 `b http://a.b/c` 后 [http://d.e/f](http://d.e/f)");
+  assert.equal(normalizeSlackMarkdown("`x`http://a.b/c`y`"), "`x`[http://a.b/c](http://a.b/c)`y`");
+});

@@ -87,8 +87,9 @@ export function flattenTables(text) {
   return out.join("\n");
 }
 
-const BARE_URL = /(^|[^(\]`])https?:\/\/\S+/g;
+const BARE_URL = /(^|[^(\]`])https?:\/\/[^\s<>`"'[\]]+/g;
 const URL_TAIL = /[.,;:!?\]]+$/;
+const CODE_SPAN = /(`+[^`]*`+)/g;
 
 function splitTail(url) {
   let end = url.length;
@@ -105,12 +106,19 @@ function splitTail(url) {
   return [url.slice(0, end), url.slice(end)];
 }
 
-function linkBareUrls(line) {
-  return line.replace(BARE_URL, (match, lead) => {
+function linkSegment(text) {
+  return text.replace(BARE_URL, (match, lead) => {
     const [url, tail] = splitTail(match.slice(lead.length));
     if (!url) return match;
     return `${lead}[${url}](${url})${tail}`;
   });
+}
+
+function linkBareUrls(line) {
+  return line
+    .split(CODE_SPAN)
+    .map((part, index) => (index % 2 === 1 ? part : linkSegment(part)))
+    .join("");
 }
 
 export function normalizeSlackMarkdown(text) {
