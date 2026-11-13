@@ -335,6 +335,7 @@ async function serve(platform, config, log) {
   const tick = () =>
     core.drainCommands()
       .then(() => core.startDueJobs())
+      .then(() => core.startDueDeliveries())
       .then(() => core.startDueLoops())
       .catch((error) => log("error", "command", String(error?.stack ?? error)));
   let booted = false;

@@ -29,6 +29,7 @@ for (const [name, body] of [
   ["stall-actions.md", "ACTIONS platform={{platform}} key=<key>"],
 ]) writeFileSync(join(promptsDir, name), `${body}\n`);
 
+const clock = { now: Date.parse("2026-11-13T10:00:00.000Z") };
 const repliesPath = join(dir, "replies.jsonl");
 const failuresPath = join(dir, "failures.jsonl");
 let mode = "transient";
@@ -47,6 +48,7 @@ const adapter = {
   reply: async (inbound, text) => {
     if (mode === "permanent") throw Object.assign(new Error("invalid_thread_ts"), { retryable: false, code: "invalid_thread_ts" });
     if (mode === "located") return null;
+    if (mode === "outage") throw Object.assign(new Error("socket closed"), { code: "ECONNRESET" });
     if (mode === "transient" && !existsSync(failuresPath)) {
       appendFileSync(failuresPath, `${JSON.stringify({ at: isoAt(Date.now()) })}\n`);
       return null;
@@ -87,6 +89,7 @@ const core = createCore({
   config,
   deps: {
     deliveryRetryMs: 0,
+    now: () => clock.now,
     log: (level, ...parts) => {
       if (level === "error") process.stderr.write(`[${level}] ${parts.join(" ")}\n`);
     },
@@ -132,6 +135,7 @@ check("E-2 the retry is recorded as an event, not silently swallowed", retriedEv
 check("E-3 the delivered part carries the platform message id", Boolean(transient?.parts?.[0]?.messageId), JSON.stringify(transient?.parts));
 
 mode = "permanent";
+clock.now += 1_000;
 await core.handle({ key: KEY, session: SESSION, dedupeId: "m2", authorId: "u-1", text: "e2e delivery permanent", chatId: "c1" });
 await tick(600);
 
@@ -156,6 +160,7 @@ check(
 );
 
 mode = "located";
+clock.now += 1_000;
 await core.handle({ key: KEY, session: SESSION, dedupeId: "m3", authorId: "u-1", text: "e2e delivery located", chatId: "c1" });
 await tick(600);
 
@@ -166,6 +171,48 @@ check(
   "E-6 a reply that landed under an error is adopted instead of duplicated",
   located?.status === "done" && located?.parts?.[0]?.messageId === "m-located" && locatedReplies.length === 2 && locatedEvents.length === 1,
   JSON.stringify({ status: located?.status, replies: locatedReplies.length, located: locatedEvents.length }),
+);
+
+mode = "outage";
+clock.now += 1_000;
+await core.handle({ key: KEY, session: SESSION, dedupeId: "m4", authorId: "u-1", text: "e2e delivery outage", chatId: "c1" });
+await tick(600);
+
+const queued = jobFor(KEY);
+check(
+  "E-7 a retryable outage leaves the job in the retry queue with a due time",
+  queued?.status === "retrying" && Boolean(queued?.deliveryRetryAt) && queued?.answer === "答案正文",
+  JSON.stringify({ status: queued?.status, at: queued?.deliveryRetryAt }),
+);
+
+mode = "ok";
+clock.now += 30_000;
+await core.startDueDeliveries();
+await tick(400);
+
+const recovered = jobFor(KEY);
+const recoveredReplies = readReplies().filter((item) => item.key === KEY);
+check(
+  "E-8 the queued delivery lands once the platform is back, and the queue marker is cleared",
+  recovered?.status === "done" && recovered?.deliveryRetryAt === undefined && recovered?.answer === undefined,
+  JSON.stringify({ status: recovered?.status, retryAt: recovered?.deliveryRetryAt }),
+);
+
+mode = "outage";
+clock.now += 1_000;
+const toldBefore = readReplies().filter((item) => item.text.includes("没送出去")).length;
+await core.handle({ key: KEY, session: SESSION, dedupeId: "m5", authorId: "u-1", text: "e2e delivery gives up", chatId: "c1" });
+await tick(600);
+clock.now += 5 * 60_000 + 1;
+await core.startDueDeliveries();
+await tick(200);
+
+const gaveUp = jobFor(KEY);
+const told = readReplies().filter((item) => item.text.includes("没送出去")).slice(toldBefore);
+check(
+  "E-9 past the five-minute window the job fails and the owner is told once, with the redeliver command",
+  gaveUp?.status === "failed" && gaveUp?.error === "reply-failed" && told.length === 1 && told[0].text.includes("job redeliver"),
+  JSON.stringify({ status: gaveUp?.status, error: gaveUp?.error, told: told.length }),
 );
 
 if (failures.length) {

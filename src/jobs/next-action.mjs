@@ -13,6 +13,8 @@ export function nextAction(job, { canEdit = false, chunkLimit, media = null, rea
         : { type: "interrupt" };
     case "answered":
       return { type: "resend", parts: planParts({ answer: media ? media.text : job.answer, parts: job.parts, chunkLimit, canEdit, media }) };
+    case "retrying":
+      return { type: "retry-delivery" };
     default:
       return { type: "finish" };
   }

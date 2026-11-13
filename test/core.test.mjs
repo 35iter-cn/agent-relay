@@ -452,12 +452,12 @@ test("TC-23 a permanent reply failure ends the job as failed instead of leaving 
   await core.handle(inbound());
   await tick();
   const job = core.state.jobs[core.state.seen.m1];
-  assert.equal(job.status, "failed");
-  assert.equal(job.error, "reply-failed");
+  assert.equal(job.status, "retrying", "三次快重试之后还在 5 分钟窗口内，进入重试队列");
+  assert.ok(job.deliveryRetryAt, "队列里带着下一次尝试的时刻");
   assert.ok(job.answer, "the answer stays for diagnosis");
   assert.equal(job.deliveryAttempts, 3);
   assert.equal(await core.handle(inbound({ dedupeId: "m2", text: "还在吗" })), "accepted");
-  assert.ok(core.state.jobs[core.state.seen.m2], "the failed job does not swallow new work");
+  assert.ok(core.state.jobs[core.state.seen.m2], "the retrying job does not swallow new work");
 });
 
 test("TC-23 an adapter without edit never tries to patch", async () => {
@@ -489,12 +489,12 @@ test("TC-DL1 a reply that returns no message id counts as a failure and is retri
   await tick();
   const job = core.state.jobs[core.state.seen.m1];
   assert.equal(calls, 3, "空返回不再算发送成功，三次都试过");
-  assert.equal(job.status, "failed");
-  assert.equal(job.error, "reply-failed");
+  assert.equal(job.status, "retrying");
   assert.equal(job.answer, "答案", "内容留着，还能手动重发");
   assert.equal(job.deliveryAttempts, 3);
   assert.equal(job.deliveryError, "no-message-id: reply returned no messageId");
-  assert.deepEqual(job.parts, [], "没发出去的分片不留痕迹，否则重发会跳过它");
+  assert.equal(job.parts.length, 1, "没发出去的分片留一条记录");
+  assert.ok(job.parts[0].uncertainSince, "它带着 uncertainSince，下一次投递先查后发，不会当成已发送跳过");
 });
 
 test("TC-DL2 a failure that cannot succeed on a retry is attempted exactly once", async () => {
@@ -627,7 +627,7 @@ test("TC-RD1 a failed delivery is resent by redeliver once the platform is back"
   await core.handle(inbound());
   await tick();
   const jobId = core.state.seen.m1;
-  assert.equal(core.state.jobs[jobId].status, "failed");
+  assert.equal(core.state.jobs[jobId].status, "retrying");
   broken = false;
   const outcome = await core.redeliver({ job: jobId });
   assert.equal(outcome.outcome, "done");
@@ -635,6 +635,163 @@ test("TC-RD1 a failed delivery is resent by redeliver once the platform is back"
   assert.equal(job.status, "done");
   assert.equal(job.parts[0].messageId, "m-redelivered");
   assert.equal(job.answer, undefined, "发出去之后正文才回收");
+  assert.equal(job.deliveryRetryAt, undefined, "成功之后队列标记随其余投递字段一起清空");
+});
+
+test("TC-RT1 a retryable failure enters the retry queue and the scheduled delivery lands", async () => {
+  const clock = { now: Date.parse("2026-11-13T10:00:00.000Z") };
+  let broken = true;
+  const { core, replies } = harness({
+    spawn: () => fakeChild({ stdout: "答案" }),
+    deps: { deliveryRetryMs: 0, now: () => clock.now },
+    adapterOverrides: {
+      reply: async (ctx, text) => {
+        if (broken) return null;
+        return { messageId: `m-${replies.length}` };
+      },
+    },
+  });
+  await core.handle(inbound());
+  await tick();
+  const job = core.state.jobs[core.state.seen.m1];
+  assert.equal(job.status, "retrying");
+  assert.equal(Date.parse(job.deliveryRetryAt) - clock.now, 30_000, "刚失败时下一次尝试排 30 秒后");
+
+  clock.now += 29_000;
+  assert.equal(await core.startDueDeliveries(), 0, "没到点不动");
+
+  broken = false;
+  clock.now += 1_000;
+  assert.equal(await core.startDueDeliveries(), 1);
+  assert.equal(job.status, "done");
+  assert.equal(job.answer, undefined);
+  assert.equal(job.deliveryRetryAt, undefined);
+  assert.equal(job.deliveryFailedAt, undefined);
+  assert.equal(job.deliveryAttempts, 0);
+});
+
+test("TC-RT2 the window closes after five minutes and the owner is told once", async () => {
+  const clock = { now: Date.parse("2026-11-13T10:00:00.000Z") };
+  const { core, replies } = harness({
+    spawn: () => fakeChild({ stdout: "答案" }),
+    deps: { deliveryRetryMs: 0, now: () => clock.now },
+    adapterOverrides: {
+      reply: async (ctx, text) => {
+        if (text.includes("没送出去")) return { messageId: "m-notice" };
+        return null;
+      },
+      postNotice: async (text) => (replies.push({ key: "notice", text }), { messageId: "notice-1" }),
+    },
+  });
+  await core.handle(inbound());
+  await tick();
+  const job = core.state.jobs[core.state.seen.m1];
+  assert.equal(job.status, "retrying");
+
+  clock.now += 5 * 60_000 + 1;
+  await core.startDueDeliveries();
+
+  assert.equal(job.status, "failed");
+  assert.equal(job.error, "reply-failed");
+  const told = replies.filter((reply) => reply.text.includes("没送出去"));
+  assert.equal(told.length, 1, "只告知一次");
+  assert.match(told[0].text, /job redeliver th-abc/);
+});
+
+test("TC-RT3 a delivery waits while the same key is busy", async () => {
+  const clock = { now: Date.parse("2026-11-13T10:00:00.000Z") };
+  let broken = true;
+  const { core, replies } = harness({
+    spawn: () => fakeChild({ stdout: "答案" }),
+    deps: { deliveryRetryMs: 0, now: () => clock.now },
+    adapterOverrides: {
+      reply: async (ctx, text) => {
+        if (broken) return null;
+        return { messageId: `m-${replies.length}` };
+      },
+    },
+  });
+  await core.handle(inbound());
+  await tick();
+  const job = core.state.jobs[core.state.seen.m1];
+  const sentBefore = replies.length;
+
+  core.state.convs["th-abc"].activeJob = "job-busy";
+  core.state.jobs["job-busy"] = { id: "job-busy", key: "th-abc", status: "running", lease: null, updatedAt: new Date(clock.now).toISOString() };
+  clock.now += 60_000;
+  assert.equal(await core.startDueDeliveries(), 0, "有任务在跑就让路");
+  assert.equal(replies.length, sentBefore);
+
+  broken = false;
+  core.state.jobs["job-busy"].status = "done";
+  assert.equal(await core.startDueDeliveries(), 1);
+  assert.equal(job.status, "done");
+});
+
+test("TC-RT4 a retrying job survives a restart and its due delivery lands", async () => {
+  const clock = { now: Date.parse("2026-11-13T10:00:00.000Z") };
+  const state = emptyState();
+  state.convs["th-abc"] = { session: "fs-th-abc", rootText: "hello", lastMsgTs: null, activeJob: null };
+  state.jobs["job-77"] = {
+    id: "job-77",
+    key: "th-abc",
+    session: "fs-th-abc",
+    status: "retrying",
+    inbound: { text: "hello", rootText: "hello", dedupeId: "m1", messageId: "m1", chatId: "c1" },
+    origin: "user",
+    answer: "答案",
+    parts: [],
+    deliveryRetryAt: new Date(clock.now).toISOString(),
+    deliveryFailedAt: new Date(clock.now - 20_000).toISOString(),
+    deliveryAttempts: 3,
+    updatedAt: new Date(clock.now).toISOString(),
+  };
+  const { core, replies } = harness({ state, deps: { deliveryRetryMs: 0, now: () => clock.now } });
+
+  await core.recover();
+  await tick();
+
+  assert.equal(core.state.jobs["job-77"].status, "done");
+  assert.equal(replies.at(-1).text, "答案");
+});
+
+test("TC-RT5 a chunk that failed last time is looked up before it is sent again", async () => {
+  const clock = { now: Date.parse("2026-11-13T10:00:00.000Z") };
+  const state = emptyState();
+  state.convs["th-abc"] = { session: "fs-th-abc", rootText: "hello", lastMsgTs: null, activeJob: null };
+  state.jobs["job-88"] = {
+    id: "job-88",
+    key: "th-abc",
+    session: "fs-th-abc",
+    status: "retrying",
+    inbound: { text: "hello", rootText: "hello", dedupeId: "m1", messageId: "m1", chatId: "c1" },
+    origin: "user",
+    answer: "答案",
+    parts: [{ i: 0, messageId: null, hash: hashOf("答案"), sentAt: new Date(clock.now).toISOString(), uncertainSince: clock.now - 20_000 }],
+    deliveryRetryAt: new Date(clock.now).toISOString(),
+    deliveryFailedAt: new Date(clock.now - 20_000).toISOString(),
+    deliveryAttempts: 3,
+    updatedAt: new Date(clock.now).toISOString(),
+  };
+  const replies = [];
+  const located = [];
+  const { core } = harness({
+    state,
+    deps: { deliveryRetryMs: 0, now: () => clock.now },
+    adapterOverrides: {
+      reply: async (ctx, text) => (replies.push(text), { messageId: "m-new" }),
+      locateReply: async (ctx, { text, since }) => (located.push({ text, since }), "m-located"),
+    },
+  });
+
+  await core.startDueDeliveries();
+
+  assert.deepEqual(located, [{ text: "答案", since: clock.now - 20_000 }], "先按上一次的时间窗去查");
+  assert.deepEqual(replies, [], "查到了就不再发一遍");
+  const job = core.state.jobs["job-88"];
+  assert.equal(job.parts[0].messageId, "m-located");
+  assert.equal(job.parts[0].uncertainSince, undefined);
+  assert.equal(job.status, "done");
 });
 
 test("TC-RD2 redeliver refuses a job whose answer is already gone", async () => {

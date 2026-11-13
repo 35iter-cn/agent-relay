@@ -13,7 +13,7 @@ import { pruneState } from "../state/prune.mjs";
 import { bootNoticeText, readBootId, shouldAnnounceBoot } from "../shared/boot.mjs";
 import { createJob, ctxOf, isFinished } from "../jobs/model.mjs";
 import { readProcStartTicks } from "../jobs/lease.mjs";
-import { deliveryError, hashOf, isRetryable, planParts } from "../jobs/delivery.mjs";
+import { DELIVERY_RETRY_INTERVAL_MS, DELIVERY_RETRY_WINDOW_MS, deliveryError, hashOf, isRetryable, planParts } from "../jobs/delivery.mjs";
 import { extractMedia } from "../jobs/media.mjs";
 import { declaredTimeoutMs, headOfArgs, readSessionSignal, TOOL_GRACE_MS } from "../jobs/signals.mjs";
 import { nextAction } from "../jobs/next-action.mjs";
@@ -37,7 +37,7 @@ const MAX_SEEN = 5000;
 const COMMAND_TTL_MS = 10 * 60_000;
 const INTERRUPT_NOTICE = "⏸ 这一轮被 relay 重启打断：还在跑的进程已终止，会话与已完成的改动都保留，被打断那轮没发出来的输出不补发。直接回复这条消息就会接着之前的会话继续。";
 const ACTION_KINDS = { cancel: true, restart: true };
-const STATUS_TEXT = { done: "完成", failed: "失败", cancelled: "取消", interrupted: "被打断", queued: "排队", scheduled: "排定中" };
+const STATUS_TEXT = { done: "完成", failed: "失败", retrying: "重试中", cancelled: "取消", interrupted: "被打断", queued: "排队", scheduled: "排定中" };
 const BRIEF_MAX_BYTES = 8 * 1024;
 const DEFAULT_GRACE_MS = 6 * 3_600_000;
 const RUNAWAY_PER_HOUR = relayEnv("RUNAWAY_PER_HOUR", 12);
@@ -828,7 +828,7 @@ export function createCore({ adapter, config, deps = {} }) {
     return media.files.length || media.invalid.length ? media : null;
   }
 
-  async function deliverParts(job, uncertain = new Map()) {
+  async function deliverParts(job) {
     const canEdit = typeof adapter.edit === "function";
     const canLocate = typeof adapter.locateReply === "function";
     const media = mediaFor(job);
@@ -837,6 +837,17 @@ export function createCore({ adapter, config, deps = {} }) {
     for (const step of plan) {
       if (step.action === "skip") continue;
       try {
+        if (step.action === "locate-or-send") {
+          const located = canLocate ? await adapter.locateReply(ctxOf(job), { text: step.text, since: step.since }) : null;
+          if (located) {
+            job.parts = [...job.parts.filter((part) => part.i !== step.i), { i: step.i, messageId: String(located), hash: hashOf(step.text), sentAt: isoNow(), located: true }];
+            job.updatedAt = isoNow();
+            save();
+            appendLog({ event: "delivery-located", job: job.id, key: job.key, part: step.i, messageId: String(located) });
+            continue;
+          }
+          appendLog({ event: canLocate ? "delivery-locate-missed" : "delivery-no-locator", job: job.id, key: job.key, part: step.i });
+        }
         if (step.kind === "media") {
           await adapter.postMedia(ctxOf(job), step.files);
           job.parts = [...job.parts.filter((part) => part.i !== step.i), { i: step.i, kind: "media", messageId: null, hash: step.hash, sentAt: isoNow() }];
@@ -848,17 +859,6 @@ export function createCore({ adapter, config, deps = {} }) {
           }
           job.parts = [...job.parts.filter((part) => part.i !== step.i), { i: step.i, messageId: step.messageId, hash: hashOf(step.text), sentAt: isoNow() }];
         } else {
-          const since = uncertain.get(step.i);
-          if (since && canLocate) {
-            const located = await adapter.locateReply(ctxOf(job), { text: step.text, since });
-            if (located) {
-              job.parts = [...job.parts.filter((part) => part.i !== step.i), { i: step.i, messageId: String(located), hash: hashOf(step.text), sentAt: isoNow(), located: true }];
-              job.updatedAt = isoNow();
-              save();
-              appendLog({ event: "delivery-located", job: job.id, key: job.key, part: step.i, messageId: String(located) });
-              continue;
-            }
-          }
           const sent = await adapter.reply(ctxOf(job), step.text);
           if (!sent?.messageId) throw deliveryError("reply returned no messageId", { code: "no-message-id" });
           job.parts = [...job.parts.filter((part) => part.i !== step.i), { i: step.i, messageId: String(sent.messageId), hash: hashOf(step.text), sentAt: isoNow() }];
@@ -866,7 +866,11 @@ export function createCore({ adapter, config, deps = {} }) {
         job.updatedAt = isoNow();
         save();
       } catch (error) {
-        if (!uncertain.has(step.i)) uncertain.set(step.i, now());
+        job.parts = [
+          ...job.parts.filter((part) => part.i !== step.i),
+          { i: step.i, messageId: null, hash: hashOf(step.text ?? ""), sentAt: isoNow(), uncertainSince: job.parts.find((part) => part.i === step.i)?.uncertainSince ?? now() },
+        ];
+        save();
         log("error", "reply", String(error?.message ?? error));
         throw error;
       }
@@ -875,21 +879,20 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   async function deliver(job) {
-    const uncertain = new Map();
     let failure = null;
     for (let attempt = 1; attempt <= MAX_DELIVERY_ATTEMPTS; attempt += 1) {
       try {
-        await deliverParts(job, uncertain);
+        await deliverParts(job);
         failure = null;
         if (attempt > 1) appendLog({ event: "delivery-retried", job: job.id, key: job.key, attempts: attempt - 1 });
         break;
       } catch (error) {
         failure = error;
         job.deliveryAttempts = (job.deliveryAttempts ?? 0) + 1;
-        job.deliveryFailedAt = isoNow();
+        job.deliveryFailedAt = job.deliveryFailedAt ?? isoNow();
         job.deliveryError = describeDeliveryFailure(error);
         save();
-        appendLog({ event: "delivery-failed", job: job.id, key: job.key, attempt, part: uncertain.size ? Math.max(...uncertain.keys()) : null, retryable: isRetryable(error), error: String(error?.message ?? error) });
+        appendLog({ event: "delivery-failed", job: job.id, key: job.key, attempt, part: uncertainPartOf(job), retryable: isRetryable(error), error: String(error?.message ?? error) });
         if (!isRetryable(error)) break;
         if (attempt < MAX_DELIVERY_ATTEMPTS) await new Promise((resolve) => setTimeout(resolve, deliveryBackoff[Math.min(attempt - 1, deliveryBackoff.length - 1)] ?? 0));
       }
@@ -899,6 +902,7 @@ export function createCore({ adapter, config, deps = {} }) {
       job.deliveryAttempts = 0;
       job.deliveryFailedAt = undefined;
       job.deliveryError = undefined;
+      job.deliveryRetryAt = undefined;
     }
     try {
       await adapter.onProgressDone?.(ctxOf(job));
@@ -907,8 +911,16 @@ export function createCore({ adapter, config, deps = {} }) {
     }
     job.progress = null;
     if (failed && job.status === "answered") {
-      job.status = "failed";
-      job.error = "reply-failed";
+      const windowLeft = deliveryRetryWindowLeft(job);
+      if (isRetryable(failure) && windowLeft > 0) {
+        job.status = "retrying";
+        job.deliveryRetryAt = isoAt(now() + Math.min(DELIVERY_RETRY_INTERVAL_MS, windowLeft));
+        appendLog({ event: "delivery-retry-scheduled", job: job.id, key: job.key, at: job.deliveryRetryAt });
+      } else {
+        job.status = "failed";
+        job.error = "reply-failed";
+        await announceUndelivered(job);
+      }
     } else if (!failed && job.status === "answered") {
       job.status = "done";
       job.answer = undefined;
@@ -916,6 +928,29 @@ export function createCore({ adapter, config, deps = {} }) {
     job.updatedAt = isoNow();
     save();
     return job.status;
+  }
+
+  function uncertainPartOf(job) {
+    const uncertain = (job.parts ?? []).filter((part) => part.uncertainSince);
+    return uncertain.length ? Math.max(...uncertain.map((part) => part.i)) : null;
+  }
+
+  function deliveryRetryWindowLeft(job) {
+    const firstFailedAt = Date.parse(job.deliveryFailedAt ?? "");
+    if (!Number.isFinite(firstFailedAt)) return 0;
+    return DELIVERY_RETRY_WINDOW_MS - (now() - firstFailedAt);
+  }
+
+  async function announceUndelivered(job) {
+    try {
+      await notices.emit({
+        text: `上一轮的回复没送出去（${job.deliveryError ?? "平台连接失败"}）。内容还在，\`agent-relay job redeliver ${job.key}\` 可以补发。`,
+        reply: { mode: "conversation", key: job.key },
+      });
+      appendLog({ event: "delivery-gave-up", job: job.id, key: job.key, notified: true });
+    } catch (error) {
+      appendLog({ event: "delivery-notice-failed", job: job.id, key: job.key, error: String(error?.message ?? error) });
+    }
   }
 
   function startJob(job) {
@@ -1021,6 +1056,12 @@ export function createCore({ adapter, config, deps = {} }) {
           continue;
         }
         if (action.type === "resend") {
+          await deliver(job);
+          touched += 1;
+          continue;
+        }
+        if (action.type === "retry-delivery") {
+          job.status = "answered";
           await deliver(job);
           touched += 1;
           continue;
@@ -1457,6 +1498,21 @@ export function createCore({ adapter, config, deps = {} }) {
     return { op, refused: "unknown-op" };
   }
 
+  async function startDueDeliveries() {
+    for (const job of Object.values(state.jobs ?? {})) {
+      if (job.status !== "retrying") continue;
+      const due = Date.parse(job.deliveryRetryAt ?? "");
+      if (Number.isFinite(due) && due > now()) continue;
+      if (keyIsBusy(job.key)) continue;
+      job.status = "answered";
+      job.updatedAt = isoNow();
+      save();
+      await deliver(job);
+      return 1;
+    }
+    return 0;
+  }
+
   function startDueJobs() {
     let touched = 0;
     for (const job of Object.values(state.jobs ?? {})) {
@@ -1707,6 +1763,7 @@ export function createCore({ adapter, config, deps = {} }) {
     scheduleJob,
     cancelScheduled,
     startDueJobs,
+    startDueDeliveries,
     startDueLoops,
     notices,
     prompts,
