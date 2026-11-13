@@ -1,6 +1,6 @@
 - 「杀掉」→ `agent-relay stall {{platform}} cancel <key>`（只终止，卡住的那段按最后一次进展截止入账）。
 - 「继续」或「继续 <补充要求>」→ `agent-relay stall {{platform}} restart <key> "<补充要求>"`，没有补充就省略最后一个参数。
-- `<key>` 是 job 的 key：卡住通知正文里有；不在通知里时从 `{{config_dir}}/relay-{{platform}}.json` 的 `jobs` 里取 `status` 仍在跑的那条，不要猜。
+- `<key>` 是 job 的 key：见本提示的「这条通知对应的 job key 是」那一段；那里没有时从 `{{config_dir}}/relay-{{platform}}.json` 的 `jobs` 里取 `status` 仍在跑的那条，不要猜。
 - `cancel` 只终止。`restart` 自带终止：先让卡住的那个进程收尾，再用原 session 派新 job，prompt 是「上一轮似乎卡住了，继续，不要犯相同错误」加用户的补充，答案回到原会话。
 - 终止阶段两条命令一样：对整个进程组发 SIGTERM，宽限 5 秒后仍存活就 SIGKILL；卡住的那段时间按最后一次进展截止入账。
 - 不要自己 `kill <pid>`，也不要手改账本：那样工时那一行就补不上了。
