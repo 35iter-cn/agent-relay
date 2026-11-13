@@ -201,6 +201,7 @@ test("TC-P26 one rule is stated once, measured across every entry and platform",
     { id: "outbound", marker: "不要再用 `notice emit`", entries: ["conversation", "notice", "loop"], platforms: ["slack", "feishu"] },
     { id: "transport", marker: "只放最终回帖", entries: ["conversation", "loop"], platforms: ["slack", "feishu"] },
     { id: "formatting", marker: "排版求紧", entries: ["conversation", "notice", "loop"], platforms: ["slack"] },
+    { id: "github-link", marker: "`[backend#1360](链接)`", entries: ["conversation", "notice", "loop"], platforms: ["slack"] },
     { id: "topic", marker: "using-topicbox", entries: ["conversation"], platforms: ["slack", "feishu"] },
   ];
   for (const platform of ["slack", "feishu"]) {
