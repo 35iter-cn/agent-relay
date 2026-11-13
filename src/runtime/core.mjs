@@ -15,7 +15,7 @@ import { createJob, ctxOf, isFinished } from "../jobs/model.mjs";
 import { readProcStartTicks } from "../jobs/lease.mjs";
 import { deliveryError, hashOf, isRetryable, planParts } from "../jobs/delivery.mjs";
 import { extractMedia } from "../jobs/media.mjs";
-import { declaredTimeoutMs, readSessionSignal, TOOL_GRACE_MS } from "../jobs/signals.mjs";
+import { declaredTimeoutMs, headOfArgs, readSessionSignal, TOOL_GRACE_MS } from "../jobs/signals.mjs";
 import { nextAction } from "../jobs/next-action.mjs";
 import { createStateStore } from "../state/store.mjs";
 import { createNoticeService } from "../notices/service.mjs";
@@ -150,9 +150,8 @@ export function createCore({ adapter, config, deps = {} }) {
     save();
     appendLog({ event: "stall", job: job.id, key: job.key, session: job.session, silenceMs, reason: job.stallReason, tool: job.stallTool, callIds: tool?.callIds ?? [], runningMs: job.stallRunningMs, pid: job.lease?.pid ?? null });
     const fields = {
-      key: job.key,
-      session: job.session,
-      pid: job.lease?.pid ?? null,
+      task: state.convs?.[job.key]?.rootText || job.inbound?.rootText || "",
+      round: job.inbound?.text ?? "",
       silenceMs,
       local: localStamp(at),
       reason: job.stallReason,
@@ -681,7 +680,7 @@ export function createCore({ adapter, config, deps = {} }) {
           return;
         }
         if (record.type === "tool_execution_start") {
-          job.activity = { at: now(), open: { name: record.toolName ?? null, startedAt: now(), declaredMs: record.toolName === "bash" ? timeoutOfArgs(record.args) : null, callIds: [record.toolCallId].filter(Boolean), head: "", tools: [] } };
+          job.activity = { at: now(), open: { name: record.toolName ?? null, startedAt: now(), declaredMs: record.toolName === "bash" ? timeoutOfArgs(record.args) : null, callIds: [record.toolCallId].filter(Boolean), head: headOfArgs(record.args), tools: [] } };
           return;
         }
         if (record.type === "tool_execution_end") {

@@ -1029,22 +1029,39 @@ test("TC-BOOT a platform that opts out never announces, a machine without a boot
   assert.ok(noId.logs.some((line) => line.includes("no-boot-id")));
 });
 
-test("TC-ST1 stall notice names the session, key, pid and restart prompt", () => {
+test("TC-ST1 stall notice opens with the task and this round instead of ids", () => {
   const text = stallNoticeText({
-    key: "th-abc",
-    session: "fs-th-abc",
-    pid: 4242,
+    task: "实施 owner portal 门户可见性 specs 01",
+    round: "按计划，我授权你 op 可以一次将所有任务都执行完。",
     silenceMs: 12 * 60_000,
     local: "2026-10-26 15:20:12",
   });
+  assert.match(text, /^任务：实施 owner portal 门户可见性 specs 01$/m);
+  assert.match(text, /^这一轮：按计划，我授权你 op 可以一次将所有任务都执行完。$/m);
   assert.match(text, /12 分钟没有进展/);
-  assert.match(text, /fs-th-abc/);
-  assert.match(text, /key：th-abc/);
-  assert.match(text, /pid：4242/);
+  assert.doesNotMatch(text, /会话：|key：|pid：|th-abc|fs-th-abc/);
   assert.match(text, /上一轮似乎卡住了，继续，不要犯相同错误/);
   assert.match(text, /回复本消息/);
   assert.match(text, /按最后一次进展截止入账/);
   assert.doesNotMatch(text, /已用时间/);
+});
+
+test("TC-ST22 the notice body stays readable: one line per subject, capped", () => {
+  const text = stallNoticeText({
+    task: "x".repeat(200),
+    round: "\n\n  first line  \nsecond line\n",
+    silenceMs: 3 * 60_000,
+    local: "2026-10-26 15:20:12",
+  });
+  const task = text.split("\n").find((line) => line.startsWith("任务："));
+  assert.equal(task.length, "任务：".length + 80 + 1);
+  assert.match(task, /…$/);
+  assert.match(text, /^这一轮：first line$/m);
+  assert.equal(text.split("\n").filter((line) => line.startsWith("这一轮：")).length, 1);
+
+  const same = stallNoticeText({ task: "同一个根", round: "同一个根", silenceMs: 60_000, local: "t" });
+  assert.equal(same.split("\n").filter((line) => line.startsWith("任务：")).length, 1);
+  assert.doesNotMatch(same, /这一轮：/);
 });
 
 test("TC-ST2 a graceful terminate lets the plugin write the row and only posts the note", async () => {
@@ -1233,7 +1250,7 @@ test("TC-ST6 an unclosed tool call over the threshold notifies once with the too
   await core.checkStall(job);
   const text = replies.map((reply) => reply.text).join("\n");
   assert.match(text, /工具 bash 已运行 12 分钟没有返回/);
-  assert.match(text, /工具：bash · dotnet build/);
+  assert.match(text, /命令：dotnet build/);
   assert.equal(job.stallReason, "tool");
   assert.equal(job.stallTool, "bash");
   assert.equal(job.stallRunningMs, 12 * 60_000);
@@ -1663,6 +1680,21 @@ test("TC-RPC6 rpc mode sends the rendered prompt over the protocol and delivers 
   assert.ok(prompt, "a prompt command was sent");
   assert.match(prompt.message, /conversation=th-abc/);
   assert.equal(replies.at(-1).text, "改好了");
+});
+
+test("TC-ST23 an rpc worker's open tool carries the command head, so the notice can show it", async () => {
+  const child = fakeRpcChild({ hold: true });
+  const { core } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await core.handle(inbound({ text: "跑一下" }));
+  await tick();
+  child.stdout.emit("data", `${JSON.stringify({ type: "tool_execution_start", toolName: "bash", toolCallId: "c1", args: { command: "md run --stack hao-local-debug\n--watch" } })}\n`);
+  await tick();
+  const job = core.state.jobs[core.state.seen.m1];
+  assert.equal(job.activity.open.head, "md run --stack hao-local-debug");
+  const text = stallNoticeText({ reason: "tool", tool: job.activity.open, silenceMs: 11 * 60_000, local: "2026-11-13 17:15:46" });
+  assert.match(text, /^命令：md run --stack hao-local-debug$/m);
+  child.settle();
+  await tick();
 });
 
 test("TC-RPC21 two answer segments are both delivered, in order", async () => {

@@ -8,11 +8,15 @@ export const TOOL_GRACE_MS = 60_000;
 const HEAD_CHARS = 120;
 const FAILED = (reason) => ({ ok: false, reason });
 
-export function assertHead(toolCall) {
-  const args = toolCall?.arguments ?? {};
-  const raw = typeof args.command === "string" ? args.command.split("\n").find((line) => line.trim()) ?? "" : typeof args.path === "string" ? args.path : JSON.stringify(args);
+export function headOfArgs(args) {
+  const value = args ?? {};
+  const raw = typeof value.command === "string" ? value.command.split("\n").find((line) => line.trim()) ?? "" : typeof value.path === "string" ? value.path : JSON.stringify(value);
   const head = String(raw).trim();
   return head.length > HEAD_CHARS ? `${head.slice(0, HEAD_CHARS)}…` : head;
+}
+
+export function assertHead(toolCall) {
+  return headOfArgs(toolCall?.arguments);
 }
 
 export function declaredTimeoutMs(open) {
