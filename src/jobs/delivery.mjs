@@ -17,6 +17,9 @@ export function isRetryable(error) {
   return error?.retryable !== false;
 }
 
+export const DELIVERY_RETRY_WINDOW_MS = 5 * 60_000;
+export const DELIVERY_RETRY_INTERVAL_MS = 30_000;
+
 export function planParts({ answer, parts = [], chunkLimit, canEdit = false, media = null }) {
   if (answer == null) return [];
   const files = media?.files ?? [];
@@ -24,7 +27,7 @@ export function planParts({ answer, parts = [], chunkLimit, canEdit = false, med
   const steps = chunks.map((text, i) => {
     const sent = parts.find((part) => part.i === i);
     if (!sent) return { i, text, action: "send" };
-    if (sent.hash === hashOf(text)) return { i, action: "skip" };
+    if (sent.hash === hashOf(text)) return sent.uncertainSince ? { i, text, action: "locate-or-send", since: sent.uncertainSince } : { i, action: "skip" };
     if (canEdit && sent.messageId) return { i, text, action: "edit", messageId: sent.messageId };
     return { i, action: "skip" };
   });
