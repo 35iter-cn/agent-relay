@@ -10,7 +10,7 @@ import { definePlatform, isPlatform, PLATFORMS } from "./platforms/contract.mjs"
 import { durationMs } from "./shared/duration.mjs";
 import { readJson } from "./shared/json.mjs";
 import { localStamp } from "./shared/time.mjs";
-import { MAX_LOOPS, MIN_EVERY_MS, canonicalPromptPath, isLoopId, loopIdForSlug, platformOfLoopId, validateLoopPromptSource, validateLoopTitle, validateSchedule, validateSlug } from "./loops/model.mjs";
+import { MAX_LOOPS, canonicalPromptPath, isLoopId, loopIdForSlug, platformOfLoopId, validateLoopPromptSource, validateLoopTitle, validateSchedule, validateSlug } from "./loops/model.mjs";
 import { loopDueAt } from "./loops/schedule.mjs";
 import { validatePromptFile } from "./loops/prompt.mjs";
 import { loopHelp } from "./loops/help.mjs";
@@ -194,7 +194,7 @@ export function listLoopRows(config, platforms, { all = false, nowMs = Date.now(
         platform,
         id: loop.id,
         state: loop.state,
-        schedule: loop.at ? `at ${loop.at}` : loop.cron ? `cron ${loop.cron}` : `every ${loop.every}`,
+        schedule: `cron ${loop.cron ?? "-"}`,
         due,
         overMs: loop.state === "armed" && Number.isFinite(due) ? Math.max(0, nowMs - due) : 0,
         lastOutcome: loop.lastOutcome ?? "-",
@@ -214,7 +214,7 @@ export function formatLoopRows(rows) {
 }
 
 export function doctorLoopRows(config, platforms) {
-  const allowedWarnings = new Set(["legacy-id", "inline-prompt-allowed"]);
+  const allowedWarnings = new Set(["legacy-id", "inline-prompt-allowed", "skip-recent"]);
   const rows = [];
   for (const platform of platforms) {
     for (const loop of Object.values(readLoops(config.stateFile(platform)))) {
@@ -232,7 +232,9 @@ export function doctorLoopRows(config, platforms) {
       } else {
         problems.push("empty-prompt");
       }
-      if (validateSchedule({ every: loop.every, at: loop.at, cron: loop.cron })) problems.push("bad-schedule");
+      if (validateSchedule({ cron: loop.cron })) problems.push("bad-schedule");
+      const skippedAt = Date.parse(loop.lastSkipAt ?? "");
+      if (Number.isFinite(skippedAt) && Date.now() - skippedAt < 7 * 86_400_000) problems.push("skip-recent");
       const level = !problems.length ? "ok" : problems.every((item) => allowedWarnings.has(item)) ? "warn" : "fail";
       rows.push({ platform, id, level, problems });
     }
@@ -439,13 +441,15 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
     }
     const slug = typeof flags.slug === "string" ? flags.slug.trim() : "";
     const allowInline = Boolean(flags["allow-inline"]);
-    const every = typeof flags.every === "string" ? flags.every : null;
-    const at = typeof flags.at === "string" ? flags.at : null;
+    if (flags.every !== undefined || flags.at !== undefined) {
+      refuse("cron-required");
+      return;
+    }
     const cron = typeof flags.cron === "string" ? flags.cron : null;
     const id = loopIdForSlug(slug, platform);
     const title = typeof flags.title === "string" ? flags.title.trim() : null;
     const refused =
-      validateSchedule({ every, at, cron }) ??
+      validateSchedule({ cron }) ??
       (slug ? validateSlug(slug) : "slug-required") ??
       validateLoopTitle(title) ??
       validateLoopPromptSource({ id, prompt: source.prompt, promptFile: source.promptFile, configDir: config.configDir, allowInline });
@@ -465,8 +469,6 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
         prompt: source.prompt ?? "",
         promptFile: source.promptFile ?? null,
         promptInline: !source.promptFile && Boolean(source.prompt),
-        every,
-        loopAt: at,
         cron,
         thread: !flags["no-thread"],
         title,
@@ -495,10 +497,11 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
       [
         `id: ${target.id}`,
         `state: ${target.state}`,
-        `schedule: ${target.at ? `at ${target.at}` : target.cron ? `cron ${target.cron}` : `every ${target.every}`}`,
+        `schedule: cron ${target.cron ?? "-"}`,
         `due: ${Number.isFinite(loopDueAt(target)) ? localStamp(loopDueAt(target)) : "-"}`,
         `thread: ${target.thread !== false}`,
         `rounds: ${target.lastRound ?? 0}  last: ${target.lastOutcome ?? "-"}  streak: ${target.failStreak ?? 0}`,
+        ...(Number.isFinite(Date.parse(target.lastSkipAt ?? "")) ? [`skipped: ${localStamp(Date.parse(target.lastSkipAt))}`] : []),
         ...(target.promptFile ? [`prompt-file: ${target.promptFile}`] : [`prompt:`, target.prompt]),
         "",
       ].join("\n"),
@@ -516,18 +519,18 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
   }
   if (verb === "update") {
     const command = { op: "loop-update", id };
-    if (flags.every !== undefined || flags.at !== undefined || flags.cron !== undefined) {
-      const every = typeof flags.every === "string" ? flags.every : null;
-      const at = typeof flags.at === "string" ? flags.at : null;
+    if (flags.every !== undefined || flags.at !== undefined) {
+      refuse("cron-required");
+      return;
+    }
+    if (flags.cron !== undefined) {
       const cron = typeof flags.cron === "string" ? flags.cron : null;
-      const refused = validateSchedule({ every, at, cron });
+      const refused = validateSchedule({ cron });
       if (refused) {
         refuse(refused);
         return;
       }
-      command.every = every;
-      command.loopAt = at;
-      if (cron) command.cron = cron;
+      command.cron = cron;
     }
     if (flags.prompt !== undefined || flags["prompt-file"] !== undefined) {
       const source = loopPromptFlags(flags);

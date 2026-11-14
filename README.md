@@ -72,10 +72,10 @@ only delays its own turns.
 
 ## Loops
 
-A conversation turn can be put on a clock once (`job start`); a **loop** is the repeating version. A loop is one prompt plus one schedule (`--every`, `--at` or `--cron`), owned by the platform it was created on:
+A conversation turn can be put on a clock once (`job start`); a **loop** is the repeating version. A loop is one prompt plus one cron schedule, owned by the platform it was created on:
 
 ```bash
-agent-relay loop create --platform slack --slug intake --every 30m --prompt-file ~/.config/agent-relay/prompts/loops/intake-slack/prompt.md
+agent-relay loop create --platform slack --slug intake --cron "*/30 * * * *" --prompt-file ~/.config/agent-relay/prompts/loops/intake-slack/prompt.md
 agent-relay loop create --platform slack --cron "0 13 * * *" --prompt-file ./digest.txt
 agent-relay loop list              # merges every platform, marks overdue loops
 agent-relay loop run intake-slack  # start one round right now
@@ -89,7 +89,7 @@ A loop's id is readable when you say so: `--slug intake` makes it `intake-slack`
 
 The shape is enforced rather than documented: `--slug` is required, and the only accepted `--prompt-file` is `<configDir>/prompts/loops/<loop id>/prompt.md` — another path is refused with `prompt-file-not-canonical`, and an inline `--prompt` is refused with `inline-prompt-refused` unless you say `--allow-inline` (stored as `promptInline`). A one-off prompt belongs to `job start`, not to a loop. `agent-relay loop doctor [--platform <p>]` re-checks every loop against that shape — id form, canonical path, file health, schedule — prints `<id>\t<ok|warn|fail>\t<problems>` and exits 3 when something fails.
 
-The three schedules answer different questions and none replaces another: `every` schedules one interval after the previous round **started** (any duration, and "wait 30m after it finishes"); `at` fires once and leaves the loop `done`; `cron "<5 fields>"` fires on wall-clock minutes in `Asia/Shanghai` (`0 13 * * *` is every day at 13:00). Only one is set at a time — updating one clears the other two — and a cron loop never becomes `done`.
+The schedule is cron, five fields, on wall-clock minutes in `Asia/Shanghai` (`0 13 * * *` is every day at 13:00). The next due point is the first match after the previous trigger; when it arrives while the previous round is still running, **that trigger is dropped rather than caught up** — the anchor moves past it, so a round finishing at 21:59 with `*/30` meets the 22:00 trigger, and `loop show` reports the dropped point as `skipped`. A one-off turn is `job start --in/--at`, never a loop. A stored loop still carrying the retired `every` / `at` schedule is paused at boot and reported by one notice, and `loop doctor` fails it with `bad-schedule` — it never dies silently.
 
 Every round is a **fresh session**: the round's conversation key is `<loopId>-r<round>`, so nothing from the previous round leaks in. The round's output goes out through the **notice entry** with a conversation binding (`reply: { mode: "conversation", key }`), which is the one deliberate difference to an ordinary notice: a reply to it continues *that round's* session instead of opening a `notice-<id>` conversation.
 
@@ -99,7 +99,7 @@ A round whose output is only `NOOP` (or nothing at all) is a quiet round: nothin
 
 The old round history lives in `~/.config/agent-relay/loops/<loopId>.jsonl` (last 50 rounds, 90 days); a round never receives the previous output — it is told to read it with `loop log` / `loop show-run`.
 
-Four gates keep automated rounds from running away: `every` never below 10 minutes (`cron` is not held to that floor — a dense expression is bounded by the hourly budget instead), at most 20 loops per platform, at most `LOOP_ROUNDS_PER_HOUR` (20) rounds per platform per hour, and one round in flight per loop. Three consecutive failed rounds pause the loop and raise one notice — a loop that dies silently is indistinguishable from "nothing happened today".
+Three gates keep automated rounds from running away: at most 20 loops per platform, at most `LOOP_ROUNDS_PER_HOUR` (20) rounds per platform per hour (a dropped trigger spends none of it), and one round in flight per loop. Three consecutive failed rounds pause the loop and raise one notice — a loop that dies silently is indistinguishable from "nothing happened today".
 
 A loop is scheduled and delivered only by its own platform's daemon, which keeps the per-platform state invariant: a stopped daemon delays its own loops, nothing else. `state.loops` is written only from that daemon, through the same command-file path as `job start`.
 
@@ -113,7 +113,7 @@ src/
 ├── shared/                 chunking, json, time, logging, retention, prompts, env, fs, boot
 ├── state/                  state schema + atomic store
 ├── jobs/                   job model, leases, delivery plan, worker signals, next action, help
-├── loops/                  loop model, schedule (every / at / cron), rounds, history, help
+├── loops/                  loop model, cron schedule, rounds, history, help
 ├── runtime/                core loop, prompts, stall notice, instance lock
 ├── notices/                notice service (emit / match / prune)
 ├── prompts/                prompt sections (one file per block) + stall fragments

@@ -100,8 +100,7 @@ function seededLoop(overrides = {}) {
   return {
     id: "loop-fake-1",
     prompt: "看我的 open PR 有没有 CI 挂掉",
-    every: "10m",
-    at: null,
+    cron: "*/10 * * * *",
     thread: true,
     state: "armed",
     createdAt: agoMinutes(60),
@@ -111,6 +110,7 @@ function seededLoop(overrides = {}) {
     lastRound: 0,
     lastMessageId: null,
     lastOutcome: null,
+    lastSkipAt: null,
     failStreak: 0,
     ...overrides,
   };
@@ -199,6 +199,7 @@ test("TC-LR4 a round still running keeps the next tick from starting another one
   core.state.loops["loop-fake-1"].lastRunAt = agoMinutes(30);
   const second = await core.startDueLoops();
   assert.equal(second, 0);
+  assert.ok(core.state.loops["loop-fake-1"].lastSkipAt, "the dropped trigger is recorded");
   assert.equal(Object.values(core.state.jobs).filter((job) => job.origin === "loop").length, 1);
 });
 
@@ -260,7 +261,7 @@ test("TC-LR8 the thread hook receives the round key and is optional", async () =
   assert.equal(calls.length, 1);
 });
 
-test("TC-LR9 loop commands start a manual round and mark a one-shot loop done", async () => {
+test("TC-LR9 loop commands start a manual round and push the anchor", async () => {
   const { core, config } = harness({ state: { loops: { "loop-fake-1": seededLoop({ lastRunAt: new Date().toISOString() }) } } });
   mkdirSync(config.commandDir("fake"), { recursive: true });
   writeJsonAtomic(join(config.commandDir("fake"), "1.json"), { op: "loop-run", id: "loop-fake-1", at: new Date().toISOString() });
@@ -270,10 +271,8 @@ test("TC-LR9 loop commands start a manual round and mark a one-shot loop done", 
   assert.ok(job);
   assert.equal(job.loop.trigger, "manual");
 
-  const once = harness({ state: { loops: { "loop-fake-1": seededLoop({ every: null, at: agoMinutes(5) }) } } });
-  assert.equal(await once.core.startDueLoops(), 1);
-  await settle();
-  assert.equal(once.core.state.loops["loop-fake-1"].state, "done");
+  assert.equal(core.state.loops["loop-fake-1"].lastRunAt !== null, true, "a manual round moves the anchor");
+  assert.equal(core.state.loops["loop-fake-1"].state, "armed", "a manual round keeps the loop armed");
 });
 
 test("TC-LR10 an empty loop prompt template fails the round instead of spawning a blind worker", async () => {
@@ -302,32 +301,29 @@ test("TC-LR11 the command envelope timestamp never becomes the loop's own schedu
     id: "loop-fake-2",
     prompt: "",
     promptFile,
-    every: "10m",
-    loopAt: null,
+    cron: "*/10 * * * *",
     thread: true,
     at: new Date().toISOString(),
   });
   await core.drainCommands();
   const created = core.state.loops["loop-fake-2"];
   assert.ok(created, "the loop was created");
-  assert.equal(created.every, "10m");
-  assert.equal(created.at, null);
+  assert.equal(created.cron, "*/10 * * * *");
+  assert.equal(created.every, undefined);
+  assert.equal(created.at, undefined);
 
   const promptFile3 = join(config.configDir, "prompts", "loops", "loop-fake-3", "prompt.md");
   mkdirSync(dirname(promptFile3), { recursive: true });
-  writeFileSync(promptFile3, "一次性\n");
+  writeFileSync(promptFile3, "旧记录\n");
   writeJsonAtomic(join(config.commandDir("fake"), "3.json"), {
     op: "loop-create",
     id: "loop-fake-3",
     prompt: "",
     promptFile: promptFile3,
-    every: null,
-    loopAt: "2026-12-01T00:00:00.000Z",
     at: new Date().toISOString(),
   });
   await core.drainCommands();
-  assert.equal(core.state.loops["loop-fake-3"].at, "2026-12-01T00:00:00.000Z");
-  assert.equal(core.state.loops["loop-fake-3"].every, null);
+  assert.equal(core.state.loops["loop-fake-3"], undefined, "a loop without cron is refused");
 });
 
 test("TC-LR12 a NOOP round posts nothing and still counts as a healthy round", async () => {
@@ -381,7 +377,7 @@ test("TC-LR21 a NOOP wrapped in whitespace stays quiet", async () => {
 
 test("TC-LR14 a cron round leaves the loop armed and schedules the next cron match", async () => {
   const { core, replies } = harness({
-    state: { loops: { "loop-fake-1": seededLoop({ every: null, cron: "* * * * *", createdAt: agoMinutes(5) }) } },
+    state: { loops: { "loop-fake-1": seededLoop({ cron: "* * * * *", createdAt: agoMinutes(5) }) } },
   });
   assert.equal(await core.startDueLoops(), 1);
   await settle();
@@ -396,48 +392,30 @@ test("TC-LR14 a cron round leaves the loop armed and schedules the next cron mat
   assert.ok(due > Date.now());
 });
 
-test("TC-LR15 loop-update replaces the whole schedule and revives a done loop", async () => {
+test("TC-LR15 loop-update replaces the cron expression and clears the dropped-trigger record", async () => {
   const { core, config } = harness({
-    state: { loops: { "loop-fake-1": seededLoop({ every: "10m", at: null, cron: null, state: "armed" }) } },
+    state: { loops: { "loop-fake-1": seededLoop({ cron: "10 * * * *", lastSkipAt: agoMinutes(5) }) } },
   });
   mkdirSync(config.commandDir("fake"), { recursive: true });
   writeJsonAtomic(join(config.commandDir("fake"), "10.json"), {
     op: "loop-update",
     id: "loop-fake-1",
-    every: null,
-    loopAt: null,
     cron: "0 13 * * *",
     at: new Date().toISOString(),
   });
   await core.drainCommands();
   const switched = core.state.loops["loop-fake-1"];
   assert.equal(switched.cron, "0 13 * * *");
-  assert.equal(switched.every, null);
-  assert.equal(switched.at, null);
+  assert.equal(switched.lastSkipAt, null, "a new expression anchors on the last run, not on a dropped trigger");
 
   writeJsonAtomic(join(config.commandDir("fake"), "11.json"), {
     op: "loop-update",
     id: "loop-fake-1",
     every: "2h",
-    loopAt: null,
     at: new Date().toISOString(),
   });
   await core.drainCommands();
-  const back = core.state.loops["loop-fake-1"];
-  assert.equal(back.cron, null, "an every update clears the cron schedule");
-  assert.equal(back.every, "2h");
-
-  core.state.loops["loop-fake-1"].state = "done";
-  writeJsonAtomic(join(config.commandDir("fake"), "12.json"), {
-    op: "loop-update",
-    id: "loop-fake-1",
-    every: null,
-    loopAt: null,
-    cron: "*/30 * * * *",
-    at: new Date().toISOString(),
-  });
-  await core.drainCommands();
-  assert.equal(core.state.loops["loop-fake-1"].state, "armed", "a done loop comes back when its schedule changes");
+  assert.equal(core.state.loops["loop-fake-1"].cron, "0 13 * * *", "an every update is refused, the expression stays");
 });
 
 test("TC-LR16 a cron loop catches up exactly once after a long stop and does not fire while busy", async () => {
@@ -450,7 +428,7 @@ test("TC-LR16 a cron loop catches up exactly once after a long stop and does not
     return child;
   };
   const busy = harness({
-    state: { loops: { "loop-fake-1": seededLoop({ every: null, cron: "* * * * *", createdAt: agoMinutes(5) }) } },
+    state: { loops: { "loop-fake-1": seededLoop({ cron: "* * * * *", createdAt: agoMinutes(5) }) } },
     spawn: hanging,
   });
   assert.equal(await busy.core.startDueLoops(), 1);
@@ -460,7 +438,7 @@ test("TC-LR16 a cron loop catches up exactly once after a long stop and does not
   assert.equal(busy.core.state.loops["loop-fake-1"].lastRunAt, anchor, "a skipped tick never moves the anchor");
 
   const stopped = harness({
-    state: { loops: { "loop-fake-1": seededLoop({ every: null, cron: "* * * * *", createdAt: agoMinutes(3 * 24 * 60) }) } },
+    state: { loops: { "loop-fake-1": seededLoop({ cron: "* * * * *", createdAt: agoMinutes(3 * 24 * 60) }) } },
   });
   assert.equal(await stopped.core.startDueLoops(), 1);
   await settle();
@@ -535,4 +513,22 @@ test("TC-LR22 the delivered header names the loop by its title and the thread us
   await cleared.core.startDueLoops();
   await settle();
   assert.equal(cleared.replies[0].text, "📣📣📣 loop-fake-1 · 第 1 轮\n轮次输出", "no title falls back to the id");
+});
+
+test("TC-LR23 a loop stored without a cron expression is paused once at boot, never left silently dead", async () => {
+  const { core } = harness({
+    state: { loops: { "loop-fake-1": seededLoop({ cron: null, every: "30m", lastRunAt: agoMinutes(30) }) } },
+  });
+  assert.equal(await core.startDueLoops(), 0, "an unreadable schedule never fires");
+  await core.recover();
+  await settle();
+  const loop = core.state.loops["loop-fake-1"];
+  assert.equal(loop.state, "paused");
+  const told = Object.values(core.state.notices).filter((notice) => /已移除的 every \/ at/.test(notice.text ?? ""));
+  assert.equal(told.length, 1, "one notice tells the owner why the loop stopped");
+
+  await core.recover();
+  await settle();
+  const again = Object.values(core.state.notices).filter((notice) => /已移除的 every \/ at/.test(notice.text ?? ""));
+  assert.equal(again.length, 1, "a restart does not repeat the notice");
 });

@@ -46,8 +46,12 @@ test("TC-LH1 the overview lists every subcommand plus the schedules, gates and e
   assert.equal(code, 0);
   for (const { usage } of LOOP_VERBS) assert.ok(out.includes(usage), `missing usage: ${usage}`);
   assert.match(out, /schedules:/);
-  assert.match(out, /every <dur>/);
   assert.match(out, /cron "<expr>"/);
+  assert.match(out, /上一轮还在跑就跳过那个点/);
+  assert.doesNotMatch(out, /--every/);
+  assert.doesNotMatch(out, /--at <iso>/);
+  assert.doesNotMatch(out, /every <dur>/);
+  assert.doesNotMatch(out, /every >= 10m/);
   assert.match(out, /gates:/);
   assert.match(out, /每平台最多 20 条 loop/);
   assert.match(out, /exit:/);
@@ -59,9 +63,10 @@ test("TC-LH2 a single verb prints only its own block", async () => {
   const { code, out } = await run(["help", "create"], config);
   assert.equal(code, 0);
   assert.match(out, /create --platform/);
-  assert.match(out, /--every <dur>/);
-  assert.match(out, /--at <iso>/);
   assert.match(out, /--cron "<expr>"/);
+  assert.match(out, /上一轮还在跑/);
+  assert.match(out, /job start --in/);
+  assert.doesNotMatch(out, /--every/);
   assert.match(out, /example:/);
   assert.doesNotMatch(out, /loop help \[<verb>\]/);
   assert.doesNotMatch(out, /schedules:/);
