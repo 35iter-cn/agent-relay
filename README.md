@@ -171,14 +171,14 @@ skipped by their hash.
 Attachments: feishu downloads message resources through the SDK, slack downloads
 `url_private_download` with the bot token — that token needs the `files:read` scope,
 and a 200 `text/html` body means the scope is missing. All write into
-`uploads/<chat>/<yyyymmdd>/` and share the same limits (4 files, 20 MB each, 7-day
-retention) from `src/platforms/shared/uploads.mjs`; the landed paths reach the
+`uploads/<chat>/<yyyymmdd>/`, capped at 4 files per inbound message (20 MB each,
+7-day retention) by `src/platforms/shared/uploads.mjs`; the landed paths reach the
 worker as `@path` arguments. `.slack-xoxc.tmp` is unrelated to this — it only feeds
 `conversations.replies`.
 
 Outbound images are the mirror of that: a worker asks for a picture to be sent by
 putting `![](/absolute/path.png)` on a line of its own in stdout (png/jpg/jpeg/gif/webp,
-20 MB each, at most 4 per reply). `extractMedia()` removes those lines, the delivery plan
+20 MB each, at most 8 per reply). `extractMedia()` removes those lines, the delivery plan
 sends every text chunk first and the images after, and only the adapters that implement
 `postMedia` upload anything — slack walks `files.getUploadURLExternal` → upload →
 `files.completeUploadExternal` into the same thread, so that token also needs the

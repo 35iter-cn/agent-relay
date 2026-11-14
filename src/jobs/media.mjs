@@ -3,7 +3,7 @@ import { statSync } from "node:fs";
 import { basename } from "node:path";
 import { MAX_BYTES, mimeForExt } from "../platforms/shared/uploads.mjs";
 
-export const MAX_MEDIA = 4;
+export const MAX_MEDIA = 8;
 const LINE = /^!\[([^\]]*)\]\(([^)\s]+)\)$/;
 const REMOTE = /^https?:\/\//;
 

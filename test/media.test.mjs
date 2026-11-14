@@ -89,13 +89,13 @@ test("TC-M9 a file over the byte limit is dropped and counted", () => {
   assert.deepEqual(parsed.files, []);
 });
 
-test("TC-M10 five references keep four and name the leftover in the text", () => {
+test("TC-M10 nine references keep eight and name the leftover in the text", () => {
   const make = sandbox();
-  const paths = ["a", "b", "c", "d", "e"].map((name) => make(`${name}.png`));
-  const parsed = extractMedia(`五个图\n${paths.map(ref).join("\n")}`);
-  assert.equal(parsed.files.length, 4);
+  const paths = ["a", "b", "c", "d", "e", "f", "g", "h", "i"].map((name) => make(`${name}.png`));
+  const parsed = extractMedia(`九个图\n${paths.map(ref).join("\n")}`);
+  assert.equal(parsed.files.length, 8);
   assert.equal(parsed.dropped, 1);
-  assert.equal(parsed.text, "五个图\n（还有 1 张图片未发送，单条回复最多 4 张）");
+  assert.equal(parsed.text, "九个图\n（还有 1 张图片未发送，单条回复最多 8 张）");
 });
 
 test("TC-M11 the media hash ignores order-irrelevant noise but follows size and mtime", () => {
