@@ -14,14 +14,13 @@ import { MAX_LOOPS, canonicalPromptPath, isLoopId, loopIdForSlug, platformOfLoop
 import { loopDueAt } from "./loops/schedule.mjs";
 import { validatePromptFile } from "./loops/prompt.mjs";
 import { loopHelp } from "./loops/help.mjs";
-import { jobHelp } from "./jobs/help.mjs";
-import { stallHelp } from "./stall/help.mjs";
+import { jobHelp, scheduleHelp } from "./jobs/help.mjs";
 import { findRound, listRounds } from "./loops/history.mjs";
 import { withTitle } from "./notices/title.mjs";
 
-export const ACTION_NAMES = new Set(["cancel", "restart"]);
 export const LOOP_ACTIONS = new Set(["create", "list", "show", "update", "pause", "resume", "delete", "run", "log", "show-run", "doctor"]);
-export const JOB_ACTIONS = new Set(["start", "cancel", "list", "redeliver"]);
+export const JOB_ACTIONS = new Set(["cancel", "list", "redeliver", "restart"]);
+const NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const COMMAND_WAIT_MS = 20_000;
 const COMMAND_POLL_MS = 500;
 
@@ -31,8 +30,10 @@ export function usage(stream = process.stderr) {
       "usage:",
       `  agent-relay serve <${PLATFORMS.join("|")}>`,
       "  agent-relay notice emit --platform <p> (--text <text> | --text-file <path>) [--title <text>] [--prompt <text> | --prompt-file <path>] [--reply-mode conversation --reply-key <key>]",
-      "  agent-relay stall <platform> <cancel|restart> <key> [text]",
-      "  agent-relay job help | agent-relay job start|cancel|list|redeliver …",
+      "  agent-relay notice get --platform <p> <id>",
+      "  agent-relay schedule --platform <p> --key <k> --name <n> [--in <dur> | --at <iso>] [--grace <dur>]  (prompt on stdin)",
+      "  agent-relay schedule list|cancel|help …",
+      "  agent-relay job help | agent-relay job list|cancel|restart|redeliver …",
       "  agent-relay loop help | agent-relay loop create|list|show|update|pause|resume|delete|run|log|show-run …",
     ].join("\n") + "\n",
   );
@@ -67,9 +68,28 @@ export function jobArgs(rest) {
   return { verb, flags, positional };
 }
 
-export function jobCancelDedupe(flags, positional) {
-  if (typeof flags.dedupe === "string") return flags.dedupe;
+export function jobCancelName(flags, positional) {
+  if (typeof flags.name === "string") return flags.name;
   return positional[0] ?? "";
+}
+
+export async function readStdinText(limit = PROMPT_MAX_BYTES, stream = process.stdin) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of stream) {
+    const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk));
+    const room = limit + 1 - size;
+    if (room <= 0) break;
+    const slice = buf.subarray(0, room);
+    chunks.push(slice);
+    size += slice.length;
+    if (size > limit) break;
+  }
+  return { text: Buffer.concat(chunks).toString("utf8"), overflow: size > limit };
+}
+
+export function promptPath(config, name) {
+  return join(config.userPromptsDir, "jobs", String(name), "prompt.md");
 }
 
 export async function sendCommand(config, platform, command, { waitMs = COMMAND_WAIT_MS, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
@@ -81,7 +101,7 @@ export async function sendCommand(config, platform, command, { waitMs = COMMAND_
   return { delivered: !existsSync(file), file };
 }
 
-export const BRIEF_MAX_BYTES = 8 * 1024;
+export const PROMPT_MAX_BYTES = 8 * 1024;
 export const DEFAULT_GRACE_MS = 6 * 3_600_000;
 
 export { durationMs };
@@ -98,9 +118,10 @@ export function dueFrom(flags, nowMs = Date.now()) {
   return null;
 }
 
-export function precheckJob(stateFile, { key, dedupe, brief } = {}) {
-  if (!brief || !String(brief).trim()) return "empty";
-  if (Buffer.byteLength(String(brief)) > BRIEF_MAX_BYTES) return "too-long";
+export function precheckSchedule(stateFile, { key, name, prompt, taken = false } = {}) {
+  if (!NAME_PATTERN.test(String(name ?? ""))) return "name-invalid";
+  if (!prompt || !String(prompt).trim()) return "empty-prompt";
+  if (Buffer.byteLength(String(prompt)) > PROMPT_MAX_BYTES) return "too-long";
   let state = null;
   try {
     state = JSON.parse(readFileSync(stateFile, "utf8"));
@@ -108,7 +129,7 @@ export function precheckJob(stateFile, { key, dedupe, brief } = {}) {
     return "no-state";
   }
   if (!state?.convs?.[key]) return "unknown-key";
-  if (state.seen?.[dedupe]) return "duplicate";
+  if (state.seen?.[name] || taken) return "name-taken";
   return null;
 }
 
@@ -133,6 +154,18 @@ export function findRedeliverable(stateFile, query) {
     .sort((a, b) => String(b.updatedAt).localeCompare(String(a.updatedAt)))[0] ?? null;
 }
 
+export function readNotice(stateFile, id) {
+  let state = null;
+  try {
+    state = JSON.parse(readFileSync(stateFile, "utf8"));
+  } catch {
+    return null;
+  }
+  const notice = state?.notices?.[String(id ?? "")];
+  if (!notice) return null;
+  return notice.text || notice.prompt ? notice : null;
+}
+
 export function listJobs(stateFile, key) {
   let state = null;
   try {
@@ -144,7 +177,7 @@ export function listJobs(stateFile, key) {
     .filter((job) => job.status === "scheduled" || job.status === "running")
     .filter((job) => !key || job.key === key)
     .sort((a, b) => String(a.dueAt ?? "").localeCompare(String(b.dueAt ?? "")))
-    .map((job) => `${job.status}\t${job.dueAt ?? "-"}\t${job.inbound?.dedupeId ?? "-"}\t${firstLine(job.inbound?.text)}`);
+    .map((job) => `${job.status}\t${job.id}\t${job.key}\t${job.inbound?.name ?? "-"}\t${job.dueAt ?? "-"}\t${job.inbound?.promptFile ?? firstLine(job.inbound?.text)}`);
 }
 
 export function loopPromptFlags(flags) {
@@ -282,21 +315,66 @@ export async function handleJobCommand(rest, config, log, deps = {}) {
     process.exitCode = sent.delivered ? 0 : 1;
     return;
   }
+  const id = positional[0] ?? (typeof flags.job === "string" ? flags.job : "");
+  if (!id) usage();
   if (verb === "cancel") {
-    const dedupe = jobCancelDedupe(flags, positional);
-    if (!dedupe) usage();
-    const sent = await dispatch(config, platform, { op: "cancel", dedupe });
+    const sent = await dispatch(config, platform, { op: "cancel-job", job: id });
     process.stdout.write(`${sent.delivered ? "cancelled" : "pending"}\n`);
     process.exitCode = sent.delivered ? 0 : 1;
     return;
   }
+  const text = positional.slice(1).join(" ").trim();
+  const sent = await dispatch(config, platform, { op: "restart-job", job: id, text });
+  process.stdout.write(`${sent.delivered ? "restarted" : "pending"}\n`);
+  process.exitCode = sent.delivered ? 0 : 1;
+}
+
+export async function handleScheduleCommand(rest, config, log, deps = {}) {
+  const dispatch = deps.sendCommand ?? sendCommand;
+  const first = rest[0];
+  const verb = first && !first.startsWith("--") ? first : "create";
+  const args = verb === "create" ? rest : rest.slice(1);
+  const { flags, rest: positional } = parseFlags(args);
+  if (verb === "help" || verb === "--help" || verb === "-h") {
+    process.stdout.write(scheduleHelp());
+    process.exitCode = 0;
+    return;
+  }
+  const platform = flags.platform;
+  if (verb === "list") {
+    if (!isPlatform(platform)) usage();
+    const lines = listJobs(config.stateFile(platform), null).filter((line) => line.startsWith("scheduled\t"));
+    process.stdout.write(`${lines.join("\n")}${lines.length ? "\n" : ""}`);
+    return;
+  }
+  if (verb === "cancel") {
+    const name = jobCancelName(flags, positional);
+    if (!isPlatform(platform) || !name) usage();
+    const sent = await dispatch(config, platform, { op: "cancel-schedule", name });
+    process.stdout.write(`${sent.delivered ? "cancelled" : "pending"}\n`);
+    process.exitCode = sent.delivered ? 0 : 1;
+    return;
+  }
+  if (verb !== "create") {
+    process.stderr.write("refused: unknown-verb\n");
+    process.exitCode = 3;
+    return;
+  }
   const key = typeof flags.key === "string" ? flags.key : "";
-  const dedupe = typeof flags.dedupe === "string" ? flags.dedupe : "";
-  const brief = textFlag(flags, "brief");
-  if (!key || !dedupe || !brief) usage();
+  const name = jobCancelName(flags, []);
+  if (!isPlatform(platform) || !key || !name) usage();
+  if (process.stdin.isTTY) {
+    process.stderr.write("refused: stdin-is-tty\n");
+    process.exitCode = 3;
+    return;
+  }
   const dueAt = dueFrom(flags);
   if ((flags.at !== undefined || flags.in !== undefined) && !dueAt) usage();
-  const refused = precheckJob(config.stateFile(platform), { key, dedupe, brief });
+  const stdin = await readStdinText();
+  const prompt = stdin.text.trim();
+  const refused =
+    (stdin.overflow ? "too-long" : null) ??
+    precheckSchedule(config.stateFile(platform), { key, name, prompt, taken: existsSync(promptPath(config, name)) });
   if (refused) {
     process.stderr.write(`refused: ${refused}\n`);
     process.exitCode = 3;
@@ -305,13 +383,17 @@ export async function handleJobCommand(rest, config, log, deps = {}) {
   const sent = await dispatch(config, platform, {
     op: "schedule",
     key,
-    dedupe,
-    brief,
+    name,
+    prompt,
     dueAt,
     graceMs: durationMs(flags.grace, DEFAULT_GRACE_MS),
   });
-  process.stdout.write(`${sent.delivered ? (dueAt ? "scheduled" : "started") : "pending"}\n`);
-  process.exitCode = sent.delivered ? 0 : 1;
+  if (!sent.delivered) {
+    process.stdout.write("pending\n");
+    process.exitCode = 1;
+    return;
+  }
+  process.stdout.write(`scheduled\t${promptPath(config, name)}\n`);
 }
 
 async function serve(platform, config, log) {
@@ -581,6 +663,22 @@ export async function main(argv = process.argv.slice(2)) {
   }
   if (mode === "notice") {
     const [verb, ...args] = rest;
+    if (verb === "get") {
+      const { flags, rest: positional } = parseFlags(args);
+      const platform = flags.platform;
+      const id = positional[0] ?? "";
+      if (!isPlatform(platform) || !id) usage();
+      const notice = readNotice(config.stateFile(platform), id);
+      if (!notice) {
+        process.stderr.write("refused: no-payload\n");
+        process.exitCode = 3;
+        return;
+      }
+      const body = String(notice.text ?? "").trim();
+      const prompt = String(notice.prompt ?? "").trim();
+      process.stdout.write([body, prompt].filter(Boolean).join("\n\n---\n\n") + "\n");
+      return;
+    }
     if (verb !== "emit") usage();
     const { flags } = parseFlags(args);
     const platform = flags.platform;
@@ -595,15 +693,14 @@ export async function main(argv = process.argv.slice(2)) {
     process.stdout.write(`${result.delivered ? "delivered" : `sent ${result.messageId ? 1 : 0}`}\n`);
     return;
   }
+  if (mode === "schedule") {
+    await handleScheduleCommand(rest, config, log);
+    return;
+  }
   if (mode === "stall") {
-    if (rest[0] === "help") {
-      process.stdout.write(stallHelp());
-      return;
-    }
-    const [platform, action, key, ...words] = rest;
-    if (!isPlatform(platform) || !ACTION_NAMES.has(action) || !key) usage();
-    const result = await sendCommand(config, platform, { op: "action", action, key, text: words.join(" ").trim() });
-    process.stdout.write(`${result.delivered ? "delivered" : "pending"}\n`);
+    process.stderr.write("refused: unknown-command\n");
+    process.stderr.write("用 `agent-relay job cancel <id>` 终止、`agent-relay job restart <id>` 重启\n");
+    process.exitCode = 3;
     return;
   }
   if (mode === "job") {
