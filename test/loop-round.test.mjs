@@ -514,3 +514,21 @@ test("TC-LR22 the delivered header names the loop by its title and the thread us
   await settle();
   assert.equal(cleared.replies[0].text, "📣📣📣 loop-fake-1 · 第 1 轮\n轮次输出", "no title falls back to the id");
 });
+
+test("TC-LR23 a loop stored without a cron expression is paused once at boot, never left silently dead", async () => {
+  const { core } = harness({
+    state: { loops: { "loop-fake-1": seededLoop({ cron: null, every: "30m", lastRunAt: agoMinutes(30) }) } },
+  });
+  assert.equal(await core.startDueLoops(), 0, "an unreadable schedule never fires");
+  await core.recover();
+  await settle();
+  const loop = core.state.loops["loop-fake-1"];
+  assert.equal(loop.state, "paused");
+  const told = Object.values(core.state.notices).filter((notice) => /已移除的 every \/ at/.test(notice.text ?? ""));
+  assert.equal(told.length, 1, "one notice tells the owner why the loop stopped");
+
+  await core.recover();
+  await settle();
+  const again = Object.values(core.state.notices).filter((notice) => /已移除的 every \/ at/.test(notice.text ?? ""));
+  assert.equal(again.length, 1, "a restart does not repeat the notice");
+});

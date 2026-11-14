@@ -1080,7 +1080,7 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   function pauseLegacySchedules() {
-    const legacy = Object.values(state.loops ?? {}).filter((loop) => loop && loop.state !== "deleted" && !String(loop.cron ?? "").trim());
+    const legacy = Object.values(state.loops ?? {}).filter((loop) => loop && loop.state === "armed" && !String(loop.cron ?? "").trim());
     if (!legacy.length) return 0;
     for (const loop of legacy) {
       loop.state = "paused";
