@@ -36,9 +36,11 @@ function harness({ state = emptyState(), spawn, sessions = [], clock } = {}) {
   const sectionsDir = join(promptsDir, "sections");
   for (const path of [sessionsDir, promptsDir, sectionsDir, configDir]) mkdirSync(path, { recursive: true });
   for (const name of sessions) writeFileSync(join(sessionsDir, `2026-01-01T00-00-00_${name}.jsonl`), "{}\n");
-  writeFileSync(join(sectionsDir, "00-header-conversation.md"), "conversation={{conversation}} user={{user_message}}");
-  writeFileSync(join(sectionsDir, "45-self-wake.md"), "SELF-WAKE {{conversation}}");
-  writeFileSync(join(promptsDir, "self-job.md"), "PROVENANCE {{provenance}}\nDUE {{due_at}}\nAT {{delivered_at}}\nLATE {{late_note}}\nCHAIN {{chain}}\nBRIEF {{brief}}");
+  writeFileSync(join(sectionsDir, "10-common.md"), "COMMON");
+  writeFileSync(join(sectionsDir, "30-entry-conversation.md"), "CONV {{user_message}}");
+  mkdirSync(join(promptsDir, "messages"), { recursive: true });
+  writeFileSync(join(promptsDir, "messages", "restart.md"), "RESTART");
+  writeFileSync(join(promptsDir, "messages", "stall-notice.md"), "STALL {{job}}");
   const config = {
     home: dir,
     cwd: dir,
@@ -46,6 +48,7 @@ function harness({ state = emptyState(), spawn, sessions = [], clock } = {}) {
     logDir: join(dir, "logs"),
     sessionsDir,
     promptsDir,
+    userPromptsDir: join(configDir, "prompts"),
     uploadsDir: join(configDir, "uploads"),
     cli: "agent-relay",
     readEnv: () => ({}),
@@ -91,7 +94,7 @@ function harness({ state = emptyState(), spawn, sessions = [], clock } = {}) {
   return { core, config, replies, logs, prompts, stateFile, command, adapter };
 }
 
-const brief = (over = {}) => ({ op: "schedule", key: "th-1", dedupe: "d1", brief: "看进度", dueAt: null, graceMs: 6 * 3_600_000, ...over });
+const brief = (over = {}) => ({ op: "schedule", key: "th-1", name: "d1", prompt: "看进度", dueAt: null, graceMs: 6 * 3_600_000, ...over });
 
 test("TC-SJ1 a scheduled job keeps its state and an old job without dueAt never looks scheduled", async () => {
   const state = emptyState();
@@ -153,7 +156,7 @@ test("TC-SJ4 while the same key is busy the due job keeps waiting instead of que
   hold.kill = () => {};
   const { core, prompts } = harness({ clock, spawn: () => hold });
   await core.handle({ key: "th-1", session: "fs-th-1", dedupeId: "msg-1", authorId: "u-ok", text: "用户的活", chatId: "c1" });
-  const job = core.scheduleJob({ ...brief({ dedupe: "d-wait" }), dueAt: new Date(clock.value + 1000).toISOString() });
+  const job = core.scheduleJob({ ...brief({ name: "d-wait" }), dueAt: new Date(clock.value + 1000).toISOString() });
   clock.value += 2000;
   core.startDueJobs();
   assert.equal(core.state.jobs[job.job].status, "scheduled");
@@ -167,7 +170,7 @@ test("TC-SJ5 five due jobs are all accepted and started without any interval or 
   const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
   const { core, prompts } = harness({ clock });
   for (let i = 0; i < 5; i += 1) {
-    const outcome = core.scheduleJob({ ...brief({ dedupe: `five-${i}` }), dueAt: new Date(clock.value - 1000).toISOString() });
+    const outcome = core.scheduleJob({ ...brief({ name: `five-${i}` }), dueAt: new Date(clock.value - 1000).toISOString() });
     assert.ok(outcome.job, JSON.stringify(outcome));
   }
   for (let i = 0; i < 6; i += 1) {
@@ -183,7 +186,7 @@ test("TC-SJ6 the thirteenth schedule inside an hour is refused as runaway", asyn
   const dueAt = new Date(clock.value + 3_600_000).toISOString();
   let refused = null;
   for (let i = 0; i < 13; i += 1) {
-    const outcome = core.scheduleJob({ ...brief({ dedupe: `storm-${i}` }), dueAt });
+    const outcome = core.scheduleJob({ ...brief({ name: `storm-${i}` }), dueAt });
     if (outcome.rejected) refused = outcome.rejected;
   }
   assert.equal(refused, "runaway");
@@ -194,7 +197,7 @@ test("TC-SJ7 a job past its grace expires without starting", async () => {
   const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
   const { core, prompts } = harness({ clock });
   const job = core.scheduleJob({
-    ...brief({ dedupe: "late" }),
+    ...brief({ name: "late" }),
     dueAt: new Date(clock.value + 60_000).toISOString(),
     graceMs: 6 * 3_600_000,
   });
@@ -209,7 +212,7 @@ test("TC-SJ7 a job past its grace expires without starting", async () => {
 test("TC-SJ8 a scheduled turn with no output posts nothing and finishes", async () => {
   const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
   const { core, replies, logs } = harness({ clock, spawn: () => fakeChild({ stdout: "", code: 0 }) });
-  const job = core.scheduleJob({ ...brief({ dedupe: "quiet" }), dueAt: null });
+  const job = core.scheduleJob({ ...brief({ name: "quiet" }), dueAt: null });
   await tick();
   assert.deepEqual(replies, []);
   assert.equal(core.state.jobs[job.job].status, "done");
@@ -220,63 +223,53 @@ test("TC-SJ8 a scheduled turn with no output posts nothing and finishes", async 
 test("TC-SJ9 a scheduled turn that exits non-zero posts one line", async () => {
   const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
   const { core, replies } = harness({ clock, spawn: () => fakeChild({ stdout: "", code: 1 }) });
-  const job = core.scheduleJob({ ...brief({ dedupe: "boom" }), dueAt: null });
+  const job = core.scheduleJob({ ...brief({ name: "boom" }), dueAt: null });
   await tick();
   assert.equal(replies.length, 1);
   assert.match(replies[0].text, /无输出/);
   assert.equal(core.state.jobs[job.job].status, "failed");
 });
 
-test("TC-SJ10 a scheduled turn renders the wake template with its own brief and provenance", async () => {
+test("TC-SJ10 a scheduled turn sends the origin line and the brief, no template", async () => {
   const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
   const { core, prompts } = harness({ clock, sessions: ["fs-th-1"] });
-  process.env.AGENT_RELAY_SELF_CHAIN = "0";
-  core.scheduleJob({ ...brief({ dedupe: "render", brief: "读 /tmp/x 的行数" }), dueAt: null });
-  delete process.env.AGENT_RELAY_SELF_CHAIN;
+  core.scheduleJob({ ...brief({ name: "render", prompt: "读 /tmp/x 的行数" }), dueAt: null });
   await tick();
   assert.equal(prompts.length, 1);
-  assert.match(prompts[0], /你自己排的/);
+  assert.match(prompts[0], /^这不是用户刚说的话/);
   assert.match(prompts[0], /读 \/tmp\/x 的行数/);
-  assert.match(prompts[0], /CHAIN 1/);
   assert.doesNotMatch(prompts[0], /\{\{/);
+  assert.doesNotMatch(prompts[0], /COMMON|CONV/);
 });
 
-test("TC-SJ11 an external schedule renders the external provenance line", async () => {
-  const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
-  const { prompts } = harness({ clock, sessions: ["fs-th-1"] });
+test("TC-SJ11 a cold session gets the rules before the task", () => {
   const promptsLib = createPrompts({ dir: join(process.cwd(), "src/prompts"), userDir: "/nonexistent", configDir: undefined });
-  const text = promptsLib.selfJob({
+  const text = promptsLib.scheduled({
     platform: "slack",
     adapter: { surface: "本会话", chunkLimit: 8000 },
     inbound: { key: "th-1", chatId: "c1", text: "外部推来的一轮" },
-    root: "",
     brief: "外部推来的一轮",
-    origin: "external",
-    chain: 0,
-    dueAt: clock.value,
-    deliveredAt: clock.value,
-    lateMs: 0,
+    full: true,
   });
-  assert.match(text, /外部系统排入/);
-  assert.doesNotMatch(text, /这次是你自己排的/);
-  assert.match(text, /```text\n外部推来的一轮\n```/);
-  assert.equal(prompts.length, 0);
+  assert.match(text, /## 你是谁/);
+  assert.ok(text.indexOf("## 回复规则") < text.indexOf("外部推来的一轮"));
+  assert.doesNotMatch(text, /\{\{/);
 });
 
 test("TC-SJ12 cancel moves a scheduled job to cancelled and a started one is left alone", async () => {
   const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
   const { core } = harness({ clock });
-  const job = core.scheduleJob({ ...brief({ dedupe: "cancel-me" }), dueAt: new Date(clock.value + 60_000).toISOString() });
-  assert.deepEqual(core.cancelScheduled({ dedupe: "cancel-me" }), { job: job.job });
+  const job = core.scheduleJob({ ...brief({ name: "cancel-me" }), dueAt: new Date(clock.value + 60_000).toISOString() });
+  assert.deepEqual(core.cancelScheduled({ name: "cancel-me" }), { job: job.job });
   assert.equal(core.state.jobs[job.job].status, "cancelled");
-  assert.equal(core.cancelScheduled({ dedupe: "cancel-me" }).rejected, "not-scheduled");
+  assert.equal(core.cancelScheduled({ name: "cancel-me" }).rejected, "already-started");
 });
 
 test("TC-SJ13 a platform without selfContext cannot be scheduled", async () => {
   const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
   const { core, adapter } = harness({ clock });
   delete adapter.selfContext;
-  assert.deepEqual(core.scheduleJob({ ...brief({ dedupe: "no-ctx" }), dueAt: null }), { rejected: "platform" });
+  assert.deepEqual(core.scheduleJob({ ...brief({ name: "no-ctx" }), dueAt: null }), { rejected: "platform" });
 });
 
 test("TC-SJ14 slack addresses a thread without a message; contract keeps selfContext optional", () => {

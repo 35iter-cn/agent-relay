@@ -22,10 +22,10 @@ for (const path of [configDir, logDir, sessionsDir, promptsDir, userPromptsDir, 
 const sectionsDir = join(promptsDir, "sections");
 mkdirSync(sectionsDir, { recursive: true });
 for (const [name, body] of [
-  ["00-header-conversation.md", "conversation={{conversation}}"],
-  ["45-self-wake.md", "SELF-WAKE"],
+  ["10-common.md", "COMMON"],
+  ["20-platform-fake.md", "REPLY"],
+  ["30-entry-conversation.md", "CONV"],
 ]) writeFileSync(join(sectionsDir, name), `${body}\n`);
-writeFileSync(join(promptsDir, "self-job.md"), "PROVENANCE {{provenance}}\nDUE {{due_at}}\nAT {{delivered_at}}\nLATE {{late_note}}\nCHAIN {{chain}}\nBRIEF {{brief}}\n");
 
 const repliesPath = join(dir, "replies.jsonl");
 const dispatched = [];
@@ -115,23 +115,23 @@ const drain = async (core) => {
   await wait(150);
 };
 
-command({ op: "schedule", key: KEY, dedupe: "d-late", brief: "读进度", dueAt: new Date(Date.now() + 30_000).toISOString(), graceMs: 6 * 3_600_000 });
+command({ op: "schedule", key: KEY, name: "d-late", prompt: "读进度", dueAt: new Date(Date.now() + 30_000).toISOString(), graceMs: 6 * 3_600_000 });
 await drain(core1);
-const scheduled = Object.values(readState().jobs).find((job) => job.inbound?.dedupeId === "d-late");
+const scheduled = Object.values(readState().jobs).find((job) => job.inbound?.name === "d-late");
 check("schedule lands as scheduled without spawning", scheduled?.status === "scheduled" && dispatched.length === 0, scheduled?.status);
 
 skew = 31_000;
 const core2 = makeCore();
 await core2.recover();
-const afterRecover = Object.values(readState().jobs).find((job) => job.inbound?.dedupeId === "d-late");
+const afterRecover = Object.values(readState().jobs).find((job) => job.inbound?.name === "d-late");
 check("recover leaves a scheduled job alone instead of interrupting it", afterRecover?.status === "scheduled", afterRecover?.status);
 
 core2.startDueJobs();
 await wait(400);
-const delivered = Object.values(readState().jobs).find((job) => job.inbound?.dedupeId === "d-late");
+const delivered = Object.values(readState().jobs).find((job) => job.inbound?.name === "d-late");
 check("a missed due time still starts the turn once", dispatched.length === 1, `dispatched=${dispatched.length}`);
 check("the late delay is recorded", (delivered?.lateMs ?? 0) >= 1000 && (delivered?.lateMs ?? 0) < 60_000, `${delivered?.lateMs}`);
-check("the wake prompt carries the brief and provenance", /PROVENANCE/.test(dispatched[0] ?? "") && /读进度/.test(dispatched[0] ?? ""));
+check("the wake prompt carries the origin line and the brief", /这不是用户刚说的话/.test(dispatched[0] ?? "") && /读进度/.test(dispatched[0] ?? ""));
 check("the turn replies once", readReplies().filter((item) => item.key === KEY).length === 1);
 check("the event log records job-due", readEvents().some((event) => event.event === "job-due"));
 skew = 31_000;
@@ -139,17 +139,17 @@ core2.startDueJobs();
 await wait(300);
 check("a second sweep starts nothing new", dispatched.length === 1, `dispatched=${dispatched.length}`);
 
-command({ op: "schedule", key: KEY, dedupe: "d-slow", brief: "SLOW 这一轮会跑很久", dueAt: null });
+command({ op: "schedule", key: KEY, name: "d-slow", prompt: "SLOW 这一轮会跑很久", dueAt: null });
 await drain(core2);
 await wait(400);
-const running = Object.values(readState().jobs).find((job) => job.inbound?.dedupeId === "d-slow");
+const running = Object.values(readState().jobs).find((job) => job.inbound?.name === "d-slow");
 check("an immediate schedule starts a turn", running?.status === "running", running?.status);
 
 const noticesBefore = readReplies().filter((item) => item.key === "notice").length;
 const core3 = makeCore();
 await core3.recover();
 await wait(600);
-const interrupted = Object.values(readState().jobs).find((job) => job.inbound?.dedupeId === "d-slow");
+const interrupted = Object.values(readState().jobs).find((job) => job.inbound?.name === "d-slow");
 check("a restart drops the scheduled turn instead of interrupting it visibly", interrupted?.status === "cancelled", interrupted?.status);
 check("no interrupt notice is posted for a scheduled turn", readReplies().filter((item) => item.key === "notice").length === noticesBefore);
 

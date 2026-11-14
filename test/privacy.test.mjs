@@ -64,8 +64,8 @@ test("user prompt sections override the built-in ones without touching the repo"
   const dir = mkdtempSync(join(tmpdir(), "relay-private-"));
   const userDir = join(dir, "prompts");
   mkdirSync(join(userDir, "sections"), { recursive: true });
-  writeFileSync(join(userDir, "sections", "20-reply.md"), "USER-OVERRIDE {{user_message}}");
+  writeFileSync(join(userDir, "sections", "10-common.md"), "USER-OVERRIDE {{user_message}}");
   const prompts = createPrompts({ dir: join(ROOT, "src", "prompts"), userDir });
-  assert.equal(prompts.read(join("sections", "20-reply.md")), "USER-OVERRIDE {{user_message}}");
-  assert.match(prompts.read(join("sections", "01-header-notice.md")), /\{\{notice_id\}\}/);
+  assert.equal(prompts.read(join("sections", "10-common.md")), "USER-OVERRIDE {{user_message}}");
+  assert.match(prompts.read(join("sections", "31-entry-notice.md")), /\{\{notice_id\}\}/);
 });

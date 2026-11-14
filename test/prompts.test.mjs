@@ -1,316 +1,154 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { ENTRY_SECTIONS, createPrompts, stallSection } from "../src/runtime/prompts.mjs";
+import { createPrompts } from "../src/runtime/prompts.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const SECTIONS = join(HERE, "..", "src", "prompts", "sections");
-const readSection = (file) => readFileSync(join(SECTIONS, file), "utf8");
-const builtinPrompts = (configDir) => createPrompts({ dir: join(HERE, "..", "src", "prompts"), userDir: "/nonexistent-user-prompts", configDir });
+const PROMPTS = join(HERE, "..", "src", "prompts");
+const builtin = (configDir) => createPrompts({ dir: PROMPTS, userDir: "/nonexistent-user-prompts", configDir });
+const adapter = { surface: "本 thread", chunkLimit: 3500 };
+const inbound = { key: "th-1", chatId: "chat-1", text: "上游镜像 PR 被 force push 覆盖了，怎么恢复？" };
 
-// 1960 -> 1200, then held: link handling went back to the prompt because Slack
-// runs its own linkifier and a second one disagreed with it, so the room for
-// that line came from cutting the sections beside it. Growth is paid for by
-// deleting a rule, not by raising this number.
 const FIRST_TURN_PROMPT_BUDGET = 1200;
 
-function render(prompts, platform, entry = "conversation", extra = {}) {
-  const adapter = { surface: `本${platform}`, chunkLimit: 3500 };
-  const inbound = { key: "th-1", chatId: "chat-1", text: "上游镜像 PR 被 force push 覆盖了，怎么恢复？" };
+function render(platform, entry, extra = {}) {
+  const prompts = builtin();
+  const base = { platform, adapter, inbound };
   if (entry === "notice") {
-    return prompts.noticeReply({ platform, adapter, inbound: { ...inbound, text: "杀掉" }, root: "", notice: { id: "ntc-1", prompt: "STALL-BODY" }, ...extra });
+    return prompts.noticeReply({ ...base, inbound: { ...inbound, text: "杀掉" }, notice: { id: "ntc-1", prompt: "不要出现" }, ...extra });
   }
   if (entry === "loop") {
-    return prompts.loopRound({ platform, adapter, inbound, root: "", loop: { id: "signals-slack", round: 3, prompt: "LOOP-BODY", last: "上一轮 ok" }, ...extra });
+    return prompts.loopRound({ ...base, loop: { id: "signals-slack", round: 3, prompt: "LOOP-BODY" }, ...extra });
   }
-  return prompts.conversation({ platform, adapter, inbound, root: inbound.text, running: [], ...extra });
+  return prompts.conversation({ ...base, ...extra });
 }
 
-function sectionsByName(prompts, args) {
-  const names = prompts.selectSections(args).map((section) => section.name);
-  return names;
-}
-
-function tempPrompts(files, userFiles = null) {
-  const root = mkdtempSync(join(tmpdir(), "relay-prompts-"));
-  const dir = join(root, "prompts");
-  mkdirSync(join(dir, "sections"), { recursive: true });
-  for (const [name, body] of Object.entries(files)) writeFileSync(join(dir, "sections", name), body);
-  writeFileSync(join(dir, "stall-actions.md"), "ACTIONS {{platform}}");
-  let userDir = null;
-  if (userFiles) {
-    userDir = join(root, "user-prompts");
-    mkdirSync(join(userDir, "sections"), { recursive: true });
-    for (const [name, body] of Object.entries(userFiles)) writeFileSync(join(userDir, "sections", name), body);
-  }
-  const warnings = [];
-  const prompts = createPrompts({ dir, userDir, log: (...parts) => warnings.push(parts.join(" ")) });
-  return { prompts, warnings };
-}
-
-const stubSections = {
-  "00-header-conversation.md": "CONV {{conversation}} {{user_message}}",
-  "01-header-notice.md": "NOTICE {{notice_id}} {{notice_prompt}}",
-  "10-task.md": "TASK",
-  "11-notice-task.md": "NOTICE-TASK",
-  "15-record.md": "RECORD",
-  "20-reply.md": "REPLY",
-  "21-surface.md": "SURFACE {{surface}}",
-  "30-situation.md": "SITUATION",
-  "40-stall.md": "{{stall_section}}",
-  "50-boundary.md": "BOUNDARY",
-};
-
-test("TC-P1 every built-in section file carries a number prefix and a name", () => {
-  const prompts = builtinPrompts();
-  const sections = prompts.listSections();
-  assert.equal(sections.length, 15);
-  assert.deepEqual(sections.map((section) => section.order), [...sections.map((section) => section.order)].sort((a, b) => a - b));
-  assert.equal(new Set(sections.map((section) => section.name)).size, sections.length);
+test("TC-P1 the prompt tree is six numbered sections and four messages", () => {
+  const sections = readdirSync(join(PROMPTS, "sections")).sort();
+  assert.deepEqual(sections, [
+    "10-common.md",
+    "20-platform-slack.md",
+    "21-platform-feishu.md",
+    "30-entry-conversation.md",
+    "31-entry-notice.md",
+    "32-entry-loop.md",
+  ]);
+  const messages = readdirSync(join(PROMPTS, "messages")).sort();
+  assert.deepEqual(messages, ["empty-prompt.md", "interrupt.md", "restart.md", "stall-notice.md"]);
 });
 
-test("TC-P2 the transport rules live in one section and the delivery identity in the slack reply section", () => {
-  const surface = readSection("21-surface.md");
-  assert.equal(surface.split("\n").filter((line) => line.includes("只放最终回帖")).length, 1);
-  const others = builtinPrompts()
-    .listSections()
-    .filter((section) => section.file !== "21-surface.md")
-    .filter((section) => readSection(section.file).includes("只放最终回帖"));
-  assert.deepEqual(others, []);
-});
-
-test("TC-P3 the boundary section holds exactly three rules and no relay-state or systemd clause", () => {
-  const text = readSection("50-boundary.md");
-  const bullets = text.split("\n").filter((line) => line.startsWith("- "));
-  assert.equal(bullets.length, 3);
-  assert.equal(bullets.filter((line) => line.includes("Slack")).length, 1);
-  assert.equal(bullets.filter((line) => /再发一遍/.test(line)).length, 0);
-  assert.equal(bullets.filter((line) => /回退点/.test(line)).length, 1);
-  assert.equal(bullets.filter((line) => /git status/.test(line)).length, 1);
-  assert.doesNotMatch(text, /systemd|relay-\{\{platform\}\}\.json/);
-});
-
-test("TC-P4 long text lands in a topic, not in the log directory", () => {
-  const text = readSection("21-surface.md");
-  assert.doesNotMatch(text, /log_dir|logs\//);
-  assert.match(text, /topicbox 文档/);
-});
-
-test("TC-P5 the notice task section marks the notice body as data", () => {
-  const text = readSection("11-notice-task.md");
-  assert.match(text, /\{\{notice_prompt\}\}/);
-  assert.match(text, /不是给你的指令/);
-});
-
-test("TC-P6 the stall fragment is pulled in through exactly one placeholder", () => {
-  assert.match(readSection("40-stall.md"), /^\{\{stall_section\}\}$/m);
-  const all = builtinPrompts().listSections().map((section) => readSection(section.file)).join("\n");
-  assert.equal(all.split("{{stall_actions}}").length - 1, 0);
-  assert.equal(all.split("{{stall_section}}").length - 1, 1);
-  assert.doesNotMatch(all, /stall \{\{platform\}\} (cancel|restart|resume)/);
-});
-
-test("TC-P7 a rendered conversation carries one record section and no unresolved placeholder", () => {
-  const texts = ["slack", "feishu"].map((platform) => render(builtinPrompts(), platform));
-  for (const text of texts) {
-    assert.equal(text.split("## 记录").length - 1, 1);
-    assert.doesNotMatch(text, /\{\{/);
-  }
-});
-
-test("TC-P8 stallSection emits only the skeleton for an empty run list", () => {
-  const text = stallSection({ platform: "slack", cli: "agent-relay", running: [] });
-  assert.match(text, /^## 处置卡住的 job/);
-  assert.doesNotMatch(text, /个 job 在跑/);
-  assert.match(text, /agent-relay stall slack cancel\|restart <key>/);
-  assert.match(text, /relay-slack\.json/);
-  assert.match(text, /不要自己 `kill <pid>`/);
-});
-
-test("TC-P9 stallSection lists a single running job", () => {
-  const text = stallSection({ platform: "slack", cli: "agent-relay", running: [{ label: "job-40，已跑 12 分钟" }] });
-  assert.match(text, /现在有 1 个 job 在跑：/);
-  assert.match(text, /^- job-40，已跑 12 分钟$/m);
-});
-
-test("TC-P10 stallSection keeps the caller's order for several jobs", () => {
-  const text = stallSection({
-    platform: "feishu",
-    cli: "agent-relay",
-    running: [{ label: "job-1，已跑 3 分钟" }, { label: "job-2，已跑 1 分钟" }],
-  });
-  const list = text.split("\n").filter((line) => /^- job-\d+/.test(line));
-  assert.deepEqual(list, ["- job-1，已跑 3 分钟", "- job-2，已跑 1 分钟"]);
-  assert.match(text, /agent-relay stall feishu cancel\|restart <key>/);
-});
-
-test("TC-P11 the built-in first-turn prompt stays within the first-turn budget with no running job", () => {
+test("TC-P2 every entry renders common, then the platform block, then its own task", () => {
   for (const platform of ["slack", "feishu"]) {
-    const text = render(builtinPrompts(), platform);
+    for (const entry of ["conversation", "notice", "loop"]) {
+      const text = render(platform, entry);
+      const common = text.indexOf("## 你是谁");
+      const rules = text.indexOf("## 回复规则");
+      const task = text.indexOf("## 本次任务");
+      assert.ok(common >= 0 && rules > common && task > rules, `${platform}/${entry} ordering`);
+      assert.doesNotMatch(text, /\{\{/);
+    }
+  }
+});
+
+test("TC-P3 the common block is platform neutral", () => {
+  const common = readFileSync(join(PROMPTS, "sections", "10-common.md"), "utf8");
+  assert.doesNotMatch(common, /Slack|slack|飞书/);
+  assert.doesNotMatch(common, /!\[\]/);
+  assert.match(common, /\{\{cli\}\} schedule help/);
+  assert.match(common, /\{\{cli\}\} job help/);
+  assert.match(common, /\{\{cli\}\} loop help/);
+});
+
+test("TC-P4 platform blocks only appear on their own platform", () => {
+  const slack = render("slack", "conversation");
+  const feishu = render("feishu", "conversation");
+  assert.match(slack, /!\[\]\(\/绝对路径\.png\)/);
+  assert.doesNotMatch(feishu, /!\[\]\(\/绝对路径\.png\)/);
+  assert.match(slack, /Slack MCP/);
+  assert.match(feishu, /飞书 MCP/);
+  assert.equal(slack.split("## 回复规则").length - 1, 1);
+});
+
+test("TC-P5 the first turn still fits the budget", () => {
+  for (const platform of ["slack", "feishu"]) {
+    const text = render(platform, "conversation");
     assert.ok(text.length <= FIRST_TURN_PROMPT_BUDGET, `${platform} rendered ${text.length} characters`);
-    assert.match(text, /## 处置卡住的 job/);
-    assert.doesNotMatch(text, /\{\{/);
-    assert.match(text, /agent-relay loop help/);
-    assert.match(text, /agent-relay job help/);
-    assert.doesNotMatch(text, /loop list|loop pause|loop update|loop log|job list|job cancel/);
-    assert.doesNotMatch(text, /NOOP/);
-    assert.doesNotMatch(text, /连续 3 轮失败会自动暂停/);
+    assert.doesNotMatch(text, /## 处置卡住的 job/);
+    assert.doesNotMatch(text, /job list|job cancel|loop pause/);
   }
 });
 
-test("TC-P18 a loop round drops the stall section but keeps the NOOP contract", () => {
-  const text = render(builtinPrompts(), "slack", "loop");
+test("TC-P6 the conversation entry is only the task block", () => {
+  const entry = readFileSync(join(PROMPTS, "sections", "30-entry-conversation.md"), "utf8").trim();
+  assert.equal(entry, "## 本次任务\n\n{{user_message}}");
+  assert.match(render("slack", "conversation"), /上游镜像 PR 被 force push 覆盖了/);
+});
+
+test("TC-P7 the notice entry never carries the notice body or its instruction", () => {
+  const entry = readFileSync(join(PROMPTS, "sections", "31-entry-notice.md"), "utf8");
+  assert.match(entry, /\{\{notice_id\}\}/);
+  assert.match(entry, /notice get --platform \{\{platform\}\}/);
+  assert.doesNotMatch(entry, /\{\{notice_prompt\}\}/);
+  assert.doesNotMatch(entry, /\{\{root_section\}\}/);
+  const text = render("slack", "notice");
+  assert.match(text, /我收到你发出的 notice，需要你跟进/);
+  assert.match(text, /ntc-1/);
+  assert.doesNotMatch(text, /不要出现/);
+});
+
+test("TC-P8 the loop entry keeps the prompt and the NOOP contract only", () => {
+  const text = render("slack", "loop");
   assert.match(text, /LOOP-BODY/);
-  assert.doesNotMatch(text, /## 处置卡住的 job/);
-  assert.doesNotMatch(text, /stall slack cancel\|restart/);
   assert.match(text, /整个输出只有一行 `NOOP`/);
-  assert.match(text, /loop log signals-slack/);
+  assert.doesNotMatch(text, /第 3 轮|signals-slack 第/);
 });
 
-test("TC-P23 every entry carries the single outbound rule", () => {
-  for (const entry of ["conversation", "notice", "loop"]) {
-    const text = render(builtinPrompts(), "slack", entry);
-    assert.match(text, /不要再用 `notice emit` 或平台 API 发第二遍/, entry);
-    assert.equal(text.match(/不要再用 `notice emit`/g).length, 1, entry);
+test("TC-P9 a scheduled round sends only the origin line when the session exists", () => {
+  const prompts = builtin();
+  const base = { platform: "slack", adapter, inbound: { ...inbound, text: "VPS 报告" } };
+  const warm = prompts.scheduled({ ...base, brief: "VPS 报告", full: false });
+  assert.equal(warm.split("\n")[0], "这不是用户刚说的话：过去的你给现在的自己排了一项任务，现在到点。下面是那份任务书。");
+  assert.match(warm, /VPS 报告/);
+  assert.doesNotMatch(warm, /## 你是谁|## 回复规则|## 本次任务/);
+  const cold = prompts.scheduled({ ...base, brief: "VPS 报告", full: true });
+  assert.match(cold, /## 你是谁/);
+  assert.match(cold, /## 回复规则/);
+  assert.ok(cold.indexOf("VPS 报告") > cold.indexOf("## 回复规则"));
+});
+
+test("TC-P10 the stall notice carries the job and drops empty label lines", () => {
+  const prompts = builtin();
+  const text = prompts.stallNotice({ task: "VPS 报告", job: "job-2300（name `vps-renew`）", lastProgress: "11-14 23:00" });
+  assert.match(text, /^任务：VPS 报告$/m);
+  assert.match(text, /^job：job-2300（name `vps-renew`）$/m);
+  assert.doesNotMatch(text, /^这一轮：$/m);
+  assert.doesNotMatch(text, /^卡在：$/m);
+  assert.match(text, /重启默认提示词：「上一轮似乎卡住了，继续，不要犯相同错误」/);
+});
+
+test("TC-P11 messages render without leftovers and carry their own text", () => {
+  const prompts = builtin("/srv/relay-config");
+  assert.equal(prompts.restartPrompt(), "上一轮似乎卡住了，继续，不要犯相同错误");
+  assert.match(prompts.interrupt(), /被 relay 重启打断/);
+  assert.match(prompts.emptyPrompt(), /\/srv\/relay-config\/src\/prompts|sections\/ 与 messages\//);
+  assert.doesNotMatch(prompts.emptyPrompt(), /\{\{/);
+});
+
+test("TC-P12 a user prompt directory overrides the built-in file", () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-prompts-"));
+  const dir = join(root, "builtin");
+  const userDir = join(root, "user");
+  mkdirSync(join(dir, "sections"), { recursive: true });
+  mkdirSync(join(userDir, "sections"), { recursive: true });
+  for (const name of ["10-common.md", "20-platform-slack.md", "21-platform-feishu.md", "30-entry-conversation.md", "31-entry-notice.md", "32-entry-loop.md"]) {
+    writeFileSync(join(dir, "sections", name), `BUILTIN-${name}`);
   }
-});
-
-test("TC-P24 the self-wake section keeps capabilities and pointers only", () => {
-  const text = readSection("45-self-wake.md");
-  assert.match(text, /job help/);
-  assert.match(text, /loop help/);
-  assert.match(text, /写给下一次的自己/);
-  assert.doesNotMatch(text, /--dedupe|--brief|--in 30m|job start --platform/);
-  assert.doesNotMatch(text, /NOOP/);
-  assert.doesNotMatch(text, /连续 3 轮/);
-});
-
-test("TC-P25 every section that carries a rule sits under its own character cap", () => {
-  const caps = { "21-surface.md": 90, "22-platform-slack-reply.md": 200, "45-self-wake.md": 120, "50-boundary.md": 180 };
-  for (const [file, cap] of Object.entries(caps)) {
-    const length = readSection(file).trim().length;
-    assert.ok(length <= cap, `${file} is ${length} characters, cap ${cap}`);
-  }
-});
-
-test("TC-P26 one rule is stated once, measured across every entry and platform", () => {
-  const rules = [
-    { id: "outbound", marker: "不要再用 `notice emit`", entries: ["conversation", "notice", "loop"], platforms: ["slack", "feishu"] },
-    { id: "transport", marker: "只放最终回帖", entries: ["conversation", "loop"], platforms: ["slack", "feishu"] },
-    { id: "formatting", marker: "排版求紧", entries: ["conversation", "notice", "loop"], platforms: ["slack"] },
-    { id: "github-link", marker: "`[backend#1360](链接)`", entries: ["conversation", "notice", "loop"], platforms: ["slack"] },
-    { id: "topic", marker: "using-topicbox", entries: ["conversation"], platforms: ["slack", "feishu"] },
-  ];
-  for (const platform of ["slack", "feishu"]) {
-    for (const rule of rules.filter((item) => item.platforms.includes(platform))) {
-      for (const entry of rule.entries) {
-        const text = render(builtinPrompts(), platform, entry);
-        const hits = text.split(rule.marker).length - 1;
-        assert.equal(hits, 1, `${rule.id} is stated ${hits} times in ${platform}/${entry}`);
-      }
-    }
-  }
-});
-
-test("TC-P14 the loop round sections point at loop help instead of repeating flags", () => {
-  const header = readSection("02-header-loop.md");
-  const task = readSection("12-loop-task.md");
-  assert.match(header, /loop log/);
-  assert.doesNotMatch(header, /--prompt-file|--every|--cron|--no-thread/);
-  assert.match(task, /loop help/);
-  assert.doesNotMatch(task, /--prompt-file|--every|--cron|--no-thread/);
-  assert.match(task, /NOOP/);
-});
-
-test("TC-P12 a notice reply never renders the stall, surface or candidate sections", () => {
-  const text = render(builtinPrompts(), "feishu", "notice");
-  assert.match(text, /STALL-BODY/);
-  assert.doesNotMatch(text, /## 处置卡住的 job/);
-  assert.doesNotMatch(text, /stdout 会原样发回/);
-  assert.doesNotMatch(text, /## 记录\r?\n[\s\S]*## 记录/);
-  assert.doesNotMatch(text, /\{\{/);
-});
-
-test("TC-P13 the config directory in the prompt follows AGENT_RELAY_CONFIG_DIR instead of a hard-coded path", () => {
-  const prompts = builtinPrompts("/srv/relay-config");
-  const thread = render(prompts, "feishu");
-  assert.match(thread, /\/srv\/relay-config\/relay-feishu\.json/);
-  assert.doesNotMatch(thread, /~\/\.config\/agent-relay/);
-  assert.match(prompts.stallActions("feishu"), /\/srv\/relay-config\/relay-feishu\.cmd/);
-});
-
-test("TC-P14 without an override the prompt falls back to the documented default path", () => {
-  assert.match(builtinPrompts().stallActions("slack"), /~\/\.config\/agent-relay\/relay-slack\.json/);
-});
-
-test("TC-P15 only the slack prompt teaches the image reference, feishu stays text-only", () => {
-  assert.match(render(builtinPrompts(), "slack"), /!\[\]\(\/绝对路径\.png\)/);
-  assert.doesNotMatch(render(builtinPrompts(), "feishu"), /!\[\]\(\/绝对路径\.png\)/);
-});
-
-test("TC-P16 each entry selects its documented sections plus its own platform reply section, in file order", () => {
-  const prompts = builtinPrompts();
-  const fileOrder = prompts.listSections().map((section) => section.name);
-  const withPlatform = (entry, platform) => {
-    const allowed = new Set([...ENTRY_SECTIONS[entry], `platform-${platform}-reply`]);
-    return fileOrder.filter((name) => allowed.has(name));
-  };
-  for (const platform of ["slack", "feishu"]) {
-    assert.deepEqual(sectionsByName(prompts, { entry: "conversation", platform }), withPlatform("conversation", platform));
-    assert.deepEqual(sectionsByName(prompts, { entry: "notice", platform }), withPlatform("notice", platform));
-  }
-});
-
-test("TC-P17 every platform-* section renders only for its own platform", () => {
-  const prompts = builtinPrompts();
-  for (const platform of ["slack", "feishu"]) {
-    for (const entry of ["conversation", "notice"]) {
-      const names = sectionsByName(prompts, { entry, platform });
-      const platformSections = names.filter((name) => name.startsWith("platform-"));
-      assert.deepEqual(platformSections, [`platform-${platform}-reply`]);
-    }
-  }
-});
-
-test("TC-P19 a user section overrides only that section", () => {
-  const { prompts } = tempPrompts(stubSections, { "20-reply.md": "OVERRIDDEN-REPLY" });
-  const text = render(prompts, "feishu");
-  assert.match(text, /OVERRIDDEN-REPLY/);
-  assert.doesNotMatch(text, /^REPLY$/m);
-  assert.match(text, /SITUATION/);
-  assert.match(text, /BOUNDARY/);
-});
-
-test("TC-P20 four classes of drift each raise a warning without blocking", () => {
-  const { prompts, warnings } = tempPrompts({
-    ...stubSections,
-    "20-reply.md": "REPLY",
-    "21-reply-dup.md": "DUP",
-    "22-orphan.md": "NOBODY",
-    "23-notext.md": "",
-  });
-  render(prompts, "feishu");
-  const joined = warnings.join("\n");
-  assert.match(joined, /duplicate section number 21/);
-  assert.match(joined, /no selection rule renders this section/);
-  const { prompts: missing, warnings: missingWarnings } = tempPrompts({ "00-header-conversation.md": "CONV" });
-  render(missing, "feishu");
-  assert.match(missingWarnings.join("\n"), /listed in ENTRY_SECTIONS but no section file provides it/);
-});
-
-test("TC-P21 a rendered prompt reports an unresolved placeholder instead of shipping it", () => {
-  const { prompts, warnings } = tempPrompts({ "00-header-conversation.md": "CONV {{unknown}}" });
-  const text = render(prompts, "feishu");
-  assert.match(text, /\{\{unknown\}\}/);
-  assert.match(warnings.join("\n"), /unresolved placeholder/);
-});
-
-test("TC-P22 the topic-first rule opens the task section, not the situation section", () => {
-  const task = readSection("10-task.md");
-  assert.match(task.split("\n\n")[1], /指向哪个 topic/);
-  assert.doesNotMatch(readSection("30-situation.md"), /topic/);
-  assert.match(render(builtinPrompts(), "feishu"), /^## 你在干什么\n\n先弄清消息指向哪个 topic：/m);
+  writeFileSync(join(userDir, "sections", "10-common.md"), "USER-COMMON");
+  const prompts = createPrompts({ dir, userDir });
+  const text = prompts.conversation({ platform: "slack", adapter, inbound });
+  assert.match(text, /USER-COMMON/);
+  assert.match(text, /BUILTIN-20-platform-slack\.md/);
 });

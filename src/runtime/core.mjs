@@ -1,4 +1,4 @@
-import { readFileSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawn as spawnProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { runPrintWorker } from "./worker-print.mjs";
@@ -20,7 +20,6 @@ import { nextAction } from "../jobs/next-action.mjs";
 import { createStateStore } from "../state/store.mjs";
 import { createNoticeService } from "../notices/service.mjs";
 import { NOTICE_TITLES } from "../notices/title.mjs";
-import { RESTART_PROMPT, stallNoticePrompt, stallNoticeText } from "./stall-notice.mjs";
 import { createPrompts } from "./prompts.mjs";
 import { activeLoopCount, createLoop, isLoopId, normalizeLoopTitle, platformOfLoopId, validateLoopChange, validateLoopPromptSource, validateLoopTitle, validateSchedule } from "../loops/model.mjs";
 import { resolveLoopPrompt } from "../loops/prompt.mjs";
@@ -35,10 +34,27 @@ const RETENTION_MS = 72 * 3_600_000;
 const SEEN_RETENTION_MS = 72 * 3_600_000;
 const MAX_SEEN = 5000;
 const COMMAND_TTL_MS = 10 * 60_000;
-const INTERRUPT_NOTICE = "⏸ 这一轮被 relay 重启打断：还在跑的进程已终止，会话与已完成的改动都保留，被打断那轮没发出来的输出不补发。直接回复这条消息就会接着之前的会话继续。";
-const ACTION_KINDS = { cancel: true, restart: true };
+
+const STALL_SUBJECT_CHARS = 80;
+const STALL_COMMAND_CHARS = 120;
+
+export function oneLine(value, limit = STALL_SUBJECT_CHARS) {
+  const line = String(value ?? "")
+    .split("\n")
+    .map((item) => item.trim())
+    .find((item) => item.length > 0) ?? "";
+  const flat = line.replace(/\s+/g, " ");
+  return flat.length > limit ? `${flat.slice(0, limit)}…` : flat;
+}
+
+export function stallStuckText({ silenceMs = 0, reason = "silent", tool = null } = {}) {
+  const minutes = Math.max(1, Math.round(Number(silenceMs) / 60_000));
+  if (reason !== "tool" || !tool) return `${minutes} 分钟没有进展`;
+  const detail = tool.head ? `：${oneLine(tool.head, STALL_COMMAND_CHARS)}` : "";
+  return `工具 ${tool.name ?? "未知"} 已运行 ${minutes} 分钟没有返回${detail}`;
+}
 const STATUS_TEXT = { done: "完成", failed: "失败", retrying: "重试中", cancelled: "取消", interrupted: "被打断", queued: "排队", scheduled: "排定中" };
-const BRIEF_MAX_BYTES = 8 * 1024;
+const PROMPT_MAX_BYTES = 8 * 1024;
 const DEFAULT_GRACE_MS = 6 * 3_600_000;
 const RUNAWAY_PER_HOUR = relayEnv("RUNAWAY_PER_HOUR", 12);
 const REAP_POLL_MS = 50;
@@ -160,13 +176,12 @@ export function createCore({ adapter, config, deps = {} }) {
     try {
       const notice = await notices.emit({
         title: NOTICE_TITLES.stall,
-        text: stallNoticeText(fields),
-        prompt: stallNoticePrompt({
-          key: job.key,
-          platform: adapter.name,
-          cli: config.cli,
-          instructions: prompts.read("stall-instructions.md").trim(),
-          actions: prompts.stallActions(adapter.name),
+        text: prompts.stallNotice({
+          task: oneLine(fields.task),
+          round: fields.round && fields.round !== fields.task ? oneLine(fields.round) : "",
+          stuck: stallStuckText(fields),
+          job: `${job.id}（name \`${job.inbound?.name ?? "-"}\`）`,
+          lastProgress: fields.local,
         }),
       });
       save();
@@ -265,7 +280,7 @@ export function createCore({ adapter, config, deps = {} }) {
     }
     const base = latestJobFor(key) ?? job;
     if (!base) return false;
-    const prompt = [RESTART_PROMPT, String(text ?? "").trim()].filter(Boolean).join("\n\n");
+    const prompt = [prompts.restartPrompt(), String(text ?? "").trim()].filter(Boolean).join("\n\n");
     const inbound = {
       ...base.inbound,
       key,
@@ -286,9 +301,68 @@ export function createCore({ adapter, config, deps = {} }) {
     return true;
   }
 
-  async function applyAction({ action, key, text } = {}) {
-    if (!action || !key || !ACTION_KINDS[action]) return false;
-    return finishStalled({ key, action, text });
+  function migrateScheduledPrompts() {
+    let moved = 0;
+    for (const job of Object.values(state.jobs ?? {})) {
+      if (job.status !== "scheduled") continue;
+      const inbound = job.inbound ?? {};
+      if (inbound.promptFile) continue;
+      const raw = String(inbound.name ?? inbound.dedupeId ?? "");
+      if (!raw) continue;
+      let name = raw.toLowerCase().replace(/[^a-z0-9._-]/g, "-").replace(/^-+/, "");
+      if (!name) continue;
+      if (name.length > 64) name = name.slice(0, 64);
+      if (!NAME_PATTERN.test(name)) continue;
+      if (name !== raw && (state.seen?.[name] || existsSync(promptPathFor(name)))) {
+        const base = name.slice(0, 60);
+        let seq = 2;
+        while (state.seen?.[`${base}-${seq}`] || existsSync(promptPathFor(`${base}-${seq}`))) seq += 1;
+        name = `${base}-${seq}`;
+      }
+      try {
+        if (!existsSync(promptPathFor(name))) writePromptFile(name, String(inbound.text ?? ""));
+        inbound.name = name;
+        inbound.promptFile = promptPathFor(name);
+        state.seen[name] = job.id;
+        moved += 1;
+      } catch (error) {
+        log("warn", "prompt-migrate", job.id, String(error?.message ?? error));
+      }
+    }
+    if (moved) {
+      save();
+      log("info", "prompt-migrate", `${moved} scheduled jobs`);
+    }
+  }
+
+  function jobById(id) {
+    return state.jobs?.[String(id ?? "")] ?? null;
+  }
+
+  async function cancelJob({ job: jobId } = {}) {
+    const job = jobById(jobId);
+    if (!job) return { rejected: "unknown" };
+    if (job.status === "scheduled") return { rejected: "not-running", job: job.id };
+    if (job.status === "queued") {
+      state.inbox = state.inbox.filter((id) => id !== job.id);
+      job.status = "cancelled";
+      job.error = "cancelled";
+      job.updatedAt = isoNow();
+      save();
+      await replyToJob(job, "已取消排队中的这一轮（还没开始跑）。");
+      return { job: job.id, outcome: "cancelled" };
+    }
+    if (isFinished(job)) return { outcome: "nothing-to-cancel", job: job.id };
+    const ok = await finishStalled({ key: job.key, action: "cancel" });
+    return { job: job.id, outcome: ok ? "cancelled" : "nothing-to-cancel" };
+  }
+
+  async function restartJob({ job: jobId, text = "" } = {}) {
+    const job = jobById(jobId);
+    if (!job) return { rejected: "unknown" };
+    if (job.status === "scheduled" || isFinished(job)) return { rejected: "not-running", job: job.id };
+    const ok = await finishStalled({ key: job.key, action: "restart", text });
+    return { job: job.id, outcome: ok ? "restarted" : "not-running" };
   }
 
   async function drainCommands() {
@@ -311,27 +385,47 @@ export function createCore({ adapter, config, deps = {} }) {
       if (!command) continue;
       const writtenAt = Date.parse(command.at ?? "");
       if (!Number.isFinite(writtenAt) || now() - writtenAt > COMMAND_TTL_MS) continue;
+      let result = { ok: true };
       try {
         if (command.op === "emit") {
           await notices.emit({ text: command.text, prompt: command.prompt ?? "", reply: command.reply ?? null, title: command.title ?? "" });
         } else if (command.op === "schedule") {
           const outcome = scheduleJob(command);
           appendLog({ event: "command-schedule", ...outcome, key: String(command.key ?? "") });
-        } else if (command.op === "cancel") {
+          result = outcome.rejected ? { ok: false, refused: outcome.rejected } : { ok: true, ...outcome };
+        } else if (command.op === "cancel-schedule") {
           const outcome = cancelScheduled(command);
-          appendLog({ event: "command-cancel", ...outcome, dedupe: String(command.dedupe ?? "") });
+          appendLog({ event: "command-cancel-schedule", ...outcome, name: String(command.name ?? "") });
+          result = outcome.rejected ? { ok: false, refused: outcome.rejected } : { ok: true, ...outcome };
+        } else if (command.op === "cancel-job") {
+          const outcome = await cancelJob(command);
+          appendLog({ event: "command-cancel-job", ...outcome, job: String(command.job ?? "") });
+          result = outcome.rejected ? { ok: false, refused: outcome.rejected } : { ok: true, ...outcome };
+        } else if (command.op === "restart-job") {
+          const outcome = await restartJob(command);
+          appendLog({ event: "command-restart-job", ...outcome, job: String(command.job ?? "") });
+          result = outcome.rejected ? { ok: false, refused: outcome.rejected } : { ok: true, ...outcome };
         } else if (command.op === "redeliver") {
           const outcome = await redeliver(command);
           appendLog({ event: "command-redeliver", ...outcome });
+          result = { ok: true, ...outcome };
         } else if (String(command.op ?? "").startsWith("loop-")) {
           const outcome = await applyLoopCommand(command);
           appendLog({ event: command.op, ...outcome });
+          result = outcome?.refused ? { ok: false, refused: outcome.refused } : { ok: true, ...outcome };
         } else {
-          await applyAction(command);
+          log("warn", "command-unknown", String(command.op ?? ""), "ignored");
+          result = { ok: false, refused: "unknown-command" };
         }
         handled += 1;
       } catch (error) {
         log("error", "command", String(error?.message ?? error));
+        result = { ok: false, refused: "failed" };
+      }
+      try {
+        writeFileSync(`${file}.result`, JSON.stringify(result), { mode: 0o600 });
+      } catch (error) {
+        log("warn", "command-result", String(error?.message ?? error));
       }
     }
     return handled;
@@ -387,22 +481,22 @@ export function createCore({ adapter, config, deps = {} }) {
     return Number.isFinite(configured) && configured > 0 ? configured : null;
   }
 
-  function buildPrompt(job, entry) {
-    const inbound = runtimeInbound(job);
-    const root = entry.rootText || inbound.text;
-    const base = { platform: adapter.name, adapter, inbound, root, running: runningJobs() };
-    if (job.origin === "loop" && job.loop) return prompts.loopRound({ ...base, loop: job.loop });
-    if (isScheduled(job)) {
-      return prompts.selfJob({
-        ...base,
-        brief: inbound.text,
-        origin: job.origin,
-        chain: job.chain ?? 0,
-        dueAt: job.dueAt ?? null,
-        deliveredAt: isoAt(job.startedAt ?? now()),
-        lateMs: job.lateMs ?? 0,
-      });
+  function scheduledBrief(job) {
+    const file = String(job.inbound?.promptFile ?? "").trim();
+    if (file) {
+      try {
+        const text = readFileSync(file, "utf8").trim();
+        if (text) return text;
+      } catch {}
     }
+    return String(job.inbound?.text ?? "").trim();
+  }
+
+  function buildPrompt(job, entry, full) {
+    const inbound = runtimeInbound(job);
+    const base = { platform: adapter.name, adapter, inbound };
+    if (job.origin === "loop" && job.loop) return prompts.loopRound({ ...base, loop: job.loop });
+    if (isScheduled(job)) return prompts.scheduled({ ...base, brief: scheduledBrief(job), full });
     if (job.noticeId) {
       const notice = notices.get(job.noticeId);
       if (notice) return prompts.noticeReply({ ...base, notice });
@@ -414,7 +508,7 @@ export function createCore({ adapter, config, deps = {} }) {
     const inbound = runtimeInbound(job);
     const full = !hasSession(entry.session);
     if (isScheduled(job) || job.origin === "loop") {
-      const built = buildPrompt(job, entry);
+      const built = buildPrompt(job, entry, full);
       const render = (prompt) => {
         if (job.origin === "loop" && !String(prompt ?? "").trim()) {
           appendLog({ event: "empty-prompt", job: job.id, key: inbound.key });
@@ -430,7 +524,7 @@ export function createCore({ adapter, config, deps = {} }) {
       return typeof built?.then === "function" ? built.then(render) : render(built);
     }
     if (!full) return spawnWorker(job, entry, inbound, inbound.text, false);
-    const built = buildPrompt(job, entry);
+    const built = buildPrompt(job, entry, full);
     const run = (prompt) => {
       if (String(prompt ?? "").trim()) return spawnWorker(job, entry, inbound, prompt, true);
       appendLog({ event: "empty-prompt", job: job.id, key: inbound.key });
@@ -438,7 +532,7 @@ export function createCore({ adapter, config, deps = {} }) {
       job.error = "empty-prompt";
       job.updatedAt = isoNow();
       save();
-      return adapter.reply(ctxOf(job), `prompt 模板为空，本轮没有启动：检查 ${config.promptsDir} 下的 thread.md / notice.md。`).catch((error) => log("error", "empty-prompt", String(error?.message ?? error)));
+      return adapter.reply(ctxOf(job), prompts.emptyPrompt()).catch((error) => log("error", "empty-prompt", String(error?.message ?? error)));
     };
     if (typeof built?.then === "function") return built.then(run);
     return run(built);
@@ -1006,7 +1100,7 @@ export function createCore({ adapter, config, deps = {} }) {
     }
     if (!job.noticeSent) {
       try {
-        await adapter.reply(ctxOf(job), INTERRUPT_NOTICE);
+        await adapter.reply(ctxOf(job), prompts.interrupt());
       } catch (error) {
         log("error", "interrupt-reply", String(error?.message ?? error));
       }
@@ -1028,6 +1122,7 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   async function recover() {
+    migrateScheduledPrompts();
     const canEdit = typeof adapter.edit === "function";
     let touched = 0;
     for (const job of Object.values(state.jobs)) {
@@ -1147,22 +1242,48 @@ export function createCore({ adapter, config, deps = {} }) {
     return Object.values(state.jobs ?? {}).find((job) => job.inbound?.dedupeId === dedupe) ?? null;
   }
 
-  function scheduleJob({ key, dedupe, brief, dueAt, graceMs = DEFAULT_GRACE_MS } = {}) {
+  const NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+
+  function promptPathFor(name) {
+    return join(config.userPromptsDir, "jobs", name, "prompt.md");
+  }
+
+  function writePromptFile(name, prompt) {
+    const file = promptPathFor(name);
+    const dir = join(config.userPromptsDir, "jobs", name);
+    const temp = join(dir, `.prompt.md.${process.pid}.tmp`);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(temp, prompt, { mode: 0o600 });
+    renameSync(temp, file);
+    return file;
+  }
+
+  function scheduleJob({ key, name, prompt, dueAt, graceMs = DEFAULT_GRACE_MS } = {}) {
     if (typeof adapter.selfContext !== "function") return { rejected: "platform" };
+    if (!NAME_PATTERN.test(String(name ?? ""))) return { rejected: "name-invalid" };
     if (!state.convs[key]) return { rejected: "unknown-key" };
-    if (state.seen[dedupe]) return { rejected: "duplicate" };
-    const body = String(brief ?? "").trim();
-    if (!body) return { rejected: "empty" };
-    if (Buffer.byteLength(body) > BRIEF_MAX_BYTES) return { rejected: "too-long" };
+    const body = String(prompt ?? "").trim();
+    if (!body) return { rejected: "empty-prompt" };
+    if (Buffer.byteLength(body) > PROMPT_MAX_BYTES) return { rejected: "too-long" };
+    if (state.seen?.[name] || existsSync(promptPathFor(name))) return { rejected: "name-taken" };
     if (recentlyScheduled(key) >= RUNAWAY_PER_HOUR) return { rejected: "runaway" };
     const parsed = Date.parse(dueAt ?? "");
     const at = Number.isFinite(parsed) ? parsed : now();
     const context = adapter.selfContext(key);
     if (!context) return { rejected: "platform" };
+    let promptFile;
+    try {
+      promptFile = writePromptFile(String(name), body);
+    } catch (error) {
+      log("warn", "prompt-write", String(error?.message ?? error));
+      return { rejected: "write-failed" };
+    }
     const inbound = {
       key,
       session: adapter.sessionFor(key),
-      dedupeId: dedupe,
+      dedupeId: name,
+      name,
+      promptFile,
       text: body,
       rootText: state.convs[key]?.rootText ?? body,
       authorId: "self",
@@ -1191,7 +1312,7 @@ export function createCore({ adapter, config, deps = {} }) {
     job.expiresAt = isoAt(at + graceMs);
     job.status = "scheduled";
     state.jobs[job.id] = job;
-    state.seen[dedupe] = job.id;
+    state.seen[inbound.name] = job.id;
     const entry = state.convs[key] ?? { session: job.session, rootText: job.inbound.rootText, lastMsgTs: null, activeJob: null };
     if (!entry.rootText) entry.rootText = job.inbound.rootText;
     state.convs[key] = entry;
@@ -1201,15 +1322,21 @@ export function createCore({ adapter, config, deps = {} }) {
     return { job: job.id };
   }
 
-  function cancelScheduled({ dedupe } = {}) {
-    const job = findJobByDedupe(dedupe);
+  function findJobByName(name) {
+    const id = state.seen?.[name];
+    if (id && state.jobs[id]) return state.jobs[id];
+    return Object.values(state.jobs ?? {}).find((job) => job.inbound?.name === name) ?? null;
+  }
+
+  function cancelScheduled({ name } = {}) {
+    const job = findJobByName(String(name ?? ""));
     if (!job) return { rejected: "unknown" };
-    if (job.status !== "scheduled") return { rejected: "not-scheduled", job: job.id, status: job.status };
+    if (job.status !== "scheduled") return { rejected: "already-started", job: job.id };
     job.status = "cancelled";
     job.error = "cancelled";
     job.updatedAt = isoNow();
     save();
-    appendLog({ event: "job-cancelled", job: job.id, key: job.key, dedupe });
+    appendLog({ event: "job-cancelled", job: job.id, key: job.key, name });
     return { job: job.id };
   }
 
@@ -1773,7 +1900,8 @@ export function createCore({ adapter, config, deps = {} }) {
     recover,
     onReady,
     cancel,
-    applyAction,
+    cancelJob,
+    restartJob,
     drainCommands,
     checkStall,
     scheduleJob,

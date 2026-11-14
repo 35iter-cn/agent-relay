@@ -29,30 +29,35 @@ line (`📣📣📣 <类型>`, chosen by the sender via `--title`) so a chat pre
 the message is about before any of its body is read. The relay records the notice in
 the platform state file together with the message id it was posted as; when the user
 replies, the adapter reports the parent message id, the relay resolves it back to
-the notice and opens a session scoped to it (`notice-ntc-12`). The fixed
-`prompts/sections/` notice sections then render just `text`, `prompt` and the platform
-reply rules.
+the notice and opens a session scoped to it (`notice-ntc-12`). The notice entry
+renders only the notice id and the user's reply; the body (and any instruction the
+sender attached) is read at run time with `agent-relay notice get`, so the prompt
+never carries third-party text it does not need.
 
 That means:
 
 - adding a new notification type is a change in the sender, not in this repo:
   `agent-relay notice emit --platform feishu --text "$(…)" --prompt-file …`
 - the policy for acting on a notice lives in that `prompt`; the relay itself only
-  knows `agent-relay stall <platform> cancel|restart <key>` and the scheduled-turn
-  entry described below — each entry point validates its own arguments. Inbound text
-  is never parsed: `/stop`, `/重跑` or any other word in a reply is plain text for the
-  agent, which cancels through the stall command if it decides to.
+  knows `agent-relay job cancel|restart <job-id>` and the `schedule` entry described
+  below — each entry point validates its own arguments. Inbound text is never parsed:
+  `/stop`, `/重跑` or any other word in a reply is plain text for the agent, which
+  cancels through `job cancel` if it decides to.
 - the notice body is data, not instructions — the notice task section says so, because the
   text can carry third-party content (issue titles, chat excerpts)
 
-The stall alert is the one notice the relay raises by itself; it builds both
-fields in `src/runtime/stall-notice.mjs`.
+The stall alert is the one notice the relay raises by itself; its text is
+`src/prompts/messages/stall-notice.md`, and it carries the job id so a reply can act
+on it directly.
 
 ## Scheduled turns
 
-A conversation turn can be put on the clock: `agent-relay job start --platform slack
---key <thread> --dedupe <id> --brief "<what this turn does>" --in 30m` (or `--at <iso>`,
-`--grace 6h`). The job is created straight into `status: "scheduled"` and the daemon
+A conversation turn can be put on the clock: `agent-relay schedule --platform slack
+--key <thread> --name <name> [--in 30m | --at <iso>] [--grace 6h]`, with the prompt on
+stdin (`<<'EOF' … EOF`). The prompt lands in
+`<configDir>/prompts/jobs/<name>/prompt.md` and is read at due time, so editing it
+before the turn runs changes nothing — reschedule with a new name instead. The job is
+created straight into `status: "scheduled"` and the daemon
 moves it to `queued` once `dueAt` passes **and the thread is free** — a due job never
 sits in the queue and never pushes a user message out of it. From there it is an
 ordinary job: same lease, serialisation per key, stall watchdog, delivery.
@@ -72,7 +77,7 @@ only delays its own turns.
 
 ## Loops
 
-A conversation turn can be put on a clock once (`job start`); a **loop** is the repeating version. A loop is one prompt plus one cron schedule, owned by the platform it was created on:
+A conversation turn can be put on a clock once (`schedule`); a **loop** is the repeating version. A loop is one prompt plus one cron schedule, owned by the platform it was created on:
 
 ```bash
 agent-relay loop create --platform slack --slug intake --cron "*/30 * * * *" --prompt-file ~/.config/agent-relay/prompts/loops/intake-slack/prompt.md
@@ -87,15 +92,15 @@ A loop's id is readable when you say so: `--slug intake` makes it `intake-slack`
 
 **Where the prompt lives** decides when an edit lands. `--prompt-file <path>` stores only the path and reads it at the start of **every round** — edit the file, the next round uses it, no `loop update`, no restart. A file that was deleted, emptied or grown past 64 KiB fails that round (`prompt-unreadable` / `empty-prompt` / `prompt-too-long`), posts nothing, and counts towards the three-failure pause like any other failed round.
 
-The shape is enforced rather than documented: `--slug` is required, and the only accepted `--prompt-file` is `<configDir>/prompts/loops/<loop id>/prompt.md` — another path is refused with `prompt-file-not-canonical`, and an inline `--prompt` is refused with `inline-prompt-refused` unless you say `--allow-inline` (stored as `promptInline`). A one-off prompt belongs to `job start`, not to a loop. `agent-relay loop doctor [--platform <p>]` re-checks every loop against that shape — id form, canonical path, file health, schedule — prints `<id>\t<ok|warn|fail>\t<problems>` and exits 3 when something fails.
+The shape is enforced rather than documented: `--slug` is required, and the only accepted `--prompt-file` is `<configDir>/prompts/loops/<loop id>/prompt.md` — another path is refused with `prompt-file-not-canonical`, and an inline `--prompt` is refused with `inline-prompt-refused` unless you say `--allow-inline` (stored as `promptInline`). A one-off prompt belongs to `schedule`, not to a loop. `agent-relay loop doctor [--platform <p>]` re-checks every loop against that shape — id form, canonical path, file health, schedule — prints `<id>\t<ok|warn|fail>\t<problems>` and exits 3 when something fails.
 
-The schedule is cron, five fields, on wall-clock minutes in `Asia/Shanghai` (`0 13 * * *` is every day at 13:00). The next due point is the first match after the previous trigger; when it arrives while the previous round is still running, **that trigger is dropped rather than caught up** — the anchor moves past it, so a round finishing at 21:59 with `*/30` meets the 22:00 trigger, and `loop show` reports the dropped point as `skipped`. A one-off turn is `job start --in/--at`, never a loop. A stored loop still carrying the retired `every` / `at` schedule is paused at boot and reported by one notice, and `loop doctor` fails it with `bad-schedule` — it never dies silently.
+The schedule is cron, five fields, on wall-clock minutes in `Asia/Shanghai` (`0 13 * * *` is every day at 13:00). The next due point is the first match after the previous trigger; when it arrives while the previous round is still running, **that trigger is dropped rather than caught up** — the anchor moves past it, so a round finishing at 21:59 with `*/30` meets the 22:00 trigger, and `loop show` reports the dropped point as `skipped`. A one-off turn is `schedule --in/--at`, never a loop. A stored loop still carrying the retired `every` / `at` schedule is paused at boot and reported by one notice, and `loop doctor` fails it with `bad-schedule` — it never dies silently.
 
 Every round is a **fresh session**: the round's conversation key is `<loopId>-r<round>`, so nothing from the previous round leaks in. The round's output goes out through the **notice entry** with a conversation binding (`reply: { mode: "conversation", key }`), which is the one deliberate difference to an ordinary notice: a reply to it continues *that round's* session instead of opening a `notice-<id>` conversation.
 
 A notice is never pruned on its own. A bound notice stores only its binding, not the body — the round's text already lives in the history file, and keeping a copy in the state file would mean rewriting it on every job change.
 
-A round whose output is only `NOOP` (or nothing at all) is a quiet round: nothing is posted, the round is recorded as `noop`, and the loop stays healthy. The model is told about this marker in its prompt (`src/prompts/sections/45-self-wake.md`), so "nothing to report" does not turn into one message per interval.
+A round whose output is only `NOOP` (or nothing at all) is a quiet round: nothing is posted, the round is recorded as `noop`, and the loop stays healthy. The model is told about this marker in `src/prompts/sections/32-entry-loop.md`, so "nothing to report" does not turn into one message per interval.
 
 The old round history lives in `~/.config/agent-relay/loops/<loopId>.jsonl` (last 50 rounds, 90 days); a round never receives the previous output — it is told to read it with `loop log` / `loop show-run`.
 
@@ -116,7 +121,7 @@ src/
 ├── loops/                  loop model, cron schedule, rounds, history, help
 ├── runtime/                core loop, prompts, stall notice, instance lock
 ├── notices/                notice service (emit / match / prune)
-├── prompts/                prompt sections (one file per block) + stall fragments
+├── prompts/                sections/ (common, platform, entry) + messages/
 └── platforms/              feishu | slack adapters + shared helpers
 ```
 
@@ -128,10 +133,10 @@ Design rules:
   `src/platforms/<name>.mjs`; shared behaviour (root-text cache, conversation
   pruning) lives in `src/platforms/shared/`.
 - **User-initiated versus relay-initiated** live in one set of section files
-  (`src/prompts/sections/NN-<name>.md`); `ENTRY_SECTIONS` in
-  `src/runtime/prompts.mjs` decides which sections a conversation and a notice
-  reply each render. A `platform-<name>-reply` section renders only on that
-  platform.
+  (`src/prompts/sections/NN-<name>.md`); `src/runtime/prompts.mjs` renders
+  `10-common` → the platform file → the entry file (`30`/`31`/`32`). Rules live in
+  the common file, wording differences in the platform file, and the entry file only
+  says what this turn is.
 - **The ledger is not relay's.** Relay decides which job runs when and how it
   stops; the pi extension and the agent-hours service own every ledger row.
 - **A conversation key is the name a message will share with its own thread.** A root
