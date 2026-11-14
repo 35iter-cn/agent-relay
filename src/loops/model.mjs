@@ -1,11 +1,8 @@
 import { join, resolve } from "node:path";
 import { PLATFORMS } from "../platforms/contract.mjs";
-import { parseDurationMs } from "../shared/duration.mjs";
 import { cronNext, parseCron } from "./cron.mjs";
 import { validatePromptFile } from "./prompt.mjs";
 
-export const LOOP_STATES = new Set(["armed", "paused", "done", "deleted"]);
-export const MIN_EVERY_MS = 10 * 60_000;
 export const MAX_LOOPS = 20;
 export const MAX_PROMPT_BYTES = 4 * 1024;
 export const MAX_TITLE_BYTES = 80;
@@ -54,18 +51,11 @@ export function activeLoopCount(loops) {
   return Object.values(loops ?? {}).filter((loop) => loop && loop.state !== "deleted").length;
 }
 
-export function validateSchedule({ every, at, cron } = {}) {
-  const given = [every, at, cron].filter((value) => value !== undefined && value !== null && value !== "");
-  if (given.length !== 1) return "schedule-required";
-  if (cron) {
-    const parsed = parseCron(cron);
-    if (!parsed) return "bad-cron";
-    return Number.isFinite(cronNext(parsed, Date.now())) ? null : "never-fires";
-  }
-  if (at) return Number.isFinite(Date.parse(at)) ? null : "bad-at";
-  const ms = parseDurationMs(every);
-  if (ms === null) return "bad-every";
-  return ms < MIN_EVERY_MS ? "every-too-small" : null;
+export function validateSchedule({ cron } = {}) {
+  if (String(cron ?? "").trim() === "") return "cron-required";
+  const parsed = parseCron(cron);
+  if (!parsed) return "bad-cron";
+  return Number.isFinite(cronNext(parsed, Date.now())) ? null : "never-fires";
 }
 
 export function validatePrompt(prompt) {
@@ -112,7 +102,7 @@ export function validateLoopChange(change = {}) {
   return refused ?? null;
 }
 
-export function createLoop({ id, prompt, promptFile = null, promptInline = false, every = null, at = null, cron = null, thread = true, title = null, createdBy = null, nowIso }) {
+export function createLoop({ id, prompt, promptFile = null, promptInline = false, cron = null, thread = true, title = null, createdBy = null, nowIso }) {
   const file = String(promptFile ?? "").trim();
   const text = file ? "" : String(prompt ?? "").trim();
   return {
@@ -121,9 +111,7 @@ export function createLoop({ id, prompt, promptFile = null, promptInline = false
     prompt: text,
     promptFile: file || null,
     promptInline: file ? false : Boolean(promptInline && text),
-    every: every ?? null,
-    at: at ?? null,
-    cron: cron ?? null,
+    cron,
     thread: thread !== false,
     state: "armed",
     createdAt: nowIso,
@@ -133,10 +121,7 @@ export function createLoop({ id, prompt, promptFile = null, promptInline = false
     lastRound: 0,
     lastMessageId: null,
     lastOutcome: null,
+    lastSkipAt: null,
     failStreak: 0,
   };
-}
-
-export function loopIntervalMs(loop) {
-  return parseDurationMs(loop?.every);
 }

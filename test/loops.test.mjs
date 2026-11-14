@@ -6,7 +6,6 @@ import { tmpdir } from "node:os";
 import {
   MAX_LOOPS,
   canonicalPromptPath,
-  MIN_EVERY_MS,
   activeLoopCount,
   createLoop,
   isLoopId,
@@ -27,15 +26,12 @@ import { appendRound, findRound, listRounds, loopHistoryFile, pruneHistory, read
 
 const nowIso = () => new Date().toISOString();
 
-test("TC-LP1 an interval under ten minutes or a missing schedule is refused", () => {
-  assert.equal(validateSchedule({ every: "5m" }), "every-too-small");
-  assert.equal(validateSchedule({ every: "10m" }), null);
-  assert.equal(validateSchedule({ every: "2h" }), null);
-  assert.equal(validateSchedule({}), "schedule-required");
-  assert.equal(validateSchedule({ every: "10m", at: nowIso() }), "schedule-required");
-  assert.equal(validateSchedule({ at: "not-a-date" }), "bad-at");
-  assert.equal(validateSchedule({ every: "半小时" }), "bad-every");
-  assert.equal(MIN_EVERY_MS, 600_000);
+test("TC-LP1 a loop without a cron expression is refused, and the retired schedules are not schedules", () => {
+  assert.equal(validateSchedule({}), "cron-required");
+  assert.equal(validateSchedule({ cron: "  " }), "cron-required");
+  assert.equal(validateSchedule({ every: "30m" }), "cron-required");
+  assert.equal(validateSchedule({ at: nowIso() }), "cron-required");
+  assert.equal(validateSchedule({ every: "30m", cron: "0 13 * * *" }), null);
 });
 
 test("TC-LP2 a prompt over four kilobytes or an empty one is refused", () => {
@@ -57,31 +53,60 @@ test("TC-LP3 ids carry the platform and continue from the highest sequence", () 
 });
 
 test("TC-LP4 a new loop is armed with no runs and a fresh counter", () => {
-  const loop = createLoop({ id: "loop-slack-1", prompt: " 看 CI ", every: "30m", nowIso: "2026-11-06T00:00:00.000Z", createdBy: "k" });
+  const loop = createLoop({ id: "loop-slack-1", prompt: " 看 CI ", cron: "*/30 * * * *", nowIso: "2026-11-06T00:00:00.000Z", createdBy: "k" });
   assert.equal(loop.prompt, "看 CI");
   assert.equal(loop.state, "armed");
   assert.equal(loop.thread, true);
   assert.equal(loop.lastRound, 0);
   assert.equal(loop.failStreak, 0);
   assert.equal(loop.lastRunAt, null);
-  assert.equal(createLoop({ id: "x", prompt: "p", every: "1h", thread: false, nowIso: "t" }).thread, false);
+  assert.equal(loop.lastSkipAt, null);
+  assert.equal(createLoop({ id: "x", prompt: "p", cron: "0 9 * * *", thread: false, nowIso: "t" }).thread, false);
 });
 
-test("TC-LP5 the first due point is createdAt plus every, later ones anchor on lastRunAt", () => {
-  const base = { every: "30m", createdAt: "2026-11-06T00:00:00.000Z" };
+test("TC-LP5 the first due point is the first cron match after createdAt, later ones after lastRunAt", () => {
+  const base = { cron: "*/30 * * * *", createdAt: "2026-11-06T00:00:00.000Z" };
   assert.equal(loopDueAt(base), Date.parse("2026-11-06T00:30:00.000Z"));
-  assert.equal(loopDueAt({ ...base, lastRunAt: "2026-11-06T00:40:00.000Z" }), Date.parse("2026-11-06T01:10:00.000Z"));
-  assert.equal(loopDueAt({ every: null, at: "2026-11-07T00:00:00.000Z", createdAt: base.createdAt }), Date.parse("2026-11-07T00:00:00.000Z"));
-  assert.equal(loopDueAt({ every: "30m", createdAt: "broken" }), Number.POSITIVE_INFINITY);
+  assert.equal(loopDueAt({ ...base, lastRunAt: "2026-11-06T00:40:00.000Z" }), Date.parse("2026-11-06T01:00:00.000Z"));
+  assert.equal(loopDueAt({ ...base, createdAt: "broken" }), Number.POSITIVE_INFINITY);
   assert.equal(loopLateMs({ ...base, lastRunAt: "2026-11-06T00:00:00.000Z" }, Date.parse("2026-11-06T00:35:00.000Z")), 300_000);
 });
 
+test("TC-LP16 a trigger that arrives while the previous round runs is dropped, not caught up", () => {
+  const base = {
+    cron: "*/30 * * * *",
+    createdAt: "2026-11-13T13:00:00.000Z",
+    lastRunAt: "2026-11-13T13:00:14.000Z",
+  };
+  assert.equal(loopDueAt(base), Date.parse("2026-11-13T13:30:00.000Z"));
+  const dropped = { ...base, lastSkipAt: "2026-11-13T13:30:00.000Z" };
+  assert.equal(loopDueAt(dropped), Date.parse("2026-11-13T14:00:00.000Z"), "the round ends at 13:59:10, the next one is 14:00, not now");
+  assert.equal(loopDueAt({ ...dropped, lastSkipAt: "2026-11-13T14:00:00.000Z" }), Date.parse("2026-11-13T14:30:00.000Z"));
+});
+
+test("TC-LP17 the anchor is the last run, pushed forward by a dropped trigger and never pulled back", () => {
+  const loop = {
+    cron: "0 * * * *",
+    createdAt: "2026-11-13T09:00:00.000Z",
+    lastRunAt: "2026-11-13T09:30:00.000Z",
+    lastSkipAt: "2026-11-13T11:45:00.000Z",
+  };
+  assert.equal(loopDueAt(loop), Date.parse("2026-11-13T12:00:00.000Z"));
+  assert.equal(loopDueAt({ ...loop, lastRunAt: "2026-11-13T12:30:00.000Z" }), Date.parse("2026-11-13T13:00:00.000Z"), "a later run overrides an old drop");
+  assert.equal(loopDueAt({ ...loop, lastRunAt: null, lastSkipAt: null }), Date.parse("2026-11-13T10:00:00.000Z"));
+  assert.equal(
+    loopDueAt({ ...loop, lastRunAt: "2026-11-13T10:30:00.000Z", lastSkipAt: "2026-11-13T09:45:00.000Z" }),
+    Date.parse("2026-11-13T11:00:00.000Z"),
+    "a drop older than the last run changes nothing",
+  );
+});
+
 test("TC-LP6 a tick skips on state, schedule, a running round, the worker ceiling and the hourly budget", () => {
-  const due = { state: "armed", every: "10m", createdAt: "2026-11-06T00:00:00.000Z" };
+  const due = { state: "armed", cron: "*/10 * * * *", createdAt: "2026-11-06T00:00:00.000Z" };
   const nowMs = Date.parse("2026-11-06T01:00:00.000Z");
   assert.equal(roundSkipReason({ loop: due, nowMs }), null);
   assert.equal(roundSkipReason({ loop: { ...due, state: "paused" }, nowMs }), "state");
-  assert.equal(roundSkipReason({ loop: { ...due, createdAt: "2026-11-06T00:55:00.000Z" }, nowMs }), "not-due");
+  assert.equal(roundSkipReason({ loop: { ...due, createdAt: "2026-11-06T01:00:00.000Z" }, nowMs }), "not-due");
   assert.equal(roundSkipReason({ loop: due, nowMs, openJob: { id: "job-1" } }), "busy");
   assert.equal(roundSkipReason({ loop: due, nowMs, running: 5, maxWorkers: 5 }), "workers");
   assert.equal(roundSkipReason({ loop: due, nowMs, roundsLastHour: 20 }), "throttled");
@@ -98,31 +123,28 @@ test("TC-LP7 a round key is derived from the loop id and the round number", () =
   assert.ok(Buffer.byteLength(truncateOutput(big)) <= 32 * 1024);
 });
 
-test("TC-LP10 the schedule is exactly one of every, at and cron, and a cron expression must fire", () => {
+test("TC-LP10 cron is the only schedule, and the expression must fire", () => {
   assert.equal(validateSchedule({ cron: "0 13 * * *" }), null);
   assert.equal(validateSchedule({ cron: "*/5 9-18 * * 1-5" }), null);
   assert.equal(validateSchedule({ cron: "bad" }), "bad-cron");
   assert.equal(validateSchedule({ cron: "0 0 30 2 *" }), "never-fires");
-  assert.equal(validateSchedule({ every: "30m", cron: "0 13 * * *" }), "schedule-required");
-  assert.equal(validateSchedule({ at: nowIso(), cron: "0 13 * * *" }), "schedule-required");
-  assert.equal(validateSchedule({ cron: "" }), "schedule-required");
+  assert.equal(validateSchedule({ cron: "" }), "cron-required");
+  assert.equal(validateSchedule({ cron: "0 13 * *" }), "bad-cron");
 });
 
 test("TC-LP11 a cron loop carries its expression and anchors the next match on the last run", () => {
   const loop = createLoop({ id: "loop-slack-1", prompt: "p", cron: "0 13 * * *", nowIso: "2026-11-06T05:00:00.000Z" });
   assert.equal(loop.cron, "0 13 * * *");
-  assert.equal(loop.every, null);
-  assert.equal(loop.at, null);
+  assert.equal(loop.every, undefined, "the retired every field is not written");
+  assert.equal(loop.at, undefined, "the retired at field is not written");
   assert.equal(loopDueAt(loop), Date.parse("2026-11-07T05:00:00.000Z"));
   assert.equal(loopDueAt({ ...loop, lastRunAt: "2026-11-07T05:00:07.000Z" }), Date.parse("2026-11-08T05:00:00.000Z"));
   assert.equal(loopDueAt({ ...loop, lastRunAt: "2026-11-07T02:00:00.000Z" }), Date.parse("2026-11-07T05:00:00.000Z"));
   assert.equal(loopDueAt({ ...loop, cron: "not a cron" }), Number.POSITIVE_INFINITY);
-  assert.equal(loopDueAt({ ...loop, every: "30m", cron: "0 13 * * *" }), Date.parse("2026-11-07T05:00:00.000Z"));
-  assert.equal(loopDueAt({ ...loop, at: "2026-11-09T00:00:00.000Z", cron: "0 13 * * *" }), Date.parse("2026-11-09T00:00:00.000Z"));
   assert.equal(
-    loopDueAt({ ...loop, cron: null, every: null, at: null }),
+    loopDueAt({ ...loop, cron: null }),
     Number.POSITIVE_INFINITY,
-    "a loop a pre-cron daemon cannot read is never scheduled instead of running at a wrong time",
+    "a record without a cron expression is never scheduled instead of running at a wrong time",
   );
 });
 
