@@ -7,10 +7,12 @@ import { createConfig, sessionsDirFor } from "../src/config.mjs";
 const config = createConfig({ env: { HOME: "/home/tester" } });
 
 test("the built-in prompts directory is the one that ships with the sources", () => {
-  assert.equal(existsSync(join(config.promptsDir, "sections", "00-header-conversation.md")), true);
-  assert.equal(existsSync(join(config.promptsDir, "sections", "01-header-notice.md")), true);
-  assert.equal(existsSync(join(config.promptsDir, "sections", "50-boundary.md")), true);
-  assert.equal(existsSync(join(config.promptsDir, "stall-actions.md")), true);
+  for (const file of ["sections/10-common.md", "sections/20-platform-slack.md", "sections/21-platform-feishu.md", "sections/30-entry-conversation.md", "sections/31-entry-notice.md", "sections/32-entry-loop.md"]) {
+    assert.equal(existsSync(join(config.promptsDir, file)), true, file);
+  }
+  for (const file of ["messages/stall-notice.md", "messages/restart.md", "messages/interrupt.md", "messages/empty-prompt.md"]) {
+    assert.equal(existsSync(join(config.promptsDir, file)), true, file);
+  }
 });
 
 test("config paths default under ~/.config/agent-relay and stay overridable", () => {

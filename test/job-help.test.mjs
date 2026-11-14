@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { handleJobCommand, JOB_ACTIONS } from "../src/cli.mjs";
-import { JOB_VERBS, jobHelp } from "../src/jobs/help.mjs";
+import { JOB_VERBS, jobHelp, scheduleHelp } from "../src/jobs/help.mjs";
 
 function makeConfig() {
   const dir = mkdtempSync(join(tmpdir(), "relay-jobhelp-"));
@@ -39,28 +39,34 @@ async function run(argv, config, sent = []) {
   return { code, out: out.join("") };
 }
 
-test("TC-JH1 the job overview lists start, cancel and list with the timing rules", async () => {
+test("TC-JH1 the job overview lists every verb and the timing rules", async () => {
   const config = makeConfig();
   const { code, out } = await run(["help"], config);
   assert.equal(code, 0);
   for (const { usage } of JOB_VERBS) assert.ok(out.includes(usage), `missing usage: ${usage}`);
-  assert.match(out, /--in <dur>/);
-  assert.match(out, /--at <iso>/);
-  assert.match(out, /--grace <dur>/);
   assert.match(out, /limits:/);
   assert.match(out, /RUNAWAY_PER_HOUR/);
   assert.match(out, /exit:/);
+  assert.match(out, /只做处置，不要接着做原任务/);
 });
 
-test("TC-JH2 a single verb prints only its own block, with an example", async () => {
+test("TC-JH2 a single verb prints only its own block", async () => {
   const config = makeConfig();
-  const { code, out } = await run(["help", "start"], config);
+  const { code, out } = await run(["help", "cancel"], config);
   assert.equal(code, 0);
-  assert.match(out, /job start --platform/);
-  assert.match(out, /--dedupe/);
-  assert.match(out, /example:/);
-  assert.doesNotMatch(out, /job cancel --platform/);
+  assert.match(out, /job cancel --platform/);
+  assert.match(out, /SIGTERM/);
+  assert.doesNotMatch(out, /job restart --platform/);
   assert.doesNotMatch(out, /limits:/);
+});
+
+test("TC-JH2b schedule help describes stdin, name uniqueness and the example", () => {
+  const overview = scheduleHelp();
+  assert.match(overview, /stdin/);
+  assert.match(overview, /schedule cancel/);
+  const create = scheduleHelp("create");
+  assert.match(create, /name-taken/);
+  assert.match(create, /example:/);
 });
 
 test("TC-JH3 bare job is a usage hint, help is a success and an unknown verb is refused", async () => {
@@ -83,9 +89,9 @@ test("TC-JH4 the job help table and the dispatch table hold the same verbs", () 
   assert.deepEqual([...JOB_ACTIONS].sort(), helpVerbs.sort());
   for (const verb of ["help", ...helpVerbs]) assert.ok(jobHelp(verb), `${verb} renders`);
   assert.equal(jobHelp("nope"), null);
-  assert.match(jobHelp(), /模型读这三行就够/);
-  assert.match(jobHelp(), /没有静默这回事/);
-  assert.doesNotMatch(jobHelp("start"), /模型读这三行就够/);
+  assert.match(jobHelp(), /三个词/);
+  assert.match(jobHelp(), /按 id 寻址/);
+  assert.doesNotMatch(jobHelp("cancel"), /三个词/);
 });
 
 function stateWith(jobs) {

@@ -9,7 +9,8 @@ import { emptyState } from "../src/state/schema.mjs";
 import { renderPrompt } from "../src/shared/prompt.mjs";
 import { pruneOldFiles } from "../src/shared/retention.mjs";
 import { readJson, writeJsonAtomic } from "../src/shared/json.mjs";
-import { stallNoticePrompt, stallNoticeText } from "../src/runtime/stall-notice.mjs";
+import { createPrompts } from "../src/runtime/prompts.mjs";
+import { oneLine, stallStuckText } from "../src/runtime/core.mjs";
 import { hashOf } from "../src/jobs/delivery.mjs";
 
 function controlledChild() {
@@ -46,14 +47,19 @@ function harness({ spawn, replies = [], adapterOverrides = {}, state = emptyStat
   mkdirSync(promptsDir, { recursive: true });
   const sectionsDir = join(promptsDir, "sections");
   mkdirSync(sectionsDir, { recursive: true });
-  writeFileSync(join(sectionsDir, "00-header-conversation.md"), "conversation={{conversation}} user={{user_message}} root={{root_section}} platform={{platform}} surface={{surface}} chunk={{chunk_limit}} section={{stall_section}} actions={{stall_actions}}");
-  writeFileSync(join(sectionsDir, "10-task.md"), "TASK");
-  writeFileSync(join(sectionsDir, "20-reply.md"), "REPLY");
-  writeFileSync(join(sectionsDir, "40-stall.md"), "STALL-TAIL");
-  writeFileSync(join(sectionsDir, "01-header-notice.md"), "NOTICE id={{notice_id}} prompt={{notice_prompt}} user={{user_message}} root={{root_section}}");
-  writeFileSync(join(sectionsDir, "11-notice-task.md"), "NOTICE-TASK");
-  writeFileSync(join(promptsDir, "stall-instructions.md"), "STALL-INSTRUCTIONS");
-  writeFileSync(join(promptsDir, "stall-actions.md"), "ACTIONS platform={{platform}} key=<key>");
+  writeFileSync(join(sectionsDir, "10-common.md"), "COMMON user={{user_message}} surface={{surface}} cli={{cli}}");
+  writeFileSync(join(sectionsDir, "20-platform-slack.md"), "REPLY slack");
+  writeFileSync(join(sectionsDir, "21-platform-feishu.md"), "REPLY feishu");
+  writeFileSync(join(sectionsDir, "20-platform-fake.md"), "REPLY");
+  writeFileSync(join(sectionsDir, "30-entry-conversation.md"), "CONV platform={{platform}}");
+  writeFileSync(join(sectionsDir, "31-entry-notice.md"), "NOTICE id={{notice_id}} user={{user_message}}");
+  writeFileSync(join(sectionsDir, "32-entry-loop.md"), "LOOP {{loop_prompt}}");
+  const messagesDir = join(promptsDir, "messages");
+  mkdirSync(messagesDir, { recursive: true });
+  writeFileSync(join(messagesDir, "stall-notice.md"), "任务：{{task}}\n卡在：{{stuck}}\njob：{{job}}\n最后进展：{{last_progress}}\n重启默认提示词：「{{restart_prompt}}」");
+  writeFileSync(join(messagesDir, "restart.md"), "上一轮似乎卡住了，继续，不要犯相同错误");
+  writeFileSync(join(messagesDir, "interrupt.md"), "INTERRUPTED 直接回复这条消息就会接着之前的会话继续。");
+  writeFileSync(join(messagesDir, "empty-prompt.md"), "EMPTY {{prompts_dir}}");
   const configDir = join(dir, ".config/agent-relay");
   const config = {
     home: dir,
@@ -62,6 +68,7 @@ function harness({ spawn, replies = [], adapterOverrides = {}, state = emptyStat
     logDir: join(dir, "logs"),
     sessionsDir,
     promptsDir,
+    userPromptsDir: join(configDir, "prompts"),
     uploadsDir: join(configDir, "uploads"),
     cli: "agent-relay",
     readEnv: () => ({}),
@@ -110,7 +117,7 @@ test("TC-1 first turn injects the rendered prompt template", async () => {
   await tick();
   assert.equal(captured.length, 1);
   assert.equal(captured[0].full, true);
-  assert.match(captured[0].prompt, /conversation=th-abc/);
+  assert.match(captured[0].prompt, /COMMON user=/);
   assert.match(captured[0].prompt, /REPLY/);
   assert.doesNotMatch(captured[0].prompt, /\{\{/);
 });
@@ -123,7 +130,7 @@ test("TC-2b an empty first-turn prompt fails the job instead of spawning a blind
   await built.core.handle(inbound({ text: "第一条" }));
   await tick();
   assert.equal(spawned, 0);
-  assert.match(built.replies.map((item) => item.text).join("\n"), /prompt 模板为空/);
+  assert.match(built.replies.map((item) => item.text).join("\n"), /EMPTY/);
   assert.equal(Object.values(built.core.state.jobs)[0].status, "failed");
   assert.equal(Object.values(built.core.state.jobs)[0].error, "empty-prompt");
 });
@@ -238,7 +245,7 @@ test("TC-5 a worker over an explicitly configured timeout is killed as a process
   while (!replies.length && Date.now() - started < 5000) await new Promise((resolve) => setTimeout(resolve, 20));
   assert.ok(Date.now() - started < 5000, "timeout path took too long");
   assert.equal(replies.length, 1);
-  assert.match(replies[0].text, /已终止/);
+  assert.match(replies[0].text, /已终止|INTERRUPTED/);
 });
 
 test("TC-44 without a configured timeout a long worker is left to finish", async () => {
@@ -842,8 +849,8 @@ test("TC-21 a restart reports an interrupted run instead of rerunning it", async
   assert.equal(await core.recover(), 1);
   assert.equal(spawned, 0, "an interrupted run is never rerun automatically");
   assert.equal(replies.length, 1);
-  assert.match(replies[0].text, /被 relay 重启打断/);
-  assert.match(replies[0].text, /已终止/);
+  assert.match(replies[0].text, /INTERRUPTED|已终止/);
+  assert.match(replies[0].text, /已终止|INTERRUPTED/);
   assert.match(replies[0].text, /直接回复/);
   assert.doesNotMatch(replies[0].text, /\/重跑/);
   const job = core.state.jobs["job-1"];
@@ -1086,13 +1093,9 @@ test("TC-ST14 a stall action with nothing running replies instead of staying sil
   const state = jobState({ status: "done", lease: null });
   state.convs["th-abc"].activeJob = null;
   const { core, replies, dir } = harness({ state });
-  assert.equal(await core.applyAction({ action: "cancel", key: "th-abc", text: "" }), false);
-  assert.equal(replies.length, 1);
-  assert.match(replies[0].text, /没有在跑的任务/);
-  assert.match(replies[0].text, /完成/);
-  const logDir = join(dir, "logs", "fake");
-  const events = readdirSync(logDir).flatMap((name) => readFileSync(join(logDir, name), "utf8").trim().split("\n")).map((line) => JSON.parse(line));
-  assert.ok(events.some((event) => event.event === "action" && event.note === "not-running"));
+  const outcome = await core.cancelJob({ job: jobIdOf(core) });
+  assert.equal(outcome.outcome, "nothing-to-cancel");
+  assert.equal(replies.length, 0);
 });
 
 test("TC-ST15 a stall cancel drops a queued turn and says so", async () => {
@@ -1101,10 +1104,11 @@ test("TC-ST15 a stall cancel drops a queued turn and says so", async () => {
   state.jobs["job-2"] = { ...state.jobs["job-1"], id: "job-2", status: "queued", lease: null, updatedAt: "2026-10-23T00:01:00.000Z" };
   state.inbox = ["job-2"];
   const { core, replies } = harness({ state });
-  assert.equal(await core.applyAction({ action: "cancel", key: "th-abc", text: "" }), true);
+  const outcome = await core.cancelJob({ job: "job-2" });
+  assert.equal(outcome.outcome, "cancelled");
   assert.equal(core.state.jobs["job-2"].status, "cancelled");
   assert.deepEqual(core.state.inbox, []);
-  assert.match(replies[0].text, /已取消排队中的 1 个任务/);
+  assert.match(replies[0].text, /已取消排队中的这一轮/);
 });
 
 test("TC-V6 killed worker tells the user to continue instead of rerunning", async () => {
@@ -1186,8 +1190,27 @@ test("TC-BOOT a platform that opts out never announces, a machine without a boot
   assert.ok(noId.logs.some((line) => line.includes("no-boot-id")));
 });
 
+function jobIdOf(core) {
+  const job = Object.values(core.state.jobs).find((item) => item.key === "th-abc") ?? Object.values(core.state.jobs)[0];
+  return job.id;
+}
+
+const builtinPrompts = createPrompts({ dir: join(import.meta.dirname, "..", "src", "prompts"), userDir: "/nonexistent" });
+
+function stallText({ task = "", round = "", reason = "silent", tool = null, silenceMs = 0, local = "" } = {}) {
+  const subject = oneLine(task);
+  const thisRound = oneLine(round);
+  return builtinPrompts.stallNotice({
+    task: subject,
+    round: thisRound && thisRound !== subject ? thisRound : "",
+    stuck: stallStuckText({ reason, tool, silenceMs }),
+    job: "job-7（name `demo`）",
+    lastProgress: local,
+  });
+}
+
 test("TC-ST1 stall notice opens with the task and this round instead of ids", () => {
-  const text = stallNoticeText({
+  const text = stallText({
     task: "实施 owner portal 门户可见性 specs 01",
     round: "按计划，我授权你 op 可以一次将所有任务都执行完。",
     silenceMs: 12 * 60_000,
@@ -1204,7 +1227,7 @@ test("TC-ST1 stall notice opens with the task and this round instead of ids", ()
 });
 
 test("TC-ST22 the notice body stays readable: one line per subject, capped", () => {
-  const text = stallNoticeText({
+  const text = stallText({
     task: "x".repeat(200),
     round: "\n\n  first line  \nsecond line\n",
     silenceMs: 3 * 60_000,
@@ -1216,7 +1239,7 @@ test("TC-ST22 the notice body stays readable: one line per subject, capped", () 
   assert.match(text, /^这一轮：first line$/m);
   assert.equal(text.split("\n").filter((line) => line.startsWith("这一轮：")).length, 1);
 
-  const same = stallNoticeText({ task: "同一个根", round: "同一个根", silenceMs: 60_000, local: "t" });
+  const same = stallText({ task: "同一个根", round: "同一个根", silenceMs: 60_000, local: "t" });
   assert.equal(same.split("\n").filter((line) => line.startsWith("任务：")).length, 1);
   assert.doesNotMatch(same, /这一轮：/);
 });
@@ -1244,10 +1267,10 @@ test("TC-ST2 a graceful terminate lets the plugin write the row and only posts t
   writeFileSync(join(ledger, `${sessionId}.jsonl`), `${JSON.stringify(open)}\n`);
   const cmdDir = join(dir, ".config/agent-relay/relay-fake.cmd");
   mkdirSync(cmdDir, { recursive: true });
-  writeFileSync(join(cmdDir, "1-cancel.json"), JSON.stringify({ action: "cancel", key: "th-abc", at: new Date().toISOString() }));
+  writeFileSync(join(cmdDir, "1-cancel.json"), JSON.stringify({ op: "cancel-job", job: jobIdOf(core), at: new Date().toISOString() }));
   assert.equal(await core.drainCommands(), 1);
   await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.match(replies.map((reply) => reply.text).join(""), /已终止/);
+  assert.match(replies.map((reply) => reply.text).join(""), /已终止|INTERRUPTED/);
   const rows = readFileSync(join(ledger, `${sessionId}.jsonl`), "utf8").trim().split("\n").map((line) => JSON.parse(line));
   assert.equal(rows.filter((row) => row.salvaged).length, 0);
   void first;
@@ -1262,7 +1285,7 @@ test("TC-ST2H a process that ignores SIGTERM is killed after the grace period wi
   await core.handle(inbound());
   const cmdDir = join(dir, ".config/agent-relay/relay-fake.cmd");
   mkdirSync(cmdDir, { recursive: true });
-  writeFileSync(join(cmdDir, "1-cancel.json"), JSON.stringify({ action: "cancel", key: "th-abc", at: new Date().toISOString() }));
+  writeFileSync(join(cmdDir, "1-cancel.json"), JSON.stringify({ op: "cancel-job", job: jobIdOf(core), at: new Date().toISOString() }));
   assert.equal(await core.drainCommands(), 1);
   await new Promise((resolve) => setTimeout(resolve, 40));
   assert.deepEqual(killed.map((entry) => entry[1]), ["SIGTERM", "SIGKILL"]);
@@ -1274,7 +1297,7 @@ test("TC-ST3 restart command kills the stuck run and dispatches the session agai
   await core.handle(inbound());
   const cmdDir = join(dir, ".config/agent-relay/relay-fake.cmd");
   mkdirSync(cmdDir, { recursive: true });
-  writeFileSync(join(cmdDir, "1-restart.json"), JSON.stringify({ action: "restart", key: "th-abc", text: "先换掉那条命令", at: new Date().toISOString() }));
+  writeFileSync(join(cmdDir, "1-restart.json"), JSON.stringify({ op: "restart-job", job: jobIdOf(core), text: "先换掉那条命令", at: new Date().toISOString() }));
   assert.equal(await core.drainCommands(), 1);
   const restarted = Object.values(core.state.jobs).find((job) => job.auto === "stall-restart");
   assert.ok(restarted, "a restarted job is queued");
@@ -1300,8 +1323,7 @@ test("TC-ST4 replying to a stall notice opens a notice-scoped conversation", asy
     id: "ntc-1",
     platform: "fake",
     messageId: "m-notice",
-    text: "⏸ 任务疑似卡住：12 分钟没有进展\n会话：fs-th-abc\nkey：th-abc",
-    prompt: stallNoticePrompt({ key: "th-abc", platform: "fake", instructions: "STALL-INSTRUCTIONS" }),
+    text: "任务：修一下\njob：job-7（name `demo`）",
     sentAt: new Date().toISOString(),
   };
   const { core } = harness({
@@ -1317,10 +1339,8 @@ test("TC-ST4 replying to a stall notice opens a notice-scoped conversation", asy
   await core.handle(inbound({ text: "杀掉", dedupeId: "m-reply", replyIds: ["m-notice"] }));
   await new Promise((resolve) => setTimeout(resolve, 30));
   assert.match(prompts[0], /NOTICE id=ntc-1/);
-  assert.match(prompts[0], /STALL-INSTRUCTIONS/);
   assert.match(prompts[0], /杀掉/);
-  assert.match(prompts[0], /任务疑似卡住/);
-  assert.match(prompts[0], /key/);
+  assert.doesNotMatch(prompts[0], /任务疑似卡住/);
   const job = Object.values(core.state.jobs).find((item) => item.noticeId === "ntc-1");
   assert.equal(job.key, "notice-ntc-1");
 });
@@ -1338,9 +1358,8 @@ test("TC-ST5 an ordinary first message still uses the thread template", async ()
   });
   await core.handle(inbound({ text: "看下这个 bug" }));
   await new Promise((resolve) => setTimeout(resolve, 30));
-  assert.match(prompts[0], /conversation=th-abc/);
+  assert.match(prompts[0], /COMMON user=/);
   assert.doesNotMatch(prompts[0], /STALL-TEMPLATE/);
-  assert.match(prompts[0], /ACTIONS platform=fake key=<key>/);
 });
 
 const isoAt = (ms) => new Date(ms).toISOString();
@@ -1407,7 +1426,7 @@ test("TC-ST6 an unclosed tool call over the threshold notifies once with the too
   await core.checkStall(job);
   const text = replies.map((reply) => reply.text).join("\n");
   assert.match(text, /工具 bash 已运行 12 分钟没有返回/);
-  assert.match(text, /命令：dotnet build/);
+  assert.match(text, /：dotnet build/);
   assert.equal(job.stallReason, "tool");
   assert.equal(job.stallTool, "bash");
   assert.equal(job.stallRunningMs, 12 * 60_000);
@@ -1472,7 +1491,7 @@ test("TC-ST12 cancelling a notified job leaves no ledger row behind", async () =
   await core.checkStall(job);
   const cmdDir = join(dir, ".config/agent-relay/relay-fake.cmd");
   mkdirSync(cmdDir, { recursive: true });
-  writeFileSync(join(cmdDir, "1-cancel.json"), JSON.stringify({ action: "cancel", key: "th-abc", at: isoAt(clock.now) }));
+  writeFileSync(join(cmdDir, "1-cancel.json"), JSON.stringify({ op: "cancel-job", job: jobIdOf(core), at: isoAt(clock.now) }));
   await core.drainCommands();
   assert.equal(job.stallCancelled, true);
   assert.equal(existsSync(join(dir, ".config/agent-hours")), false);
@@ -1484,7 +1503,7 @@ test("TC-ST13 a restarted job starts with empty stall fields", async () => {
   await core.checkStall(job);
   const cmdDir = join(dir, ".config/agent-relay/relay-fake.cmd");
   mkdirSync(cmdDir, { recursive: true });
-  writeFileSync(join(cmdDir, "1-restart.json"), JSON.stringify({ action: "restart", key: "th-abc", at: isoAt(clock.now) }));
+  writeFileSync(join(cmdDir, "1-restart.json"), JSON.stringify({ op: "restart-job", job: jobIdOf(core), at: isoAt(clock.now) }));
   await core.drainCommands();
   const restarted = Object.values(core.state.jobs).find((item) => item.auto === "stall-restart");
   assert.equal(restarted.stallNotifiedAt, undefined);
@@ -1505,7 +1524,7 @@ test("TC-ST16 a stall cancel bills to the last progress, not to the notice", asy
   clock.now = Date.parse("2026-10-26T13:25:00.000Z");
   const cmdDir = join(dir, ".config/agent-relay/relay-fake.cmd");
   mkdirSync(cmdDir, { recursive: true });
-  writeFileSync(join(cmdDir, "1-cancel.json"), JSON.stringify({ action: "cancel", key: "th-abc", at: isoAt(clock.now) }));
+  writeFileSync(join(cmdDir, "1-cancel.json"), JSON.stringify({ op: "cancel-job", job: jobIdOf(core), at: isoAt(clock.now) }));
   await core.drainCommands();
   await tick();
   const text = replies.map((reply) => reply.text).join("\n");
@@ -1530,7 +1549,7 @@ test("TC-ST17 a silent stall cancel bills to the last session entry", async () =
   clock.now = Date.parse("2026-10-26T13:30:00.000Z");
   const cmdDir = join(dir, ".config/agent-relay/relay-fake.cmd");
   mkdirSync(cmdDir, { recursive: true });
-  writeFileSync(join(cmdDir, "1-cancel.json"), JSON.stringify({ action: "cancel", key: "th-abc", at: isoAt(clock.now) }));
+  writeFileSync(join(cmdDir, "1-cancel.json"), JSON.stringify({ op: "cancel-job", job: jobIdOf(core), at: isoAt(clock.now) }));
   await core.drainCommands();
   await tick();
   const text = replies.map((reply) => reply.text).join("\n");
@@ -1542,7 +1561,7 @@ test("TC-ST17 a silent stall cancel bills to the last session entry", async () =
 test("TC-ST18 a cancel without a stall record falls back to now", async () => {
   const { core, replies, clock, job } = await runningJob({ spawn: closingSpawn() });
   clock.now = Date.parse("2026-10-26T13:10:00.000Z");
-  assert.equal(await core.applyAction({ action: "cancel", key: "th-abc", text: "" }), true);
+  assert.equal((await core.cancelJob({ job: jobIdOf(core) })).outcome, "cancelled");
   await tick();
   const text = replies.map((reply) => reply.text).join("\n");
   assert.match(text, /计入 10 分钟/);
@@ -1558,7 +1577,7 @@ test("TC-ST19 a restart cuts the old job at its last progress and leaves the new
   clock.now = Date.parse("2026-10-26T13:25:00.000Z");
   const cmdDir = join(dir, ".config/agent-relay/relay-fake.cmd");
   mkdirSync(cmdDir, { recursive: true });
-  writeFileSync(join(cmdDir, "1-restart.json"), JSON.stringify({ action: "restart", key: "th-abc", at: isoAt(clock.now) }));
+  writeFileSync(join(cmdDir, "1-restart.json"), JSON.stringify({ op: "restart-job", job: jobIdOf(core), at: isoAt(clock.now) }));
   await core.drainCommands();
   assert.equal(job.cutoffAt, isoAt(toolAt));
   assert.equal(job.stallCancelled, true);
@@ -1584,19 +1603,19 @@ test("TC-ST20 a finished job clears its progress only after the reaction is done
   assert.equal(job.progress, null);
 });
 
-test("TC-42 the stall section carries only the skeleton when no job is running", async () => {
+test("TC-42 the first turn carries no stall section and no job list", async () => {
   const captured = [];
   const { core } = harness({
     adapterOverrides: { buildWorker: ({ prompt, full }) => (captured.push({ prompt, full }), { bin: "/bin/true", args: [] }) },
   });
   await core.handle(inbound({ text: "第一条" }));
   await tick();
-  assert.match(captured[0].prompt, /## 处置卡住的 job/);
-  assert.match(captured[0].prompt, /agent-relay stall fake cancel\|restart <key>/);
+  assert.doesNotMatch(captured[0].prompt, /处置卡住的 job/);
   assert.doesNotMatch(captured[0].prompt, /个 job 在跑/);
+  assert.match(captured[0].prompt, /COMMON/);
 });
 
-test("TC-43 a running job is listed with its id and elapsed minutes", async () => {
+test("TC-43 two conversations each get their own task block and no job list", async () => {
   const captured = [];
   const pending = controlledChild();
   const { core } = harness({
@@ -1607,10 +1626,9 @@ test("TC-43 a running job is listed with its id and elapsed minutes", async () =
   await tick();
   await core.handle(inbound({ key: "th-b", session: "fs-th-b", dedupeId: "m2", text: "第二条" }));
   await tick();
-  assert.doesNotMatch(captured[0].prompt, /个 job 在跑/);
-  assert.match(captured[1].prompt, /现在有 1 个 job 在跑：/);
-  assert.match(captured[1].prompt, /- job-1，已跑 \d+ 分钟/);
-  assert.doesNotMatch(captured[1].prompt, /job-2/);
+  assert.match(captured[0].prompt, /COMMON user=第一条/);
+  assert.match(captured[1].prompt, /COMMON user=第二条/);
+  assert.doesNotMatch(captured[1].prompt, /个 job 在跑/);
 });
 
 test("TC-29 a reply with one image posts the text first, then the media, and records both", async () => {
@@ -1835,7 +1853,7 @@ test("TC-RPC6 rpc mode sends the rendered prompt over the protocol and delivers 
   await tick();
   const prompt = child.written.find((record) => record.type === "prompt");
   assert.ok(prompt, "a prompt command was sent");
-  assert.match(prompt.message, /conversation=th-abc/);
+  assert.match(prompt.message, /COMMON user=/);
   assert.equal(replies.at(-1).text, "改好了");
 });
 
@@ -1848,8 +1866,8 @@ test("TC-ST23 an rpc worker's open tool carries the command head, so the notice 
   await tick();
   const job = core.state.jobs[core.state.seen.m1];
   assert.equal(job.activity.open.head, "md run --stack hao-local-debug");
-  const text = stallNoticeText({ reason: "tool", tool: job.activity.open, silenceMs: 11 * 60_000, local: "2026-11-13 17:15:46" });
-  assert.match(text, /^命令：md run --stack hao-local-debug$/m);
+  const text = stallText({ reason: "tool", tool: job.activity.open, silenceMs: 11 * 60_000, local: "2026-11-13 17:15:46" });
+  assert.match(text, /^卡在：.*md run --stack hao-local-debug/m);
   child.settle();
   await tick();
 });

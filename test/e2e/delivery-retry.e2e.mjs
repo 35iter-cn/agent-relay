@@ -21,13 +21,21 @@ for (const path of [configDir, logDir, sessionsDir, promptsDir, userPromptsDir, 
 const sectionsDir = join(promptsDir, "sections");
 mkdirSync(sectionsDir, { recursive: true });
 for (const [name, body] of [
-  ["00-header-conversation.md", "conversation={{conversation}} user={{user_message}}"],
-  ["01-header-notice.md", "NOTICE id={{notice_id}} prompt={{notice_prompt}}"],
+  ["10-common.md", "COMMON {{surface}}"],
+  ["20-platform-fake.md", "REPLY"],
+  ["20-platform-e2e.md", "REPLY"],
+  ["20-platform-e2e-nt.md", "REPLY"],
+  ["30-entry-conversation.md", "CONV user={{user_message}}"],
+  ["31-entry-notice.md", "NOTICE id={{notice_id}}"],
 ]) writeFileSync(join(sectionsDir, name), `${body}\n`);
+const messagesDir = join(promptsDir, "messages");
+mkdirSync(messagesDir, { recursive: true });
 for (const [name, body] of [
-  ["stall-instructions.md", "STALL-INSTRUCTIONS"],
-  ["stall-actions.md", "ACTIONS platform={{platform}} key=<key>"],
-]) writeFileSync(join(promptsDir, name), `${body}\n`);
+  ["stall-notice.md", "任务：{{task}}\njob：{{job}}\n最后进展：{{last_progress}}"],
+  ["restart.md", "RESTART"],
+  ["interrupt.md", "INTERRUPTED"],
+  ["empty-prompt.md", "EMPTY {{prompts_dir}}"],
+]) writeFileSync(join(messagesDir, name), `${body}\n`);
 
 const clock = { now: Date.parse("2026-11-13T10:00:00.000Z") };
 const repliesPath = join(dir, "replies.jsonl");
@@ -82,6 +90,7 @@ const config = {
 
 const statePath = config.stateFile(adapter.name);
 const commandDir = config.commandDir(adapter.name);
+const jobId = () => Object.values(readState().jobs).filter((job) => job.key === KEY).at(-1)?.id;
 mkdirSync(commandDir, { recursive: true });
 
 const core = createCore({

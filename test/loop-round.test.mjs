@@ -32,12 +32,11 @@ function harness({ state, adapterOverrides = {}, spawn = () => fakeChild(), sect
   const sectionsDir = join(promptsDir, "sections");
   mkdirSync(sectionsDir, { recursive: true });
   if (sections) {
-    writeFileSync(join(sectionsDir, "00-header-loop.md"), "LOOP={{loop_id}} ROUND={{loop_round}} LAST={{loop_last}} KEY={{conversation}}");
-    writeFileSync(join(sectionsDir, "12-loop-task.md"), "PROMPT-BEGIN\n{{loop_prompt}}\nPROMPT-END");
-    writeFileSync(join(sectionsDir, "20-reply.md"), "REPLY");
-    writeFileSync(join(sectionsDir, "21-surface.md"), "SURFACE");
-    writeFileSync(join(sectionsDir, "00-header-conversation.md"), "CONV={{conversation}} MSG={{user_message}} ROOT={{root_section}}");
-    writeFileSync(join(sectionsDir, "10-task.md"), "TASK");
+    writeFileSync(join(sectionsDir, "10-common.md"), "COMMON");
+    writeFileSync(join(sectionsDir, "20-platform-fake.md"), "REPLY");
+    writeFileSync(join(sectionsDir, "30-entry-conversation.md"), "CONV MSG={{user_message}}");
+    writeFileSync(join(sectionsDir, "31-entry-notice.md"), "NOTICE {{notice_id}}");
+    writeFileSync(join(sectionsDir, "32-entry-loop.md"), "PROMPT-BEGIN\n{{loop_prompt}}\nPROMPT-END");
   }
   const configDir = join(dir, ".config/agent-relay");
   const config = {
@@ -137,7 +136,7 @@ test("TC-LR1 a due loop starts a round in a fresh session and posts it to the ch
   assert.equal(core.state.loops["loop-fake-1"].lastMessageId, replies[0].messageId);
 });
 
-test("TC-LR2 the round prompt carries the loop prompt and the previous outcome but never the previous output", async () => {
+test("TC-LR2 the round prompt carries the loop prompt and never the previous output", async () => {
   const captured = [];
   const { core, adapter } = harness({
     state: { loops: { "loop-fake-1": seededLoop({ lastRound: 4, lastRunId: "loop-fake-1-r4", lastRunAt: agoMinutes(30), lastOutcome: "ok" }) } },
@@ -149,10 +148,9 @@ test("TC-LR2 the round prompt carries the loop prompt and the previous outcome b
   await core.startDueLoops();
   await settle();
   assert.equal(captured.length, 1);
-  assert.match(captured[0].prompt, /LOOP=loop-fake-1 ROUND=5/);
+  assert.match(captured[0].prompt, /PROMPT-BEGIN/);
   assert.match(captured[0].prompt, /PROMPT-BEGIN\n看我的 open PR 有没有 CI 挂掉\nPROMPT-END/);
-  assert.match(captured[0].prompt, /loop-fake-1-r4/);
-  assert.match(captured[0].prompt, /ok/);
+  assert.doesNotMatch(captured[0].prompt, /loop-fake-1-r4/);
   assert.doesNotMatch(captured[0].prompt, /第二轮输出/);
   assert.equal(captured[0].session, "fs-loop-fake-1-r5");
   assert.equal(typeof adapter.sessionFor, "function");

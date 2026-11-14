@@ -529,13 +529,14 @@ test("AC-9 messages without files never download anything", () => {
 });
 
 test("TC-12 the slack reply section asks for a labelled link and leaves the rest to the renderer", () => {
-  const rules = readFileSync(new URL("../src/prompts/sections/22-platform-slack-reply.md", import.meta.url), "utf8");
+  const rules = readFileSync(new URL("../src/prompts/sections/20-platform-slack.md", import.meta.url), "utf8");
   assert.match(rules, /排版求紧/);
   assert.match(rules, /\[文字\]\(https:\/\/…\)/);
   assert.match(rules, /裸地址/);
   assert.doesNotMatch(rules, /mrkdwn/);
   assert.doesNotMatch(rules, /表格/);
   assert.match(rules, /单独一行写 `!\[\]\(\/绝对路径\.png\)`/);
+  assert.match(rules, /Slack MCP/);
 });
 
 function slackPlatform(env = {}) {

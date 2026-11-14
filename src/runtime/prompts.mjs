@@ -65,14 +65,15 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
   }
 
   function compose({ entry, platform, adapter, inbound, notice = null, loop = null }) {
-    const parts = [COMMON_FILE, PLATFORM_FILE[platform], ENTRY_FILE[entry]].map(section).filter(Boolean);
+    const platformFile = PLATFORM_FILE[platform] ?? `20-platform-${platform}.md`;
+    const parts = [COMMON_FILE, platformFile, ENTRY_FILE[entry]].map(section).filter(Boolean);
     return render(parts.join("\n\n"), values({ platform, adapter, inbound, notice, loop }), entry);
   }
 
   function scheduled({ platform, adapter, inbound, brief, full = false }) {
     const task = [SCHEDULED_LINE, String(brief ?? "").trim()].filter(Boolean).join("\n\n");
     if (!full) return task;
-    const rules = [COMMON_FILE, PLATFORM_FILE[platform]].map(section).filter(Boolean).join("\n\n");
+    const rules = [COMMON_FILE, PLATFORM_FILE[platform] ?? `20-platform-${platform}.md`].map(section).filter(Boolean).join("\n\n");
     return render([rules, task].filter(Boolean).join("\n\n"), values({ platform, adapter, inbound }), "scheduled");
   }
 

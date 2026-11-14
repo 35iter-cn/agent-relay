@@ -9,9 +9,9 @@
 
 ## 你自己的能力（先读再动手，凭记忆会错）
 
-- 排、列、撤还没跑的轮次：`agent-relay schedule help`。
-- 查在跑的、终止、重启、补发：`agent-relay job help`。
-- 建、改、暂停、查 loop：`agent-relay loop help`。
+- 排、列、撤还没跑的轮次：`{{cli}} schedule help`。
+- 查在跑的、终止、重启、补发：`{{cli}} job help`。
+- 建、改、暂停、查 loop：`{{cli}} loop help`。
 
 ## 边界
 

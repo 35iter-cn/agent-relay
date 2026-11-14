@@ -21,10 +21,9 @@ for (const path of [configDir, logDir, sessionsDir, promptsDir, sectionsDir, joi
   mkdirSync(path, { recursive: true });
 }
 for (const [name, body] of [
-  ["00-header-loop.md", "LOOP={{loop_id}} ROUND={{loop_round}}"],
-  ["12-loop-task.md", "{{loop_prompt}}"],
-  ["20-reply.md", "REPLY"],
-  ["21-surface.md", "SURFACE"],
+  ["10-common.md", "COMMON {{surface}}"],
+  ["20-platform-fake.md", "REPLY"],
+  ["32-entry-loop.md", "{{loop_prompt}}"],
 ]) {
   writeFileSync(join(sectionsDir, name), `${body}\n`);
 }

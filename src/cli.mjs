@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createConfig } from "./config.mjs";
 import { ensurePrivateDir } from "./shared/fs.mjs";
@@ -95,10 +95,37 @@ export function promptPath(config, name) {
 export async function sendCommand(config, platform, command, { waitMs = COMMAND_WAIT_MS, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
   const dir = ensurePrivateDir(config.commandDir(platform));
   const file = join(dir, `${Date.now()}-${process.pid}.json`);
+  const resultFile = `${file}.result`;
   writeFileSync(file, `${JSON.stringify({ ...command, at: new Date().toISOString() })}\n`, { encoding: "utf8", mode: 0o600 });
   const deadline = Date.now() + waitMs;
-  while (Date.now() < deadline && existsSync(file)) await sleep(COMMAND_POLL_MS);
-  return { delivered: !existsSync(file), file };
+  while (Date.now() < deadline && !existsSync(resultFile)) await sleep(COMMAND_POLL_MS);
+  let result = null;
+  if (existsSync(resultFile)) {
+    try {
+      result = JSON.parse(readFileSync(resultFile, "utf8"));
+    } catch {}
+    try {
+      unlinkSync(resultFile);
+    } catch {}
+  }
+  return { delivered: result !== null, result, file };
+}
+
+export function reportSent(sent, word) {
+  const refused = sent?.result?.refused;
+  if (refused) {
+    process.stderr.write(`refused: ${refused}\n`);
+    process.exitCode = 3;
+    return false;
+  }
+  if (!sent?.delivered) {
+    process.stdout.write("pending\n");
+    process.exitCode = 1;
+    return false;
+  }
+  process.stdout.write(`${word}\n`);
+  process.exitCode = 0;
+  return true;
 }
 
 export const PROMPT_MAX_BYTES = 8 * 1024;
@@ -311,22 +338,19 @@ export async function handleJobCommand(rest, config, log, deps = {}) {
       return;
     }
     const sent = await dispatch(config, platform, { op: "redeliver", job: job.id, key: job.key });
-    process.stdout.write(`${sent.delivered ? "redelivered" : "pending"}\n`);
-    process.exitCode = sent.delivered ? 0 : 1;
+    reportSent(sent, "redelivered");
     return;
   }
   const id = positional[0] ?? (typeof flags.job === "string" ? flags.job : "");
   if (!id) usage();
   if (verb === "cancel") {
     const sent = await dispatch(config, platform, { op: "cancel-job", job: id });
-    process.stdout.write(`${sent.delivered ? "cancelled" : "pending"}\n`);
-    process.exitCode = sent.delivered ? 0 : 1;
+    reportSent(sent, "cancelled");
     return;
   }
   const text = positional.slice(1).join(" ").trim();
   const sent = await dispatch(config, platform, { op: "restart-job", job: id, text });
-  process.stdout.write(`${sent.delivered ? "restarted" : "pending"}\n`);
-  process.exitCode = sent.delivered ? 0 : 1;
+  reportSent(sent, "restarted");
 }
 
 export async function handleScheduleCommand(rest, config, log, deps = {}) {
@@ -351,8 +375,7 @@ export async function handleScheduleCommand(rest, config, log, deps = {}) {
     const name = jobCancelName(flags, positional);
     if (!isPlatform(platform) || !name) usage();
     const sent = await dispatch(config, platform, { op: "cancel-schedule", name });
-    process.stdout.write(`${sent.delivered ? "cancelled" : "pending"}\n`);
-    process.exitCode = sent.delivered ? 0 : 1;
+    reportSent(sent, "cancelled");
     return;
   }
   if (verb !== "create") {
@@ -388,12 +411,7 @@ export async function handleScheduleCommand(rest, config, log, deps = {}) {
     dueAt,
     graceMs: durationMs(flags.grace, DEFAULT_GRACE_MS),
   });
-  if (!sent.delivered) {
-    process.stdout.write("pending\n");
-    process.exitCode = 1;
-    return;
-  }
-  process.stdout.write(`scheduled\t${promptPath(config, name)}\n`);
+  if (!reportSent(sent, `scheduled\t${promptPath(config, name)}`)) return;
 }
 
 async function serve(platform, config, log) {
@@ -471,8 +489,7 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
   const dispatch = deps.sendCommand ?? sendCommand;
   const send = async (command, platform) => {
     const sent = await dispatch(config, platform, command);
-    process.stdout.write(`${sent.delivered ? "delivered" : "pending"}\n`);
-    process.exitCode = sent.delivered ? 0 : 1;
+    reportSent(sent, "delivered");
   };
   if (verb === "list") {
     const platform = typeof flags.platform === "string" ? flags.platform : "";
