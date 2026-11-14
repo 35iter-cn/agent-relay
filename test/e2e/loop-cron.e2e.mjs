@@ -102,7 +102,7 @@ await core.drainCommands();
 
 const created = core.state.loops["probe-slack"];
 check("the CLI command file creates a cron loop in the daemon", created?.cron === "* * * * *", JSON.stringify(created?.cron));
-check("the cron loop carries no interval and no one-shot moment", created?.every === null && created?.at === null);
+check("the cron loop carries no interval and no one-shot moment", created?.every === undefined && created?.at === undefined);
 
 core.state.loops["probe-slack"].lastRunAt = new Date(Date.now() - 5 * 60_000).toISOString();
 core.save();
