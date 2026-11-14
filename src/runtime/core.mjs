@@ -1073,9 +1073,24 @@ export function createCore({ adapter, config, deps = {} }) {
         log("error", "recover-job", job.id, String(error?.message ?? error));
       }
     }
+    pauseLegacySchedules();
     if (touched) save();
     drainInbox();
     return touched;
+  }
+
+  function pauseLegacySchedules() {
+    const legacy = Object.values(state.loops ?? {}).filter((loop) => loop && loop.state !== "deleted" && !String(loop.cron ?? "").trim());
+    if (!legacy.length) return 0;
+    for (const loop of legacy) {
+      loop.state = "paused";
+      notices
+        .emit({ text: `${loop.id} 用的是已移除的 every / at schedule，已暂停；用 --cron 重建后再 loop resume。`, title: NOTICE_TITLES.pause })
+        .catch((error) => log("warn", "legacy-schedule-notice", String(error?.message ?? error)));
+    }
+    save();
+    log("warn", "legacy-schedule-paused", legacy.map((loop) => loop.id).join(","));
+    return legacy.length;
   }
 
   async function onReady() {
@@ -1248,7 +1263,6 @@ export function createCore({ adapter, config, deps = {} }) {
     loop.lastRunId = runId;
     loop.lastRunAt = isoAt(at);
     loop.lastOutcome = null;
-    if (loop.at) loop.state = "done";
     state.meta.loopRoundStamps = [...(state.meta.loopRoundStamps ?? []), isoAt(at)].slice(-400);
     save();
     appendLog({ event: "loop-round", loop: loop.id, runId, job: job.id, trigger, lateMs });
@@ -1405,6 +1419,12 @@ export function createCore({ adapter, config, deps = {} }) {
         throttleNotice();
         continue;
       }
+      if (reason === "busy") {
+        loop.lastSkipAt = isoAt(at);
+        save();
+        appendLog({ event: "loop-skip", loop: loop.id, at: isoAt(at) });
+        continue;
+      }
       if (reason) continue;
       await runLoopRound(loop, { trigger: "tick" });
       started += 1;
@@ -1422,7 +1442,7 @@ export function createCore({ adapter, config, deps = {} }) {
       const promptFile = String(command.promptFile ?? "").trim();
       const allowInline = Boolean(command.promptInline);
       const refused =
-        validateSchedule({ every: command.every, at: command.loopAt, cron: command.cron }) ??
+        validateSchedule({ cron: command.cron }) ??
         validateLoopTitle(command.title) ??
         validateLoopPromptSource({ id, prompt: command.prompt, promptFile, configDir: config.configDir, allowInline });
       if (refused) return { op, refused };
@@ -1433,8 +1453,6 @@ export function createCore({ adapter, config, deps = {} }) {
         prompt: command.prompt,
         promptFile,
         promptInline: allowInline,
-        every: command.every ?? null,
-        at: command.loopAt ?? null,
         cron: command.cron ?? null,
         thread: command.thread !== false,
         title: command.title ?? null,
@@ -1463,13 +1481,11 @@ export function createCore({ adapter, config, deps = {} }) {
       return { op, id: loop.id, state: loop.state };
     }
     if (op === "loop-update") {
-      if (command.every !== undefined || command.loopAt !== undefined || command.cron !== undefined) {
-        const refused = validateSchedule({ every: command.every ?? null, at: command.loopAt ?? null, cron: command.cron ?? null });
+      if (command.cron !== undefined) {
+        const refused = validateSchedule({ cron: command.cron });
         if (refused) return { op, refused };
-        loop.every = command.every ?? null;
-        loop.at = command.loopAt ?? null;
-        loop.cron = command.cron ?? null;
-        if (loop.state === "done") loop.state = "armed";
+        loop.cron = command.cron;
+        loop.lastSkipAt = null;
       }
       if (command.promptFile !== undefined || command.prompt !== undefined) {
         const promptFile = String(command.promptFile ?? "").trim();
