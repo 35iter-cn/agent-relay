@@ -3,13 +3,12 @@ import { renderHelp } from "../help.mjs";
 export const LOOP_VERBS = [
   {
     verb: "create",
-    usage:
-      'loop create --platform <p> --slug <name> (--every <dur> | --at <iso> | --cron "<expr>") --prompt-file <path> [--title <text>] [--no-thread]',
+    usage: 'loop create --platform <p> --slug <name> --cron "<expr>" --prompt-file <path> [--title <text>] [--no-thread]',
     detail: [
-      "三种 schedule 互斥，恰好给一个。",
-      "  --every <dur>     间隔，下一轮从上一轮实际起跑时刻算起（30m / 2h），最小 10 分钟",
-      "  --at <iso>        一次性定点（2026-11-08T13:00:00+08:00），跑完 loop 变 done",
+      "schedule 只有 cron 一种，必须给。",
       '  --cron "<expr>"   5 字段（分 时 日 月 周），按 Asia/Shanghai 定点，如 "0 13 * * *" 是每天 13:00',
+      "  到期的那一刻上一轮还在跑：这个触发点作废，不补跑；loop show 会显示 skipped。",
+      "  一次性提醒不属于 loop，用 agent-relay job start --in 30m / --at <iso>。",
       "  --prompt-file <p> 只存路径，每轮现读；唯一合法值 = ~/.config/agent-relay/prompts/loops/<id>/prompt.md",
       "--slug <name> 必填：id = <name>-<platform>（如 intake-slack）。先写 prompt.md，再建 loop。",
       "路径不在那个目录下会被 refused: prompt-file-not-canonical；内联 --prompt 需要 --allow-inline。",
@@ -23,10 +22,10 @@ export const LOOP_VERBS = [
   { verb: "show", usage: "loop show <id>", detail: ["打一条 loop 的定义、状态、下一次触发点与最近一轮结果。"] },
   {
     verb: "update",
-    usage: 'loop update <id> [--every <dur> | --at <iso> | --cron "<expr>" | --prompt-file <path> | --prompt <text> --allow-inline | --title <text> | --thread | --no-thread]',
+    usage: 'loop update <id> [--cron "<expr>" | --prompt-file <path> | --prompt <text> --allow-inline | --title <text> | --thread | --no-thread]',
     detail: [
-      "给任意一种 schedule 就会替换全部三种（--every 会清掉 --cron，反之亦然）。",
-      "只改 prompt 时 schedule 与 lastRunAt 不动；done 的 loop 改了 schedule 会自动回到 armed。",
+      "改 --cron 会替换表达式并清掉上一次的 skipped 记录。",
+      "只改 prompt 时 schedule 与 lastRunAt 不动；paused 的 loop 改 schedule 不会自己恢复，要 loop resume。",
       "--prompt-file 只存路径、每轮现读，切换时清掉内联文本；改回内联要加 --allow-inline。",
       "--title 改每轮消息头的名字，--title \"\" 清空并回落到 loop id。",
     ],
@@ -53,17 +52,16 @@ const SECTIONS = [
   {
     heading: "schedules",
     lines: [
-      "every <dur>   下一个到期点 = 上一轮实际起跑 + 间隔；适合任意间隔与「跑完再等」",
-      "at <iso>      只跑一轮，跑完 state=done；一次性提醒用这个",
       'cron "<expr>" 墙钟定点（分 时 日 月 周），时区固定 Asia/Shanghai；周 0 与 7 都是周日',
       "日与周同时受限时是 OR：0 9 1 * 1 = 每月 1 号或每周一 09:00",
-      "三种不能互相代替：cron 表达不了 90m 这类间隔，也表达不了一次性",
+      "下一个到期点 = 上一个触发点之后的第一个匹配时刻；上一轮还在跑就跳过那个点，不补跑",
+      "90m 这类等间隔写不出来（*/45 是 45/15 交替），只能取 60 或 120",
     ],
   },
   {
     heading: "gates",
     lines: [
-      "every >= 10m（cron 不受此限，过密由每小时 20 轮兜住）",
+      "过密表达式由每小时 20 轮兜住；跳过的触发点不占这 20 轮",
       "每平台最多 20 条 loop；每平台每小时最多 20 轮；每条 loop 同时只有一轮在跑",
       "连续 3 轮失败自动暂停，并发一条通知",
     ],
