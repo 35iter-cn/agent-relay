@@ -9,6 +9,7 @@ fi
 
 state="${AGENT_RELAY_CONFIG_DIR:-$HOME/.config/agent-relay}/relay-$platform.json"
 wait_seconds="${RELAY_UPGRADE_WAIT:-1800}"
+settle_seconds="${RELAY_UPGRADE_SETTLE:-15}"
 heartbeat_seconds="${RELAY_UPGRADE_HEARTBEAT:-300}"
 script_dir="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 relay_root="$(dirname "$script_dir")"
@@ -35,7 +36,7 @@ snapshot() {
     echo "ERR"
     return 0
   fi
-  STATE_FILE="$state" "$bun_bin" -e '
+  STATE_FILE="$state" SETTLE_MS="$((settle_seconds * 1000))" "$bun_bin" -e '
     const fs = require("node:fs");
     const active = new Set(["queued", "running"]);
     const file = process.env.STATE_FILE;
@@ -44,7 +45,7 @@ snapshot() {
       raw = fs.readFileSync(file, "utf8");
     } catch (error) {
       if (error && error.code === "ENOENT") {
-        process.stdout.write("0");
+        process.stdout.write("0 0 ");
         process.exit(0);
       }
       process.stdout.write("ERR");
@@ -57,10 +58,16 @@ snapshot() {
       process.stdout.write("ERR");
       process.exit(0);
     }
-    const ids = Object.entries(state?.jobs ?? {})
-      .filter(([, job]) => active.has(job.status))
-      .map(([id]) => id);
-    process.stdout.write(ids.length === 0 ? "0" : `${ids.length} ${ids.join(",")}`);
+    const settleMs = Number(process.env.SETTLE_MS ?? "15000");
+    const now = Date.now();
+    const fresh = ([, job]) => {
+      const at = Date.parse(job.updatedAt ?? "");
+      return Number.isFinite(at) && now - at < settleMs;
+    };
+    const entries = Object.entries(state?.jobs ?? {});
+    const activeIds = entries.filter(([, job]) => active.has(job.status)).map(([id]) => id);
+    const freshIds = entries.filter(([, job]) => !active.has(job.status) && fresh([null, job])).map(([id]) => id);
+    process.stdout.write(`${activeIds.length} ${freshIds.length} ${[...activeIds, ...freshIds].join(",")}`);
   ' || echo "ERR"
 }
 
@@ -79,6 +86,7 @@ if [[ -z "${RELAY_UPGRADE_DETACHED:-}" ]] && grep -Eq "agent-relay@|relay@" /pro
     --setenv=RELAY_UPGRADE_DETACHED=1 \
     --setenv=RELAY_UPGRADE_WAIT="$wait_seconds" \
     --setenv=RELAY_UPGRADE_HEARTBEAT="$heartbeat_seconds" \
+    --setenv=RELAY_UPGRADE_SETTLE="$settle_seconds" \
     --setenv=RELAY_UPGRADE_NOTIFY="${RELAY_UPGRADE_NOTIFY:-1}" \
     /bin/bash "$self" "$platform"; then
     echo "relay-upgrade: detached, follow with journalctl --user -u $unit"
@@ -88,9 +96,9 @@ if [[ -z "${RELAY_UPGRADE_DETACHED:-}" ]] && grep -Eq "agent-relay@|relay@" /pro
 fi
 
 if [[ "$wait_seconds" == "0" ]]; then
-  echo "relay-upgrade: $platform waiting for 0 in-flight jobs (state=$state, no time limit — RELAY_UPGRADE_WAIT=0)"
+  echo "relay-upgrade: $platform waiting for a quiet relay (state=$state, no time limit — RELAY_UPGRADE_WAIT=0)"
 else
-  echo "relay-upgrade: $platform waiting for 0 in-flight jobs (state=$state, give up after ${wait_seconds}s without restarting)"
+  echo "relay-upgrade: $platform waiting for a quiet relay (state=$state, give up after ${wait_seconds}s without restarting; quiet means nothing queued or running and nothing finished in the last ${settle_seconds}s)"
 fi
 
 started=$SECONDS
@@ -103,29 +111,39 @@ while true; do
     echo "relay-upgrade: cannot read $state — NOT restarting, relay left untouched. Fix the state file or the bun install first." >&2
     exit 5
   fi
-  read -r pending ids <<< "$result"
-  if [[ -z "${pending:-}" ]]; then
+  read -r active fresh ids <<< "$result"
+  if [[ -z "${ids:-}" && ( -z "${active:-}" || -z "${fresh:-}" ) ]]; then
     echo "relay-upgrade: unexpected snapshot output ($result) — NOT restarting" >&2
     exit 5
   fi
-  if [[ "$pending" == "0" ]]; then
-    break
+  if (( ${active:-0} + ${fresh:-0} == 0 )); then
+    sleep "$settle_seconds"
+    settled="$(snapshot)"
+    if [[ "$settled" == "ERR" ]]; then
+      echo "relay-upgrade: cannot read $state during the settle window — NOT restarting" >&2
+      exit 5
+    fi
+    read -r active fresh ids <<< "$settled"
+    if (( ${active:-0} + ${fresh:-0} == 0 )); then
+      break
+    fi
+    echo "relay-upgrade: a job moved during the ${settle_seconds}s settle window (${ids:-none}), waiting"
   fi
-  line="relay-upgrade: $pending job(s) in flight ($ids), waiting"
+  line="relay-upgrade: ${active:-0} queued/running and ${fresh:-0} finished within ${settle_seconds}s (${ids:-none}), waiting"
   if [[ "$line" != "$last_line" ]] || (( SECONDS - last_beat >= heartbeat_seconds )); then
     echo "$line"
     last_line="$line"
     last_beat=$SECONDS
   fi
   if (( wait_seconds > 0 && SECONDS - started >= wait_seconds )); then
-    echo "relay-upgrade: still $pending job(s) in flight after ${wait_seconds}s — NOT restarting, relay left untouched. Check again later or raise RELAY_UPGRADE_WAIT (0 waits forever)." >&2
+    echo "relay-upgrade: still ${active:-0} queued/running and ${fresh:-0} just-finished job(s) after ${wait_seconds}s — NOT restarting, relay left untouched. Check again later or raise RELAY_UPGRADE_WAIT (0 waits forever)." >&2
     exit 3
   fi
   sleep 10
 done
 
 before_pid="$(systemctl --user show "agent-relay@$platform.service" -p MainPID --value || true)"
-echo "relay-upgrade: 0 in-flight job(s), restarting $platform (old pid ${before_pid:-none})"
+echo "relay-upgrade: nothing queued or running, nothing finished in the last ${settle_seconds}s, restarting $platform (old pid ${before_pid:-none})"
 systemctl --user restart "agent-relay@$platform.service"
 sleep 10
 
