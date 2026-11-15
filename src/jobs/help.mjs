@@ -81,6 +81,7 @@ const SCHEDULE_SECTIONS = [
 const SCHEDULE_SUMMARY = [
   "排一轮：正文走 stdin，name 唯一，到点用原会话续跑",
   "管理还没跑的：schedule list / schedule cancel <name>",
+  "同类任务一次只排一个：等这一轮到期跑完，看执行情况再决定排不排下一个",
   "参数、闸、退出码见下面的表",
 ];
 
