@@ -64,6 +64,7 @@ test("TC-JH2b schedule help describes stdin, name uniqueness and the example", (
   const overview = scheduleHelp();
   assert.match(overview, /stdin/);
   assert.match(overview, /schedule cancel/);
+  assert.match(overview, /同类任务一次只排一个/);
   const create = scheduleHelp("create");
   assert.match(create, /name-taken/);
   assert.match(create, /example:/);
