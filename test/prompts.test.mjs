@@ -101,11 +101,11 @@ test("TC-P7 the notice entry never carries the notice body or its instruction", 
   assert.doesNotMatch(text, /不要出现/);
 });
 
-test("TC-P8 the loop entry keeps the prompt and the NOOP contract only", () => {
+test("TC-P8 the loop entry keeps the prompt and the marker delivery contract only", () => {
   const text = render("slack", "loop");
   assert.match(text, /LOOP-BODY/);
-  assert.match(text, /整个输出只有一行 `NOOP`/);
-  assert.doesNotMatch(text, /第 3 轮|signals-slack 第/);
+  assert.match(text, /`<<<relay>>>`/);
+  assert.doesNotMatch(text, /第 3 轮|signals-slack 第|只汇报做了的事/);
 });
 
 test("TC-P9 a scheduled round sends only the origin line when the session exists", () => {

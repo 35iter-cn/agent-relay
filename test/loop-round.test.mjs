@@ -530,3 +530,38 @@ test("TC-LR23 a loop stored without a cron expression is paused once at boot, ne
   const again = Object.values(core.state.notices).filter((notice) => /已移除的 every \/ at/.test(notice.text ?? ""));
   assert.equal(again.length, 1, "a restart does not repeat the notice");
 });
+
+test("TC-LR24 a marker line splits the delivery: prose above never posts, NOOP below stays quiet, a body below is the only thing posted", async () => {
+  const quiet = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    spawn: () => fakeChild({ stdout: "台账 20 条，六个 PR 全在等复审，没有新 review。\n<<<relay>>>\nNOOP" }),
+  });
+  await quiet.core.startDueLoops();
+  await settle();
+  assert.equal(quiet.replies.length, 0, `prose plus NOOP is not content: ${JSON.stringify(quiet.replies)}`);
+  assert.equal(quiet.core.state.loops["loop-fake-1"].lastOutcome, "noop");
+
+  const loud = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    spawn: () => fakeChild({ stdout: "先查台账，再扫六个 PR，全都等复审。\n<<<relay>>>\nreview-fixer backend#1441 已请求 zce 复审" }),
+  });
+  await loud.core.startDueLoops();
+  await settle();
+  assert.equal(loud.replies.length, 1);
+  assert.equal(loud.replies[0].text, "📣📣📣 loop-fake-1 · 第 1 轮\nreview-fixer backend#1441 已请求 zce 复审", `only the body posts: ${JSON.stringify(loud.replies)}`);
+  assert.equal(loud.core.state.loops["loop-fake-1"].lastOutcome, "ok");
+  const raw = JSON.stringify(listRounds(loud.config.loopHistoryDir, "loop-fake-1"));
+  assert.match(raw, /先查台账/, "the history keeps the undelivered prose for debugging");
+});
+
+test("TC-LR25 an empty body after the marker delivers the whole output, it is never silently swallowed", async () => {
+  const loud = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    spawn: () => fakeChild({ stdout: "只有过程文字\n<<<relay>>>" }),
+  });
+  await loud.core.startDueLoops();
+  await settle();
+  assert.equal(loud.replies.length, 1);
+  assert.match(loud.replies[0].text, /只有过程文字/);
+  assert.equal(loud.core.state.loops["loop-fake-1"].lastOutcome, "ok");
+});

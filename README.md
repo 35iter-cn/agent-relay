@@ -100,7 +100,7 @@ Every round is a **fresh session**: the round's conversation key is `<loopId>-r<
 
 A notice is never pruned on its own. A bound notice stores only its binding, not the body — the round's text already lives in the history file, and keeping a copy in the state file would mean rewriting it on every job change.
 
-A round whose output is only `NOOP` (or nothing at all) is a quiet round: nothing is posted, the round is recorded as `noop`, and the loop stays healthy. The model is told about this marker in `src/prompts/sections/32-entry-loop.md`, so "nothing to report" does not turn into one message per interval.
+An empty round is quiet: nothing is posted, the round is recorded as `noop`, and the loop stays healthy. The model is told in `src/prompts/sections/32-entry-loop.md` to write one `<<<relay>>>` line before its final message; only what follows that marker line is delivered, anything before it (working notes, verification recap) never reaches the IM. After the marker, `NOOP` — or nothing at all — is a quiet round, so "nothing to report" does not turn into one message per interval. If the marker has an empty body, the whole output is delivered loud instead of being silently swallowed.
 
 The old round history lives in `~/.config/agent-relay/loops/<loopId>.jsonl` (last 50 rounds, 90 days); a round never receives the previous output — it is told to read it with `loop log` / `loop show-run`.
 

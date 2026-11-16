@@ -103,6 +103,6 @@ test("TC-LH5 the help table and the dispatch table hold the same verbs", () => {
   assert.equal(loopHelp("nope"), null);
   assert.match(loopHelp(), /agent-relay loop/);
   assert.match(loopHelp(), /模型读这三行就够/);
-  assert.match(loopHelp(), /整个输出恰好 NOOP/);
+  assert.match(loopHelp(), /marker 之前的过程文字不投递/);
   assert.doesNotMatch(loopHelp("create"), /模型读这三行就够/);
 });
