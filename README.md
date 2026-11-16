@@ -149,6 +149,11 @@ Design rules:
   time of the last progress, and whether any tool call is open. It never learns
   a tool's name or parses its arguments; a harness that wants longer patience
   says so by keeping the round alive, not by declaring a budget.
+- **A notice is posted at the channel top, never inside a thread.** Its own
+  message id is the reply target: replying to it is how a person reaches a round
+  that is stuck, and the reply carries the notice id only when the notice itself
+  is the thread root. Threaded, the reply would land on the busy conversation
+  key and queue behind the very round it is meant to stop.
 - **Every round has a budget, and the stall notice has a deadline.** Silence
   earns a notice in the conversation thread; three minutes later a round with no
   tool open is terminated and billed to its last progress. A round is also capped

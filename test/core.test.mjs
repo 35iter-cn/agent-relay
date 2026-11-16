@@ -2067,7 +2067,7 @@ test("TC-RPC13 an unconsumed steer drops its receipt and re-sends on the steered
   if (resend) assert.equal(resend.inbound.messageId, "m-2");
 });
 
-test("TC-ST23 the stall notice lands in the conversation thread, not at the channel top", async () => {
+test("TC-ST23 a notice stays at the channel top so its reply can reach the stuck round", async () => {
   const clock = { now: Date.parse("2026-10-26T13:00:00.000Z") };
   const built = harness({ sessions: ["fs-th-abc"], spawn: () => controlledChild(), deps: { now: () => clock.now, stallGraceMs: 5 } });
   await built.core.handle(inbound({ replyTo: "ts-9" }));
@@ -2075,9 +2075,14 @@ test("TC-ST23 the stall notice lands in the conversation thread, not at the chan
   writeSession(built.sessionsDir, "fs-th-abc", [sessionAssistant(clock.now - 12 * 60_000, [{ id: "c1" }])]);
   await built.core.checkStall(job);
   const notice = built.replies.find((reply) => reply.key === "notice");
-  assert.equal(notice.thread, "ts-9");
+  assert.equal(notice.thread, null);
   const stored = Object.values(built.core.state.notices).find((item) => item.text?.includes("卡"));
-  assert.equal(stored?.thread, "ts-9");
+  assert.equal(stored?.thread, undefined);
+  const reply = await built.core.handle({
+    ...inbound({ text: "杀掉", dedupeId: "m-reply", replyIds: [stored.messageId] }),
+  });
+  assert.notEqual(reply, "duplicate");
+  assert.equal(Object.values(built.core.state.convs).some((entry) => entry.noticeId === stored.id), true);
 });
 
 test("TC-ST24 three minutes after the notice a round with no tool open is terminated by the relay itself", async () => {
