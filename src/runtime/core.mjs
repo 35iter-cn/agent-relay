@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync,
 import { spawn as spawnProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { runPrintWorker } from "./worker-print.mjs";
+import { deliverBody } from "../shared/marker.mjs";
 import { createRpcWorker, expandAttachments } from "./worker-rpc.mjs";
 import { join } from "node:path";
 import { appendDailyJsonl, createLog } from "../shared/log.mjs";
@@ -1413,7 +1414,7 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   async function deliverRound(job) {
-    const text = String(job.answer ?? "").trim();
+    const text = deliverBody(job.answer).body;
     if (isNoopRound(text)) {
       job.status = "done";
       job.noop = true;

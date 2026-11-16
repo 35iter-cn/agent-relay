@@ -12,7 +12,7 @@ export const LOOP_VERBS = [
       "  --prompt-file <p> 只存路径，每轮现读；唯一合法值 = ~/.config/agent-relay/prompts/loops/<id>/prompt.md",
       "--slug <name> 必填：id = <name>-<platform>（如 intake-slack）。先写 prompt.md，再建 loop。",
       "路径不在那个目录下会被 refused: prompt-file-not-canonical；内联 --prompt 需要 --allow-inline。",
-      "每轮是新会话，输出作为一条消息发出；只输出 NOOP（或什么都不输出）的轮次不发消息。",
+      "每轮是新会话，输出里写一行 `<<<relay>>>`，只投递它之后的内容；marker 后写 NOOP（或整个输出为空）的轮次不发消息。",
       "--title <text> 每轮消息头的可读名字（≤80 字节，如「每日简报」）。不给就回落到 loop id。",
       "--no-thread 不给轮次消息开 thread（默认开，平台支持才生效）。",
     ],
@@ -70,8 +70,8 @@ const SECTIONS = [
 ];
 
 const SUMMARY = [
-  "模型读这三行就够：一段提示词按计划反复跑，每轮新会话，输出就是一条消息",
-  "空轮 = 整个输出恰好 NOOP，不发消息；连续 3 轮失败自动暂停",
+  "模型读这三行就够：一段提示词按计划反复跑，每轮新会话，marker 之前的过程文字不投递",,
+  "空轮 = marker 后只有 NOOP（或整个输出为空），不发消息；连续 3 轮失败自动暂停",
   "参数、闸、退出码见下面的表",
 ];
 
