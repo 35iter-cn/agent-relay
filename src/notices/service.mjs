@@ -38,12 +38,12 @@ export function createNoticeService({ state, save, adapter, now = () => Date.now
   state.notices = state.notices ?? {};
   state.meta = state.meta ?? {};
 
-  function post(text) {
+  function post(text, thread = null) {
     if (typeof adapter.postNotice !== "function") throw new Error(`platform ${adapter.name} cannot post notices`);
-    return adapter.postNotice(text);
+    return adapter.postNotice(text, { thread });
   }
 
-  async function emit({ text = "", prompt = "", reply = null, title = "" } = {}) {
+  async function emit({ text = "", prompt = "", reply = null, title = "", thread = null } = {}) {
     const binding = normalizeReply(reply);
     const bound = binding?.mode === "conversation";
     const body = String(text ?? "").trim();
@@ -51,7 +51,7 @@ export function createNoticeService({ state, save, adapter, now = () => Date.now
     const shown = withTitle(title, body);
     const kept = bound ? { prompt: "", truncated: false } : truncatePrompt(prompt);
     if (kept.truncated) log("warn", "notice-prompt", `truncated to ${MAX_PROMPT_BYTES} bytes`);
-    const sent = await post(shown);
+    const sent = await post(shown, thread ? String(thread) : null);
     const seq = Number(state.meta.noticeSeq ?? 0) + 1;
     state.meta.noticeSeq = seq;
     const notice = {
@@ -65,6 +65,7 @@ export function createNoticeService({ state, save, adapter, now = () => Date.now
       notice.text = shown;
       notice.prompt = kept.prompt;
     }
+    if (thread) notice.thread = String(thread);
     state.notices[notice.id] = notice;
     save();
     log("info", "notice", notice.id, notice.messageId ?? "-", bound ? `bound:${binding.key}` : `${body.length} chars`);

@@ -24,12 +24,6 @@ export function declaredTimeoutMs(open) {
   return declared.length ? Math.max(...declared) : null;
 }
 
-function timeoutsOf(toolCall) {
-  if (toolCall?.name !== "bash") return null;
-  const seconds = Number(toolCall?.arguments?.timeout);
-  return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null;
-}
-
 function parseEntry(line) {
   try {
     const value = JSON.parse(line);
@@ -76,7 +70,7 @@ function scanChunk(text, start) {
         startedAt: Number.isFinite(at) ? at : null,
         callIds: open.map((call) => call.id).filter(Boolean),
         head: assertHead(open[0]),
-        tools: open.map((call) => ({ id: call.id ?? null, name: call.name ?? null, declaredMs: timeoutsOf(call), head: assertHead(call) })),
+        tools: open.map((call) => ({ id: call.id ?? null, name: call.name ?? null, declaredMs: null, head: assertHead(call) })),
       },
     };
   }

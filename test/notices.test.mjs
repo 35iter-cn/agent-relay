@@ -129,3 +129,22 @@ test("emit fails loudly when the platform cannot post notices", async () => {
   const service = createNoticeService({ state: emptyState(), save: () => {}, adapter: { name: "fake" }, now });
   await assert.rejects(() => service.emit({ text: "hi" }), /cannot post notices/);
 });
+
+test("TC-NT9 a notice can be pinned to a conversation thread, and the ledger remembers which", async () => {
+  const state = emptyState();
+  const calls = [];
+  const adapter = {
+    name: "slack",
+    postNotice: async (text, options = {}) => {
+      calls.push({ text, thread: options.thread ?? null });
+      return { messageId: "m-7" };
+    },
+  };
+  const service = createNoticeService({ state, save: () => {}, adapter, now });
+  const pinned = await service.emit({ text: "卡住了", thread: "ts-9" });
+  assert.equal(calls[0].thread, "ts-9");
+  assert.equal(pinned.thread, "ts-9");
+  const loose = await service.emit({ text: "工时播报" });
+  assert.equal(calls[1].thread, null);
+  assert.equal(loose.thread, undefined);
+});
