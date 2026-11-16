@@ -185,7 +185,6 @@ export function createCore({ adapter, config, deps = {} }) {
     try {
       const notice = await notices.emit({
         title: NOTICE_TITLES.stall,
-        thread: threadOf(job),
         text: prompts.stallNotice({
           task: oneLine(fields.task),
           round: fields.round && fields.round !== fields.task ? oneLine(fields.round) : "",
@@ -201,11 +200,6 @@ export function createCore({ adapter, config, deps = {} }) {
       log("error", "stall-notify", String(error?.message ?? error));
       return null;
     }
-  }
-
-  function threadOf(job) {
-    const inbound = job.inbound ?? {};
-    return inbound.threadId ?? inbound.replyTo ?? null;
   }
 
   function roundStartedAt(job) {
@@ -267,7 +261,6 @@ export function createCore({ adapter, config, deps = {} }) {
         try {
           await notices.emit({
             title: NOTICE_TITLES.stall,
-            thread: threadOf(job),
             text: prompts.budgetNotice({ minutes: Math.round(budget / 60_000), left: Math.max(1, Math.round((budget - elapsed) / 60_000)), job: job.id }),
           });
         } catch (error) {
