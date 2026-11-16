@@ -77,14 +77,30 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
     return render([rules, task].filter(Boolean).join("\n\n"), values({ platform, adapter, inbound }), "scheduled");
   }
 
+  function autoTerminated({ minutes = 0, lastProgress = "" } = {}) {
+    return render(message("auto-terminated.md"), { minutes: String(minutes), last_progress: lastProgress }, "auto-terminated").trim();
+  }
+
+  function budgetNotice({ minutes = 0, left = 0, job = "" } = {}) {
+    return render(message("budget-notice.md"), { minutes: String(minutes), left: String(left), job }, "budget-notice").trim();
+  }
+
+  function budgetTerminated({ minutes = 0 } = {}) {
+    return render(message("budget-terminated.md"), { minutes: String(minutes) }, "budget-terminated").trim();
+  }
+
+  function keyWindowRejected({ minutes = 0, spent = 0, window = 0 } = {}) {
+    return render(message("key-window-rejected.md"), { minutes: String(minutes), spent: String(spent), window: String(window) }, "key-window-rejected").trim();
+  }
+
   function restartPrompt() {
     return message("restart.md");
   }
 
-  function stallNotice({ task = "", round = "", stuck = "", job = "", lastProgress = "" } = {}) {
+  function stallNotice({ task = "", round = "", stuck = "", job = "", lastProgress = "", actionMinutes = 3 } = {}) {
     const text = render(
       message("stall-notice.md"),
-      { task, round, stuck, job, last_progress: lastProgress, restart_prompt: restartPrompt() },
+      { task, round, stuck, job, last_progress: lastProgress, stall_action_minutes: String(actionMinutes), restart_prompt: restartPrompt() },
       "stall-notice",
     );
     return text
@@ -110,6 +126,10 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
     scheduled,
     restartPrompt,
     stallNotice,
+    autoTerminated,
+    budgetNotice,
+    budgetTerminated,
+    keyWindowRejected,
     interrupt,
     emptyPrompt,
     conversation: (args) => compose({ ...args, entry: "conversation" }),

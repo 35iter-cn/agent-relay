@@ -60,6 +60,10 @@ function harness({ spawn, replies = [], adapterOverrides = {}, state = emptyStat
   writeFileSync(join(messagesDir, "restart.md"), "上一轮似乎卡住了，继续，不要犯相同错误");
   writeFileSync(join(messagesDir, "interrupt.md"), "INTERRUPTED 直接回复这条消息就会接着之前的会话继续。");
   writeFileSync(join(messagesDir, "empty-prompt.md"), "EMPTY {{prompts_dir}}");
+  writeFileSync(join(messagesDir, "auto-terminated.md"), "已按默认处置终止：最后进展 {{last_progress}}，计入 {{minutes}} 分钟。");
+  writeFileSync(join(messagesDir, "budget-notice.md"), "本轮已用到上限 {{minutes}} 分钟的 75%，还剩约 {{left}} 分钟。");
+  writeFileSync(join(messagesDir, "budget-terminated.md"), "已终止：本轮超过 {{minutes}} 分钟的单轮上限。");
+  writeFileSync(join(messagesDir, "key-window-rejected.md"), "{{window}} 小时内这个会话已累计跑满 {{spent}} 分钟，超过 {{minutes}} 分钟上限。");
   const configDir = join(dir, ".config/agent-relay");
   const config = {
     home: dir,
@@ -90,7 +94,7 @@ function harness({ spawn, replies = [], adapterOverrides = {}, state = emptyStat
     replyRules: "RULES",
     sessionFor: (key) => `fs-${key}`,
     reply: async (inbound, text) => (replies.push({ key: inbound.key, text }), { messageId: `m-${replies.length}` }),
-    postNotice: async (text) => (replies.push({ key: "notice", text }), { messageId: `notice-${replies.length}` }),
+    postNotice: async (text, options = {}) => (replies.push({ key: "notice", text, thread: options.thread ?? null }), { messageId: `notice-${replies.length}` }),
     ...adapterOverrides,
   };
   const logs = [];
@@ -1432,18 +1436,15 @@ test("TC-ST6 an unclosed tool call over the threshold notifies once with the too
   assert.equal(job.stallRunningMs, 12 * 60_000);
 });
 
-test("TC-ST7 a declared bash timeout defers the notice until timeout plus grace", async () => {
+test("TC-ST7 a tool argument no longer buys patience: the relay tells no tool from another", async () => {
   const { core, replies, sessionsDir, clock, job } = await runningJob();
   const startedAt = clock.now - 12 * 60_000;
   writeSession(sessionsDir, "fs-th-abc", [sessionAssistant(startedAt, [{ id: "c1", arguments: { command: "md up", timeout: 900 } }])]);
   await core.checkStall(job);
-  assert.equal(replies.length, 0);
-  clock.now = startedAt + 959_000;
-  await core.checkStall(job);
-  assert.equal(replies.length, 0);
-  clock.now = startedAt + 960_000;
-  await core.checkStall(job);
   assert.equal(replies.length, 1);
+  assert.equal(job.stallReason, "tool");
+  assert.equal(job.stallRunningMs, 12 * 60_000);
+  assert.match(replies[0].text, /工具 bash 已运行 12 分钟没有返回/);
 });
 
 test("TC-ST8 a silent session notifies from the session signal alone", async () => {
@@ -2064,4 +2065,122 @@ test("TC-RPC13 an unconsumed steer drops its receipt and re-sends on the steered
   const resend = jobs.find((job) => job.auto === "steer-resend");
   assert.ok(removed.includes("m-2"), "the receipt is dropped before the resend job starts");
   if (resend) assert.equal(resend.inbound.messageId, "m-2");
+});
+
+test("TC-ST23 the stall notice lands in the conversation thread, not at the channel top", async () => {
+  const clock = { now: Date.parse("2026-10-26T13:00:00.000Z") };
+  const built = harness({ sessions: ["fs-th-abc"], spawn: () => controlledChild(), deps: { now: () => clock.now, stallGraceMs: 5 } });
+  await built.core.handle(inbound({ replyTo: "ts-9" }));
+  const job = Object.values(built.core.state.jobs).find((item) => item.key === "th-abc");
+  writeSession(built.sessionsDir, "fs-th-abc", [sessionAssistant(clock.now - 12 * 60_000, [{ id: "c1" }])]);
+  await built.core.checkStall(job);
+  const notice = built.replies.find((reply) => reply.key === "notice");
+  assert.equal(notice.thread, "ts-9");
+  const stored = Object.values(built.core.state.notices).find((item) => item.text?.includes("卡"));
+  assert.equal(stored?.thread, "ts-9");
+});
+
+test("TC-ST24 three minutes after the notice a round with no tool open is terminated by the relay itself", async () => {
+  const { core, replies, dir, sessionsDir, clock, job } = await runningJob({ spawn: closingSpawn(), adapterOverrides: { chunkLimit: 1000 } });
+  const leasedAt = Number(job.lease.startedAt);
+  clock.now = leasedAt + 20 * 60_000;
+  const silencedAt = clock.now - 12 * 60_000;
+  writeSession(sessionsDir, "fs-th-abc", [sessionAssistant(silencedAt - 60_000, [{ id: "c1" }]), sessionToolResult(silencedAt, "c1")]);
+  await core.checkStall(job);
+  assert.equal(job.stallReason, "silent");
+  clock.now = Date.parse(job.stallNotifiedAt) + 2 * 60_000;
+  await core.checkStallAction(job);
+  assert.equal(job.autoTerminated, undefined);
+  clock.now = Date.parse(job.stallNotifiedAt) + 3 * 60_000 + 1_000;
+  await core.checkStallAction(job);
+  await tick();
+  const text = replies.map((reply) => reply.text).join("\n");
+  assert.match(text, /已按默认处置终止/);
+  assert.match(text, /计入 8 分钟/);
+  assert.ok(job.autoTerminated);
+  assert.equal(job.stallCancelled, true);
+  assert.equal(job.cutoffAt, isoAt(silencedAt));
+  const logDir = join(dir, "logs", "fake");
+  const events = readdirSync(logDir).flatMap((name) => readFileSync(join(logDir, name), "utf8").trim().split("\n")).map((line) => JSON.parse(line));
+  assert.ok(events.some((event) => event.event === "stall-timeout" && event.job === job.id));
+});
+
+test("TC-ST25 a tool still open keeps the relay from terminating: the round waits for the budget instead", async () => {
+  const { core, replies, dir, sessionsDir, clock, job } = await runningJob({ spawn: closingSpawn(), adapterOverrides: { chunkLimit: 1000 } });
+  const toolAt = clock.now - 12 * 60_000;
+  writeSession(sessionsDir, "fs-th-abc", [sessionAssistant(toolAt, [{ id: "c1" }])]);
+  await core.checkStall(job);
+  clock.now = Date.parse(job.stallNotifiedAt) + 4 * 60_000;
+  assert.equal(await core.checkStallAction(job), null);
+  await tick();
+  assert.doesNotMatch(replies.map((reply) => reply.text).join("\n"), /已按默认处置终止/);
+  assert.equal(job.autoTerminated, undefined);
+  assert.equal(job.stallActionSkipped, "tool-open");
+  const logDir = join(dir, "logs", "fake");
+  const events = readdirSync(logDir).flatMap((name) => readFileSync(join(logDir, name), "utf8").trim().split("\n")).map((line) => JSON.parse(line));
+  assert.ok(events.some((event) => event.event === "stall-timeout-skipped"));
+});
+
+test("TC-ST26 a reply that already took the key over cancels the automatic termination", async () => {
+  const { core, sessionsDir, clock, job } = await runningJob({ spawn: closingSpawn() });
+  writeSession(sessionsDir, "fs-th-abc", [sessionAssistant(clock.now - 12 * 60_000, [{ id: "c1" }])]);
+  await core.checkStall(job);
+  core.state.convs[job.key].activeJob = "job-someone-else";
+  clock.now = Date.parse(job.stallNotifiedAt) + 5 * 60_000;
+  await core.checkStallAction(job);
+  assert.equal(job.autoTerminated, undefined);
+  assert.ok(job.stallActionAt);
+});
+
+test("TC-ST27 the round budget warns at three quarters and terminates at the cap", async () => {
+  const { core, replies, sessionsDir, clock, job } = await runningJob({ spawn: closingSpawn(), adapterOverrides: { chunkLimit: 1000 } });
+  const startedAt = Number(job.startedAt ?? clock.now);
+  clock.now = startedAt + 68 * 60_000;
+  await core.checkBudget(job);
+  const warned = replies.filter((reply) => reply.key === "notice").map((reply) => reply.text).join("\n");
+  assert.match(warned, /75%/);
+  assert.match(warned, /还剩约 22 分钟/);
+  clock.now = startedAt + 69 * 60_000;
+  await core.checkBudget(job);
+  assert.equal(replies.filter((reply) => reply.key === "notice").length, 1);
+  clock.now = startedAt + 90 * 60_000;
+  writeSession(sessionsDir, "fs-th-abc", [sessionAssistant(clock.now - 60_000, [{ id: "c1" }]), sessionToolResult(clock.now - 30_000, "c1")]);
+  await core.checkBudget(job);
+  await tick();
+  assert.match(replies.map((reply) => reply.text).join("\n"), /已终止：本轮超过 90 分钟的单轮上限/);
+  assert.ok(job.budgetEndedAt);
+});
+
+test("TC-ST28 a loop round gets the shorter budget and cannot be asked for more", async () => {
+  const { core, job } = await runningJob();
+  job.origin = "loop";
+  assert.equal(core.budgetOf(job), 30 * 60_000);
+  job.budgetMs = 45 * 60_000;
+  assert.equal(core.budgetOf(job), 45 * 60_000);
+  job.budgetMs = 600 * 60_000;
+  assert.equal(core.budgetOf(job), 60 * 60_000);
+  job.budgetMs = -5;
+  assert.equal(core.budgetOf(job), 30 * 60_000);
+});
+
+test("TC-ST29 a key that already spent the six-hour window is refused before it starts", async () => {
+  const state = emptyState();
+  state.jobs = {
+    "job-old": {
+      id: "job-old",
+      key: "th-abc",
+      status: "done",
+      createdAt: new Date(Date.parse("2026-10-26T12:00:00.000Z")).toISOString(),
+      updatedAt: new Date(Date.parse("2026-10-26T12:00:00.000Z")).toISOString(),
+      elapsedMs: 181 * 60_000,
+      inbound: { key: "th-abc", text: "old", rootText: "old" },
+    },
+  };
+  const built = harness({ state, sessions: ["fs-th-abc"], deps: { now: () => Date.parse("2026-10-26T13:00:00.000Z") } });
+  await built.core.handle(inbound({ text: "再来一轮", dedupeId: "m2" }));
+  await tick();
+  const rejected = Object.values(built.core.state.jobs).find((item) => item.key === "th-abc" && item.id !== "job-old");
+  assert.equal(rejected.status, "failed");
+  assert.equal(rejected.error, "key-budget");
+  assert.match(built.replies.map((reply) => reply.text).join("\n"), /6 小时内这个会话已累计跑满 181 分钟/);
 });

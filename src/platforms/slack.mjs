@@ -736,12 +736,13 @@ export function createPlatform({ config, log: baseLog }) {
       return pruneUploads(config.uploadsDir);
     },
 
-    async postNotice(text) {
+    async postNotice(text, { thread = null } = {}) {
       if (!botToken) throw new Error("postNotice: SLACK_BOT_TOKEN missing");
       const api = apiFor(botToken);
       let last = null;
       for (const part of chunkText(text, CHUNK_LIMIT)) {
-        const res = await sendMarkdown(api, "chat.postMessage", { channel, text: part }, log);
+        const params = { channel, text: part, ...(thread ? { thread_ts: String(thread) } : {}) };
+        const res = await sendMarkdown(api, "chat.postMessage", params, log);
         if (!res.ok) throw new Error(`postNotice ${res.error}`);
         last = res.ts ?? last;
       }

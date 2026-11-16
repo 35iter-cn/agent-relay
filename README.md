@@ -144,6 +144,16 @@ Design rules:
   later form its thread carry that id as `root_id`, which lands them on the same key.
   Never fall back to a per-message key for a root message: it splits one conversation
   into two sessions and makes steering impossible.
+- **Progress is one signal, not a per-tool one.** The runtime asks a single
+  question — may this round keep running — from two facts it already has: the
+  time of the last progress, and whether any tool call is open. It never learns
+  a tool's name or parses its arguments; a harness that wants longer patience
+  says so by keeping the round alive, not by declaring a budget.
+- **Every round has a budget, and the stall notice has a deadline.** Silence
+  earns a notice in the conversation thread; three minutes later a round with no
+  tool open is terminated and billed to its last progress. A round is also capped
+  by wall time (90 minutes, 30 for a loop round) and a key by its six-hour
+  window; both are backstops for rounds that keep moving in the wrong direction.
 - **A lease is identity, not a liveness pulse.** A worker's lease is `pid` plus
   the process start ticks read once at spawn; nothing refreshes it on a timer,
   and no elapsed time makes it expire. A job is alive only while that exact

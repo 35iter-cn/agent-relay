@@ -26,7 +26,7 @@ function render(platform, entry, extra = {}) {
   return prompts.conversation({ ...base, ...extra });
 }
 
-test("TC-P1 the prompt tree is six numbered sections and four messages", () => {
+test("TC-P1 the prompt tree is six numbered sections and the messages the relay can say on its own", () => {
   const sections = readdirSync(join(PROMPTS, "sections")).sort();
   assert.deepEqual(sections, [
     "10-common.md",
@@ -37,7 +37,16 @@ test("TC-P1 the prompt tree is six numbered sections and four messages", () => {
     "32-entry-loop.md",
   ]);
   const messages = readdirSync(join(PROMPTS, "messages")).sort();
-  assert.deepEqual(messages, ["empty-prompt.md", "interrupt.md", "restart.md", "stall-notice.md"]);
+  assert.deepEqual(messages, [
+    "auto-terminated.md",
+    "budget-notice.md",
+    "budget-terminated.md",
+    "empty-prompt.md",
+    "interrupt.md",
+    "key-window-rejected.md",
+    "restart.md",
+    "stall-notice.md",
+  ]);
 });
 
 test("TC-P2 every entry renders common, then the platform block, then its own task", () => {

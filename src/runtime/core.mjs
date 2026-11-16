@@ -30,6 +30,14 @@ import { appendRound, findRound, listRounds, pruneHistory } from "../loops/histo
 
 const STALL_MS = relayEnv("STALL_MS", 10 * 60_000);
 const TOOL_STALL_MS = relayEnv("TOOL_STALL_MS", 10 * 60_000);
+const STALL_ACTION_MS = relayEnv("STALL_ACTION_MS", 3 * 60_000);
+const ROUND_MAX_MS = relayEnv("ROUND_MAX_MS", 90 * 60_000);
+const LOOP_ROUND_MAX_MS = relayEnv("LOOP_ROUND_MAX_MS", 30 * 60_000);
+const KEY_WINDOW_MS = relayEnv("KEY_WINDOW_MS", 6 * 3_600_000);
+const KEY_WINDOW_MAX_MS = relayEnv("KEY_WINDOW_MAX_MS", 180 * 60_000);
+const BUDGET_GRACE_MS = relayEnv("BUDGET_GRACE_MS", 10 * 60_000);
+const BUDGET_OVERRIDE_CAP = 2;
+const BUDGET_NOTICE_RATIO = 0.75;
 const STALL_CHECK_MS = relayEnv("STALL_CHECK_MS", 60_000);
 const RETENTION_MS = 72 * 3_600_000;
 const SEEN_RETENTION_MS = 72 * 3_600_000;
@@ -177,12 +185,14 @@ export function createCore({ adapter, config, deps = {} }) {
     try {
       const notice = await notices.emit({
         title: NOTICE_TITLES.stall,
+        thread: threadOf(job),
         text: prompts.stallNotice({
           task: oneLine(fields.task),
           round: fields.round && fields.round !== fields.task ? oneLine(fields.round) : "",
           stuck: stallStuckText(fields),
           job: `${job.id}（name \`${job.inbound?.name ?? "-"}\`）`,
           lastProgress: fields.local,
+          actionMinutes: Math.round(STALL_ACTION_MS / 60_000),
         }),
       });
       save();
@@ -191,6 +201,110 @@ export function createCore({ adapter, config, deps = {} }) {
       log("error", "stall-notify", String(error?.message ?? error));
       return null;
     }
+  }
+
+  function threadOf(job) {
+    const inbound = job.inbound ?? {};
+    return inbound.threadId ?? inbound.replyTo ?? null;
+  }
+
+  function roundStartedAt(job) {
+    return job.lease?.startedAt ?? job.startedAt ?? Date.parse(job.createdAt);
+  }
+
+  function repliedSince(job) {
+    const active = state.convs?.[job.key]?.activeJob;
+    return Boolean(active) && active !== job.id;
+  }
+
+  async function checkStallAction(job) {
+    if (job.status !== "running" || !job.stallNotifiedAt || job.stallActionAt) return null;
+    if (!(STALL_ACTION_MS > 0)) return null;
+    const waited = now() - Date.parse(job.stallNotifiedAt);
+    if (!Number.isFinite(waited) || waited < STALL_ACTION_MS) return null;
+    if (repliedSince(job)) {
+      job.stallActionAt = isoNow();
+      save();
+      return null;
+    }
+    const { tool } = progress(job, job.session);
+    if (tool) {
+      job.stallActionAt = isoNow();
+      job.stallActionSkipped = "tool-open";
+      save();
+      appendLog({ event: "stall-timeout-skipped", job: job.id, key: job.key, tool: tool.name ?? null });
+      return null;
+    }
+    const at = Date.parse(job.lastActivityAt ?? "") || Date.parse(job.stallNotifiedAt ?? "") || now();
+    const minutes = Math.max(0, Math.round((at - roundStartedAt(job)) / 60_000));
+    job.stallActionAt = isoNow();
+    job.stallCancelled = true;
+    job.autoTerminated = isoNow();
+    job.cutoffAt = isoAt(at);
+    save();
+    appendLog({ event: "stall-timeout", job: job.id, key: job.key, session: job.session, waitedMs: waited, minutes });
+    await terminate(job.key, prompts.autoTerminated({ minutes, lastProgress: localStamp(at) }));
+    return "terminated";
+  }
+
+  function budgetOf(job) {
+    const base = job.origin === "loop" ? Math.min(LOOP_ROUND_MAX_MS, ROUND_MAX_MS) : ROUND_MAX_MS;
+    const asked = Number(job.budgetMs);
+    if (!Number.isFinite(asked) || asked <= 0) return base;
+    return Math.min(asked, base * BUDGET_OVERRIDE_CAP);
+  }
+
+  async function checkBudget(job) {
+    if (job.status !== "running" || job.budgetEndedAt) return null;
+    const budget = budgetOf(job);
+    if (!(budget > 0)) return null;
+    const elapsed = now() - roundStartedAt(job);
+    if (elapsed < budget) {
+      if (elapsed >= budget * BUDGET_NOTICE_RATIO && !job.budgetNoticedAt) {
+        job.budgetNoticedAt = isoNow();
+        save();
+        appendLog({ event: "budget-notice", job: job.id, key: job.key, elapsedMs: elapsed, budgetMs: budget });
+        try {
+          await notices.emit({
+            title: NOTICE_TITLES.stall,
+            thread: threadOf(job),
+            text: prompts.budgetNotice({ minutes: Math.round(budget / 60_000), left: Math.max(1, Math.round((budget - elapsed) / 60_000)), job: job.id }),
+          });
+        } catch (error) {
+          log("error", "budget-notice", String(error?.message ?? error));
+        }
+      }
+      return null;
+    }
+    const { tool } = progress(job, job.session);
+    if (tool && !job.budgetGracedAt) {
+      job.budgetGracedAt = isoNow();
+      job.budgetEndsAt = isoAt(now() + BUDGET_GRACE_MS);
+      save();
+      appendLog({ event: "budget-grace", job: job.id, key: job.key, tool: tool.name ?? null, graceMs: BUDGET_GRACE_MS });
+      return null;
+    }
+    if (job.budgetGracedAt && now() < Date.parse(job.budgetEndsAt ?? "")) return null;
+    job.budgetEndedAt = isoNow();
+    job.autoTerminated = isoNow();
+    job.cutoffAt = isoAt(now());
+    save();
+    appendLog({ event: "budget-timeout", job: job.id, key: job.key, session: job.session, elapsedMs: elapsed, budgetMs: budget });
+    await terminate(job.key, prompts.budgetTerminated({ minutes: Math.round(budget / 60_000) }));
+    return "terminated";
+  }
+
+  function keyWindowSpentMs(key) {
+    const since = now() - KEY_WINDOW_MS;
+    let total = 0;
+    for (const item of Object.values(state.jobs)) {
+      if (item.key !== key || !isFinished(item)) continue;
+      const at = Date.parse(item.updatedAt ?? "");
+      if (!Number.isFinite(at) || at < since) continue;
+      const ms = Number(item.elapsedMs);
+      if (Number.isFinite(ms) && ms > 0) total += ms;
+    }
+    return total;
   }
 
   function latestJobFor(key) {
@@ -545,7 +659,10 @@ export function createCore({ adapter, config, deps = {} }) {
 
   function armStallTimer(job, key) {
     const timer = setInterval(() => {
-      checkStall(job).catch((error) => log("warn", "stall", String(error?.message ?? error)));
+      checkStall(job)
+        .then(() => checkStallAction(job))
+        .then(() => checkBudget(job))
+        .catch((error) => log("warn", "stall", String(error?.message ?? error)));
     }, STALL_CHECK_MS);
     timer.unref?.();
     stallTimers.set(key, timer);
@@ -700,11 +817,6 @@ export function createCore({ adapter, config, deps = {} }) {
     runtimeInbounds.delete(job.id);
   }
 
-  function timeoutOfArgs(args) {
-    const seconds = Number(args?.timeout);
-    return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : null;
-  }
-
   function clearIdleTimer(key) {
     const timer = idleTimers.get(key);
     if (timer) clearTimeout(timer);
@@ -775,7 +887,7 @@ export function createCore({ adapter, config, deps = {} }) {
           return;
         }
         if (record.type === "tool_execution_start") {
-          job.activity = { at: now(), open: { name: record.toolName ?? null, startedAt: now(), declaredMs: record.toolName === "bash" ? timeoutOfArgs(record.args) : null, callIds: [record.toolCallId].filter(Boolean), head: headOfArgs(record.args), tools: [] } };
+          job.activity = { at: now(), open: { name: record.toolName ?? null, startedAt: now(), declaredMs: null, callIds: [record.toolCallId].filter(Boolean), head: headOfArgs(record.args), tools: [] } };
           return;
         }
         if (record.type === "tool_execution_end") {
@@ -1050,6 +1162,22 @@ export function createCore({ adapter, config, deps = {} }) {
 
   function startJob(job) {
     const entry = state.convs[job.key] ?? { session: job.session, rootText: job.inbound.rootText, lastMsgTs: null, activeJob: null };
+    if (KEY_WINDOW_MAX_MS > 0) {
+      const spent = keyWindowSpentMs(job.key);
+      if (spent >= KEY_WINDOW_MAX_MS) {
+        job.status = "failed";
+        job.error = "key-budget";
+        job.updatedAt = isoNow();
+        save();
+        appendLog({ event: "key-budget-rejected", job: job.id, key: job.key, spentMs: spent, capMs: KEY_WINDOW_MAX_MS });
+        replyToJob(job, prompts.keyWindowRejected({
+          minutes: Math.round(KEY_WINDOW_MAX_MS / 60_000),
+          spent: Math.round(spent / 60_000),
+          window: Math.round(KEY_WINDOW_MS / 3_600_000),
+        })).catch((error) => log("warn", "key-budget-reply", String(error?.message ?? error)));
+        return;
+      }
+    }
     entry.activeJob = job.id;
     state.convs[job.key] = entry;
     job.status = "running";
@@ -1066,6 +1194,7 @@ export function createCore({ adapter, config, deps = {} }) {
       })
       .finally(async () => {
         running.delete(job.id);
+        job.elapsedMs = now() - roundStartedAt(job);
         if (entry.activeJob === job.id) entry.activeJob = null;
         await dropReceipts(job);
         job.updatedAt = isoNow();
@@ -1905,6 +2034,9 @@ export function createCore({ adapter, config, deps = {} }) {
     restartJob,
     drainCommands,
     checkStall,
+    checkStallAction,
+    checkBudget,
+    budgetOf,
     scheduleJob,
     cancelScheduled,
     startDueJobs,
