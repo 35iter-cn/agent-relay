@@ -2,7 +2,6 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync,
 import { spawn as spawnProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { runPrintWorker } from "./worker-print.mjs";
-import { deliverBody } from "../shared/marker.mjs";
 import { createRpcWorker, expandAttachments } from "./worker-rpc.mjs";
 import { join } from "node:path";
 import { appendDailyJsonl, createLog } from "../shared/log.mjs";
@@ -83,6 +82,9 @@ const RUNAWAY_PER_HOUR = relayEnv("RUNAWAY_PER_HOUR", 12);
 const REAP_POLL_MS = 50;
 const RPC_IDLE_MS = relayEnv("RPC_IDLE_MS", 10 * 60_000);
 const MAX_DELIVERY_ATTEMPTS = 3;
+const QUIET_WORD = "NOOP";
+const QUIET_DECORATION = /[`*_~]/g;
+const EMPTY_RUN_PREFIX = "[无输出]";
 export const DELIVERY_BACKOFF_MS = [1_500, 5_000, 15_000];
 
 export function createCore({ adapter, config, deps = {} }) {
@@ -886,7 +888,7 @@ export function createCore({ adapter, config, deps = {} }) {
     disarmStallTimer(inbound.key);
     children.delete(inbound.key);
     appendLog({ event: "done", job: job.id, key: inbound.key, session: entry.session, exit, killed, elapsedMs: now() - started, mode });
-    if (empty && isScheduled(job)) {
+    if (isScheduled(job) && (empty || (status === "answered" && isQuietBody(text)))) {
       job.answer = null;
       job.status = "done";
       job.lease = null;
@@ -1632,14 +1634,16 @@ export function createCore({ adapter, config, deps = {} }) {
     return job;
   }
 
-  function isNoopRound(text) {
-    const body = String(text ?? "").trim();
-    return !body || body === "NOOP" || body.startsWith("[无输出]");
+  function isQuietBody(text) {
+    const body = String(text ?? "");
+    if (!body.trim()) return true;
+    if (body.trim().startsWith(EMPTY_RUN_PREFIX)) return true;
+    return body.replace(QUIET_DECORATION, "").trim().toUpperCase() === QUIET_WORD;
   }
 
   async function deliverRound(job) {
-    const text = deliverBody(job.answer).body;
-    if (isNoopRound(text)) {
+    const text = String(job.answer ?? "").trim();
+    if (isQuietBody(text)) {
       job.status = "done";
       job.noop = true;
       job.answer = undefined;

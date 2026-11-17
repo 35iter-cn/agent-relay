@@ -531,37 +531,59 @@ test("TC-LR23 a loop stored without a cron expression is paused once at boot, ne
   assert.equal(again.length, 1, "a restart does not repeat the notice");
 });
 
-test("TC-LR24 a marker line splits the delivery: prose above never posts, NOOP below stays quiet, a body below is the only thing posted", async () => {
-  const quiet = harness({
+test("TC-LR24 prose that is not the bare word is content, so the round still posts", async () => {
+  const { core, replies } = harness({
     state: { loops: { "loop-fake-1": seededLoop() } },
-    spawn: () => fakeChild({ stdout: "台账 20 条，六个 PR 全在等复审，没有新 review。\n<<<relay>>>\nNOOP" }),
+    spawn: () => fakeChild({ stdout: "本轮没有候选，只输出一行 NOOP。" }),
   });
-  await quiet.core.startDueLoops();
+  await core.startDueLoops();
   await settle();
-  assert.equal(quiet.replies.length, 0, `prose plus NOOP is not content: ${JSON.stringify(quiet.replies)}`);
-  assert.equal(quiet.core.state.loops["loop-fake-1"].lastOutcome, "noop");
-
-  const loud = harness({
-    state: { loops: { "loop-fake-1": seededLoop() } },
-    spawn: () => fakeChild({ stdout: "先查台账，再扫六个 PR，全都等复审。\n<<<relay>>>\nreview-fixer backend#1441 已请求 zce 复审" }),
-  });
-  await loud.core.startDueLoops();
-  await settle();
-  assert.equal(loud.replies.length, 1);
-  assert.equal(loud.replies[0].text, "📣📣📣 loop-fake-1 · 第 1 轮\nreview-fixer backend#1441 已请求 zce 复审", `only the body posts: ${JSON.stringify(loud.replies)}`);
-  assert.equal(loud.core.state.loops["loop-fake-1"].lastOutcome, "ok");
-  const raw = JSON.stringify(listRounds(loud.config.loopHistoryDir, "loop-fake-1"));
-  assert.match(raw, /先查台账/, "the history keeps the undelivered prose for debugging");
+  assert.equal(replies.length, 1, `prose beside the word is content: ${JSON.stringify(replies)}`);
+  assert.equal(core.state.loops["loop-fake-1"].lastOutcome, "ok");
 });
 
-test("TC-LR25 an empty body after the marker delivers the whole output, it is never silently swallowed", async () => {
-  const loud = harness({
+test("TC-LR25 a NOOP the model dressed up still reads as one word, so the round stays quiet", async () => {
+  for (const raw of ["`NOOP`", "**NOOP**", "  noop  ", "_NOOP_", "``NOOP``"]) {
+    const { core, replies } = harness({
+      state: { loops: { "loop-fake-1": seededLoop() } },
+      spawn: () => fakeChild({ stdout: raw }),
+    });
+    await core.startDueLoops();
+    await settle();
+    assert.equal(replies.length, 0, `${JSON.stringify(raw)} is the quiet word: ${JSON.stringify(replies)}`);
+    assert.equal(core.state.loops["loop-fake-1"].lastOutcome, "noop", `${JSON.stringify(raw)} is a quiet round`);
+  }
+});
+
+test("TC-LR26 prose above the quiet word is delivered whole, the round is never silently swallowed", async () => {
+  const { core, replies } = harness({
     state: { loops: { "loop-fake-1": seededLoop() } },
-    spawn: () => fakeChild({ stdout: "只有过程文字\n<<<relay>>>" }),
+    spawn: () => fakeChild({ stdout: "台账 20 条，六个 PR 全在等复审。\nNOOP" }),
   });
-  await loud.core.startDueLoops();
+  await core.startDueLoops();
   await settle();
-  assert.equal(loud.replies.length, 1);
-  assert.match(loud.replies[0].text, /只有过程文字/);
-  assert.equal(loud.core.state.loops["loop-fake-1"].lastOutcome, "ok");
+  assert.equal(replies.length, 1, `a body that is not the bare word is content: ${JSON.stringify(replies)}`);
+  assert.match(replies[0].text, /台账 20 条/);
+  assert.equal(core.state.loops["loop-fake-1"].lastOutcome, "ok");
+});
+
+test("TC-LR27 an empty run marker stays quiet and a marker line carries no delivery meaning any more", async () => {
+  const empty = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    spawn: () => fakeChild({ stdout: "[无输出] stop=stop" }),
+  });
+  await empty.core.startDueLoops();
+  await settle();
+  assert.equal(empty.replies.length, 0, `the kernel's own empty marker is quiet: ${JSON.stringify(empty.replies)}`);
+  assert.equal(empty.core.state.loops["loop-fake-1"].lastOutcome, "noop");
+
+  const marked = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    spawn: () => fakeChild({ stdout: "先查台账\n<<<relay>>>\nreview-fixer backend#1441 已请求 zce 复审" }),
+  });
+  await marked.core.startDueLoops();
+  await settle();
+  assert.equal(marked.replies.length, 1);
+  assert.match(marked.replies[0].text, /<<<relay>>>/, "the marker is plain text now, not a split point");
+  assert.match(marked.replies[0].text, /先查台账/);
 });
