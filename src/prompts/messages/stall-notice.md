@@ -1,9 +1,14 @@
 任务：{{task}}
 这一轮：{{round}}
-卡在：{{stuck}}
+loop：{{loop}}
+轮次：{{round_label}}
 job：{{job}}
-最后进展：{{last_progress}}
+key：{{key}}
+session：{{session}}
+开始：{{started}}（已运行 {{elapsed_minutes}} 分钟）
+卡在：{{stuck}}
+最后进展：{{last_progress}}（静默 {{silence_minutes}} 分钟）
 
 回复本消息会新开一个会话处理它：说「杀掉」只终止，卡住的那段按最后一次进展截止入账；说「继续 <补充要求>」则先终止入账，再用这条会话重启。
-不回也会被处理：这条通知发出 {{stall_action_minutes}} 分钟后，若仍没有任何工具在跑，这一轮会被自动终止，同样按最后一次进展入账。
+{{disposition}}
 重启默认提示词：「{{restart_prompt}}」

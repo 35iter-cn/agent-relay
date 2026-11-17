@@ -30,10 +30,24 @@ import { appendRound, findRound, listRounds, pruneHistory } from "../loops/histo
 
 const STALL_MS = relayEnv("STALL_MS", 10 * 60_000);
 const TOOL_STALL_MS = relayEnv("TOOL_STALL_MS", 10 * 60_000);
-const STALL_ACTION_MS = relayEnv("STALL_ACTION_MS", 3 * 60_000);
+const STALL_ACTION_MS = relayEnv("STALL_ACTION_MS", 0);
 const ROUND_MAX_MS = relayEnv("ROUND_MAX_MS", 90 * 60_000);
-const LOOP_ROUND_MAX_MS = relayEnv("LOOP_ROUND_MAX_MS", 30 * 60_000);
+const LOOP_NOTICE_MS = relayEnv("LOOP_NOTICE_MS", 45 * 60_000);
+const LOOP_RENOTICE_MS = relayEnv("LOOP_RENOTICE_MS", 2 * 3_600_000);
+const LOOP_NOTICE_MAX = relayEnv("LOOP_NOTICE_MAX", 3);
+const LOOP_PARK_MS = relayEnv("LOOP_PARK_MS", 6 * 3_600_000);
 const KEY_WINDOW_MS = relayEnv("KEY_WINDOW_MS", 6 * 3_600_000);
+
+export const DEFAULT_TIMINGS = {
+  stallMs: STALL_MS,
+  toolStallMs: TOOL_STALL_MS,
+  stallActionMs: STALL_ACTION_MS,
+  roundMaxMs: ROUND_MAX_MS,
+  loopNoticeMs: LOOP_NOTICE_MS,
+  loopRenoticeMs: LOOP_RENOTICE_MS,
+  loopNoticeMax: LOOP_NOTICE_MAX,
+  loopParkMs: LOOP_PARK_MS,
+};
 const KEY_WINDOW_MAX_MS = relayEnv("KEY_WINDOW_MAX_MS", 180 * 60_000);
 const BUDGET_GRACE_MS = relayEnv("BUDGET_GRACE_MS", 10 * 60_000);
 const BUDGET_OVERRIDE_CAP = 2;
@@ -89,6 +103,7 @@ export function createCore({ adapter, config, deps = {} }) {
   });
   const log = deps.log ?? createLog();
   const stallGraceMs = deps.stallGraceMs ?? 5_000;
+  const timings = { ...DEFAULT_TIMINGS, ...(deps.timings ?? {}) };
   const deliveryBackoff = Number.isFinite(deps.deliveryRetryMs)
     ? DELIVERY_BACKOFF_MS.map(() => deps.deliveryRetryMs)
     : Array.isArray(deps.deliveryBackoffMs)
@@ -165,7 +180,7 @@ export function createCore({ adapter, config, deps = {} }) {
     if (!Number.isFinite(silenceMs)) return null;
     const declared = declaredTimeoutMs(tool);
     if (declared !== null && silenceMs < declared + TOOL_GRACE_MS) return null;
-    if (silenceMs < (kind === "tool" ? TOOL_STALL_MS : STALL_MS)) return null;
+    if (silenceMs < (kind === "tool" ? timings.toolStallMs : timings.stallMs)) return null;
     job.stallNotifiedAt = isoNow();
     job.stallSilenceMs = silenceMs;
     job.stallReason = kind === "tool" ? "tool" : kind === "entry" ? "silent" : "fallback";
@@ -189,9 +204,14 @@ export function createCore({ adapter, config, deps = {} }) {
           task: oneLine(fields.task),
           round: fields.round && fields.round !== fields.task ? oneLine(fields.round) : "",
           stuck: stallStuckText(fields),
-          job: `${job.id}（name \`${job.inbound?.name ?? "-"}\`）`,
+          job: jobLabel(job),
+          identity: identityLines(job),
           lastProgress: fields.local,
-          actionMinutes: Math.round(STALL_ACTION_MS / 60_000),
+          silenceMinutes: Math.max(1, Math.round(silenceMs / 60_000)),
+          actionMinutes: Math.round(timings.stallActionMs / 60_000),
+          origin: job.origin ?? "user",
+          roundCapMinutes: Math.round(timings.roundMaxMs / 60_000),
+          parkMinutes: Math.round(timings.loopParkMs / 60_000),
         }),
       });
       save();
@@ -206,6 +226,25 @@ export function createCore({ adapter, config, deps = {} }) {
     return job.lease?.startedAt ?? job.startedAt ?? Date.parse(job.createdAt);
   }
 
+  function jobLabel(job) {
+    return `${job.id}（name \`${job.inbound?.name ?? "-"}\`）`;
+  }
+
+  function identityLines(job) {
+    const loopId = job.loop?.id ?? null;
+    const loop = loopId ? state.loops?.[loopId] ?? null : null;
+    const started = roundStartedAt(job);
+    const elapsedMinutes = Math.max(1, Math.round((now() - started) / 60_000));
+    return {
+      loop: loop ? `${loop.title || loopId}（${loopId}）` : "",
+      round: job.loop ? `第 ${job.loop.round} 轮` : "",
+      key: job.key ?? "",
+      session: job.session ?? "",
+      started: localStamp(started),
+      elapsedMinutes: String(elapsedMinutes),
+    };
+  }
+
   function repliedSince(job) {
     const active = state.convs?.[job.key]?.activeJob;
     return Boolean(active) && active !== job.id;
@@ -213,9 +252,9 @@ export function createCore({ adapter, config, deps = {} }) {
 
   async function checkStallAction(job) {
     if (job.status !== "running" || !job.stallNotifiedAt || job.stallActionAt) return null;
-    if (!(STALL_ACTION_MS > 0)) return null;
+    if (!(timings.stallActionMs > 0)) return null;
     const waited = now() - Date.parse(job.stallNotifiedAt);
-    if (!Number.isFinite(waited) || waited < STALL_ACTION_MS) return null;
+    if (!Number.isFinite(waited) || waited < timings.stallActionMs) return null;
     if (repliedSince(job)) {
       job.stallActionAt = isoNow();
       save();
@@ -241,11 +280,63 @@ export function createCore({ adapter, config, deps = {} }) {
     return "terminated";
   }
 
+  async function checkLoopHealth(job) {
+    if (job.origin !== "loop" || job.status !== "running") return null;
+    const elapsed = now() - roundStartedAt(job);
+    if (!Number.isFinite(elapsed)) return null;
+    if (timings.loopParkMs > 0 && elapsed >= timings.loopParkMs) return parkLoopRound(job, elapsed);
+    if (!(timings.loopNoticeMs > 0) || elapsed < timings.loopNoticeMs) return null;
+    const count = Number(job.loopNoticeCount ?? 0);
+    if (count > timings.loopNoticeMax) return null;
+    const lastAt = Date.parse(job.loopNoticeAt ?? "");
+    if (count > 0 && (!Number.isFinite(lastAt) || now() - lastAt < timings.loopRenoticeMs)) return null;
+    job.loopNoticeCount = count + 1;
+    job.loopNoticeAt = isoNow();
+    save();
+    appendLog({ event: "loop-running-notice", job: job.id, key: job.key, session: job.session, elapsedMs: elapsed, count: job.loopNoticeCount });
+    try {
+      await notices.emit({
+        title: NOTICE_TITLES.stall,
+        text: prompts.loopRunning({
+          job: jobLabel(job),
+          identity: identityLines(job),
+          elapsedMinutes: String(Math.round(elapsed / 60_000)),
+          parkMinutes: String(Math.round(timings.loopParkMs / 60_000)),
+          count: String(job.loopNoticeCount),
+        }),
+      });
+    } catch (error) {
+      log("error", "loop-running-notice", String(error?.message ?? error));
+      return null;
+    }
+    return "noticed";
+  }
+
+  async function parkLoopRound(job, elapsed) {
+    if (job.loopParkedAt) return null;
+    const { at: lastAt } = progress(job, job.session);
+    const billedMinutes = Math.max(0, Math.round((lastAt - roundStartedAt(job)) / 60_000));
+    job.loopParkedAt = isoNow();
+    job.parkedRoundMinutes = billedMinutes;
+    job.cutoffAt = isoAt(lastAt);
+    save();
+    appendLog({ event: "loop-parked", job: job.id, key: job.key, session: job.session, elapsedMs: elapsed, minutes: billedMinutes });
+    const parkedNotice = prompts.loopParked({
+      job: jobLabel(job),
+      identity: identityLines(job),
+      elapsedMinutes: String(Math.round(elapsed / 60_000)),
+      billedMinutes: String(billedMinutes),
+      lastProgress: localStamp(lastAt),
+    });
+    await terminate(job.key, parkedNotice);
+    return "parked";
+  }
+
   function budgetOf(job) {
-    const base = job.origin === "loop" ? Math.min(LOOP_ROUND_MAX_MS, ROUND_MAX_MS) : ROUND_MAX_MS;
+    if (job.origin === "loop") return 0;
     const asked = Number(job.budgetMs);
-    if (!Number.isFinite(asked) || asked <= 0) return base;
-    return Math.min(asked, base * BUDGET_OVERRIDE_CAP);
+    if (!Number.isFinite(asked) || asked <= 0) return timings.roundMaxMs;
+    return Math.min(asked, timings.roundMaxMs * BUDGET_OVERRIDE_CAP);
   }
 
   async function checkBudget(job) {
@@ -388,6 +479,11 @@ export function createCore({ adapter, config, deps = {} }) {
     }
     const base = latestJobFor(key) ?? job;
     if (!base) return false;
+    spawnSuccessor(base, key, text);
+    return true;
+  }
+
+  function spawnSuccessor(base, key, text) {
     const prompt = [prompts.restartPrompt(), String(text ?? "").trim()].filter(Boolean).join("\n\n");
     const inbound = {
       ...base.inbound,
@@ -404,9 +500,9 @@ export function createCore({ adapter, config, deps = {} }) {
     state.inbox.push(next.id);
     state.seen[inbound.dedupeId] = next.id;
     save();
-    appendLog({ event: "restart", job: next.id, from: job?.id ?? null, key });
+    appendLog({ event: "restart", job: next.id, from: base.id ?? null, key });
     drainInbox();
-    return true;
+    return next;
   }
 
   function migrateScheduledPrompts() {
@@ -468,7 +564,12 @@ export function createCore({ adapter, config, deps = {} }) {
   async function restartJob({ job: jobId, text = "" } = {}) {
     const job = jobById(jobId);
     if (!job) return { rejected: "unknown" };
-    if (job.status === "scheduled" || isFinished(job)) return { rejected: "not-running", job: job.id };
+    if (job.status === "scheduled") return { rejected: "not-running", job: job.id };
+    if (isFinished(job)) {
+      if (!job.loopParkedAt) return { rejected: "not-running", job: job.id };
+      const next = spawnSuccessor(job, job.key, text);
+      return { job: job.id, outcome: "restarted", next: next.id };
+    }
     const ok = await finishStalled({ key: job.key, action: "restart", text });
     return { job: job.id, outcome: ok ? "restarted" : "not-running" };
   }
@@ -655,6 +756,7 @@ export function createCore({ adapter, config, deps = {} }) {
       checkStall(job)
         .then(() => checkStallAction(job))
         .then(() => checkBudget(job))
+        .then(() => checkLoopHealth(job))
         .catch((error) => log("warn", "stall", String(error?.message ?? error)));
     }, STALL_CHECK_MS);
     timer.unref?.();
@@ -2028,6 +2130,7 @@ export function createCore({ adapter, config, deps = {} }) {
     drainCommands,
     checkStall,
     checkStallAction,
+    checkLoopHealth,
     checkBudget,
     budgetOf,
     scheduleJob,

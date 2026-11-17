@@ -154,11 +154,19 @@ Design rules:
   that is stuck, and the reply carries the notice id only when the notice itself
   is the thread root. Threaded, the reply would land on the busy conversation
   key and queue behind the very round it is meant to stop.
-- **Every round has a budget, and the stall notice has a deadline.** Silence
-  earns a notice in the conversation thread; three minutes later a round with no
-  tool open is terminated and billed to its last progress. A round is also capped
-  by wall time (90 minutes, 30 for a loop round) and a key by its six-hour
-  window; both are backstops for rounds that keep moving in the wrong direction.
+- **A stall notice is a question, not a fuse.** Silence earns a notice at the
+  channel top, and the relay does nothing else until a person answers it: the
+  round is never terminated because the notice went unanswered. Replying is the
+  only way to end it, and the reply reaches `restart`, which bills the stuck
+  round to its last progress and reopens the same session.
+- **A user round has a wall-clock budget; a loop round has a backstop instead.**
+  A conversation round is capped at 90 minutes and billed to its last progress.
+  A loop round is never cut for being slow: it earns a notice at 45 minutes, is
+  reminded every two hours up to three times, and at six hours is parked —
+  stopped with its session kept, so `job restart` resumes it rather than
+  restarting from nothing. Parking exists so that a stuck round cannot hold a
+  worker and starve the reply that would have freed it; a key still has its
+  six-hour window as the last backstop.
 - **A lease is identity, not a liveness pulse.** A worker's lease is `pid` plus
   the process start ticks read once at spawn; nothing refreshes it on a timer,
   and no elapsed time makes it expire. A job is alive only while that exact

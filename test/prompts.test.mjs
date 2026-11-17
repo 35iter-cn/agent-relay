@@ -44,6 +44,8 @@ test("TC-P1 the prompt tree is six numbered sections and the messages the relay 
     "empty-prompt.md",
     "interrupt.md",
     "key-window-rejected.md",
+    "loop-parked.md",
+    "loop-running.md",
     "restart.md",
     "stall-notice.md",
   ]);
