@@ -100,7 +100,7 @@ Every round is a **fresh session**: the round's conversation key is `<loopId>-r<
 
 A notice is never pruned on its own. A bound notice stores only its binding, not the body — the round's text already lives in the history file, and keeping a copy in the state file would mean rewriting it on every job change.
 
-An empty round is quiet: nothing is posted, the round is recorded as `noop`, and the loop stays healthy. The model is told in `src/prompts/sections/32-entry-loop.md` to write one `<<<relay>>>` line before its final message; only what follows that marker line is delivered, anything before it (working notes, verification recap) never reaches the IM. After the marker, `NOOP` — or nothing at all — is a quiet round, so "nothing to report" does not turn into one message per interval. If the marker has an empty body, the whole output is delivered loud instead of being silently swallowed.
+An empty round is quiet: nothing is posted, the round is recorded as `noop`, and the loop stays healthy. The rule is one line in `src/prompts/sections/10-common.md` — the reply body is the message, and a round with nothing to report answers the single word `NOOP` — so "nothing to report" does not turn into one message per interval. The kernel enforces exactly that and nothing else: a round whose body is the quiet word (decoration and case ignored) or the kernel's own `[无输出]` marker posts nothing, and a scheduled turn answering `NOOP` finishes without a message. A round with any other body is delivered as written, so working notes left in the body reach the channel; the prompt, not the kernel, keeps them out. A quiet round never counts as a failure: it is a healthy round whose outcome is `noop`.
 
 The old round history lives in `~/.config/agent-relay/loops/<loopId>.jsonl` (last 50 rounds, 90 days); a round never receives the previous output — it is told to read it with `loop log` / `loop show-run`.
 
@@ -167,6 +167,13 @@ Design rules:
   restarting from nothing. Parking exists so that a stuck round cannot hold a
   worker and starve the reply that would have freed it; a key still has its
   six-hour window as the last backstop.
+- **The relay delivers what the turn says; it does not edit the message.** A
+  body that is the single quiet word `NOOP` (decoration and case ignored) or the
+  kernel's own `[无输出]` marker means "nothing to report" and posts nothing;
+  every other body goes out exactly as the model wrote it, and no marker,
+  prefix or split point is stripped. Keeping working notes out of the message is
+  the prompt's job — a rule the kernel would have to guess at is a rule it gets
+  wrong.
 - **A lease is identity, not a liveness pulse.** A worker's lease is `pid` plus
   the process start ticks read once at spawn; nothing refreshes it on a timer,
   and no elapsed time makes it expire. A job is alive only while that exact
