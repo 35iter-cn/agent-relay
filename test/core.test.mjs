@@ -56,7 +56,7 @@ function harness({ spawn, replies = [], adapterOverrides = {}, state = emptyStat
   writeFileSync(join(sectionsDir, "32-entry-loop.md"), "LOOP {{loop_prompt}}");
   const messagesDir = join(promptsDir, "messages");
   mkdirSync(messagesDir, { recursive: true });
-  writeFileSync(join(messagesDir, "stall-notice.md"), "任务：{{task}}\n卡在：{{stuck}}\njob：{{job}}\n最后进展：{{last_progress}}\n重启默认提示词：「{{restart_prompt}}」");
+  writeFileSync(join(messagesDir, "stall-notice.md"), "任务：{{task}}\n卡在：{{stuck}}\njob：{{job}}\nloop：{{loop}}\n轮次：{{round_label}}\nkey：{{key}}\nsession：{{session}}\n开始：{{started}}\n已运行：{{elapsed_minutes}}\n最后进展：{{last_progress}}\n静默：{{silence_minutes}}\n{{disposition}}\n重启默认提示词：「{{restart_prompt}}」");
   writeFileSync(join(messagesDir, "restart.md"), "上一轮似乎卡住了，继续，不要犯相同错误");
   writeFileSync(join(messagesDir, "interrupt.md"), "INTERRUPTED 直接回复这条消息就会接着之前的会话继续。");
   writeFileSync(join(messagesDir, "empty-prompt.md"), "EMPTY {{prompts_dir}}");
@@ -64,6 +64,8 @@ function harness({ spawn, replies = [], adapterOverrides = {}, state = emptyStat
   writeFileSync(join(messagesDir, "budget-notice.md"), "本轮已用到上限 {{minutes}} 分钟的 75%，还剩约 {{left}} 分钟。");
   writeFileSync(join(messagesDir, "budget-terminated.md"), "已终止：本轮超过 {{minutes}} 分钟的单轮上限。");
   writeFileSync(join(messagesDir, "key-window-rejected.md"), "{{window}} 小时内这个会话已累计跑满 {{spent}} 分钟，超过 {{minutes}} 分钟上限。");
+  writeFileSync(join(messagesDir, "loop-running.md"), "还在跑：已 {{elapsed_minutes}} 分钟（第 {{notice_count}} 次提醒）\nloop：{{loop}}\n轮次：{{round_label}}\njob：{{job}}\nkey：{{key}}\nsession：{{session}}\n开始：{{started}}\n{{park_line}}");
+  writeFileSync(join(messagesDir, "loop-parked.md"), "已停下：跑了 {{elapsed_minutes}} 分钟\nloop：{{loop}}\n轮次：{{round_label}}\njob：{{job}}\nkey：{{key}}\nsession：{{session}}\n开始：{{started}}\n计入 {{billed_minutes}} 分钟（{{last_progress}}）\n回复本消息，说「继续 <补充要求>」就用这条会话接着跑。会话保留着。");
   const configDir = join(dir, ".config/agent-relay");
   const config = {
     home: dir,
@@ -2085,8 +2087,8 @@ test("TC-ST23 a notice stays at the channel top so its reply can reach the stuck
   assert.equal(Object.values(built.core.state.convs).some((entry) => entry.noticeId === stored.id), true);
 });
 
-test("TC-ST24 three minutes after the notice a round with no tool open is terminated by the relay itself", async () => {
-  const { core, replies, dir, sessionsDir, clock, job } = await runningJob({ spawn: closingSpawn(), adapterOverrides: { chunkLimit: 1000 } });
+test("TC-ST24 three minutes after the notice a round with no tool open is terminated when the deadline is armed", async () => {
+  const { core, replies, dir, sessionsDir, clock, job } = await runningJob({ spawn: closingSpawn(), adapterOverrides: { chunkLimit: 1000 }, deps: { timings: { stallActionMs: 3 * 60_000 } } });
   const leasedAt = Number(job.lease.startedAt);
   clock.now = leasedAt + 20 * 60_000;
   const silencedAt = clock.now - 12 * 60_000;
@@ -2111,7 +2113,7 @@ test("TC-ST24 three minutes after the notice a round with no tool open is termin
 });
 
 test("TC-ST25 a tool still open keeps the relay from terminating: the round waits for the budget instead", async () => {
-  const { core, replies, dir, sessionsDir, clock, job } = await runningJob({ spawn: closingSpawn(), adapterOverrides: { chunkLimit: 1000 } });
+  const { core, replies, dir, sessionsDir, clock, job } = await runningJob({ spawn: closingSpawn(), adapterOverrides: { chunkLimit: 1000 }, deps: { timings: { stallActionMs: 3 * 60_000 } } });
   const toolAt = clock.now - 12 * 60_000;
   writeSession(sessionsDir, "fs-th-abc", [sessionAssistant(toolAt, [{ id: "c1" }])]);
   await core.checkStall(job);
@@ -2127,7 +2129,7 @@ test("TC-ST25 a tool still open keeps the relay from terminating: the round wait
 });
 
 test("TC-ST26 a reply that already took the key over cancels the automatic termination", async () => {
-  const { core, sessionsDir, clock, job } = await runningJob({ spawn: closingSpawn() });
+  const { core, sessionsDir, clock, job } = await runningJob({ spawn: closingSpawn(), deps: { timings: { stallActionMs: 3 * 60_000 } } });
   writeSession(sessionsDir, "fs-th-abc", [sessionAssistant(clock.now - 12 * 60_000, [{ id: "c1" }])]);
   await core.checkStall(job);
   core.state.convs[job.key].activeJob = "job-someone-else";
@@ -2156,16 +2158,19 @@ test("TC-ST27 the round budget warns at three quarters and terminates at the cap
   assert.ok(job.budgetEndedAt);
 });
 
-test("TC-ST28 a loop round gets the shorter budget and cannot be asked for more", async () => {
+test("TC-ST28 a conversation round keeps the 90-minute budget; a loop round has none", async () => {
   const { core, job } = await runningJob();
-  job.origin = "loop";
-  assert.equal(core.budgetOf(job), 30 * 60_000);
+  assert.equal(core.budgetOf(job), 90 * 60_000);
   job.budgetMs = 45 * 60_000;
   assert.equal(core.budgetOf(job), 45 * 60_000);
   job.budgetMs = 600 * 60_000;
-  assert.equal(core.budgetOf(job), 60 * 60_000);
+  assert.equal(core.budgetOf(job), 180 * 60_000);
   job.budgetMs = -5;
-  assert.equal(core.budgetOf(job), 30 * 60_000);
+  assert.equal(core.budgetOf(job), 90 * 60_000);
+  job.origin = "loop";
+  assert.equal(core.budgetOf(job), 0);
+  job.budgetMs = 600 * 60_000;
+  assert.equal(core.budgetOf(job), 0);
 });
 
 test("TC-ST29 a key that already spent the six-hour window is refused before it starts", async () => {
@@ -2188,4 +2193,83 @@ test("TC-ST29 a key that already spent the six-hour window is refused before it 
   assert.equal(rejected.status, "failed");
   assert.equal(rejected.error, "key-budget");
   assert.match(built.replies.map((reply) => reply.text).join("\n"), /6 小时内这个会话已累计跑满 181 分钟/);
+});
+
+async function loopRoundJob() {
+  const built = await runningJob({ spawn: closingSpawn(), adapterOverrides: { chunkLimit: 4000 } });
+  const { core, job } = built;
+  job.origin = "loop";
+  job.loop = { id: "daily-briefing-slack", round: 8 };
+  core.state.loops = { "daily-briefing-slack": { id: "daily-briefing-slack", title: "每日简报" } };
+  job.startedAt = Number(job.startedAt ?? built.clock.now);
+  job.activity = { at: job.startedAt, open: null };
+  return built;
+}
+
+const noticesOf = (replies) => replies.filter((reply) => reply.key === "notice").map((reply) => reply.text);
+
+test("TC-ST30 an unanswered stall notice is no longer a fuse: the round keeps running", async () => {
+  const { core, sessionsDir, clock, job } = await runningJob({ spawn: closingSpawn() });
+  const silencedAt = clock.now - 12 * 60_000;
+  writeSession(sessionsDir, "fs-th-abc", [sessionAssistant(silencedAt - 60_000, [{ id: "c1" }]), sessionToolResult(silencedAt, "c1")]);
+  await core.checkStall(job);
+  assert.ok(job.stallNotifiedAt);
+  clock.now = Date.parse(job.stallNotifiedAt) + 3 * 3_600_000;
+  assert.equal(await core.checkStallAction(job), null);
+  assert.equal(job.autoTerminated, undefined);
+  assert.equal(job.status, "running");
+});
+
+test("TC-ST31 the stall notice names the loop, the round, the job, the key and how long the round has run", async () => {
+  const { core, replies, clock, job } = await loopRoundJob();
+  clock.now = job.startedAt + 12 * 60_000;
+  await core.checkStall(job);
+  const text = noticesOf(replies).at(-1);
+  assert.match(text, /loop：每日简报（daily-briefing-slack）/);
+  assert.match(text, /轮次：第 8 轮/);
+  assert.match(text, new RegExp(`job：${job.id}`));
+  assert.match(text, /key：th-abc/);
+  assert.match(text, /session：fs-th-abc/);
+  assert.match(text, /已运行：12/);
+  assert.match(text, /静默：12/);
+  assert.match(text, /到 360 分钟时自动停下并保留会话/);
+});
+
+test("TC-ST32 a loop round earns its first notice at 45 minutes, then one every two hours, three times at most", async () => {
+  const { core, replies, clock, job } = await loopRoundJob();
+  const startedAt = job.startedAt;
+  const at = async (minutes) => {
+    clock.now = startedAt + minutes * 60_000;
+    return core.checkLoopHealth(job);
+  };
+  assert.equal(await at(44), null);
+  assert.equal(await at(45), "noticed");
+  assert.equal(await at(164), null);
+  assert.equal(await at(165), "noticed");
+  assert.equal(await at(284), null);
+  assert.equal(await at(285), "noticed");
+  assert.equal(job.loopNoticeCount, 3);
+  assert.equal(noticesOf(replies).filter((text) => text.includes("还在跑")).length, 3);
+  assert.equal(job.status, "running");
+});
+
+test("TC-ST33 six hours in, a stuck loop round is parked with its session kept, and job restart resumes it", async () => {
+  const { core, replies, clock, job } = await loopRoundJob();
+  job.activity = { at: job.startedAt + 300 * 60_000, open: null };
+  clock.now = job.startedAt + 6 * 3_600_000;
+  assert.equal(await core.checkLoopHealth(job), "parked");
+  await tick();
+  assert.ok(job.loopParkedAt);
+  assert.notEqual(job.status, "running");
+  const parked = noticesOf(replies).at(-1);
+  assert.match(parked, /已停下：跑了 360 分钟/);
+  assert.match(parked, /计入 300 分钟/);
+  assert.match(parked, /回复本消息|继续/);
+  assert.match(replies.map((reply) => reply.text).join("\n"), /会话保留着/);
+  const resumed = await core.restartJob({ job: job.id, text: "先只看 Slack" });
+  assert.equal(resumed.outcome, "restarted");
+  const next = core.state.jobs[resumed.next];
+  assert.equal(next.session, job.session);
+  assert.equal(next.key, job.key);
+  assert.match(next.inbound.text, /先只看 Slack/);
 });
