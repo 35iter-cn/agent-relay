@@ -112,11 +112,20 @@ test("TC-P7 the notice entry never carries the notice body or its instruction", 
   assert.doesNotMatch(text, /不要出现/);
 });
 
-test("TC-P8 the loop entry keeps the prompt and the marker delivery contract only", () => {
-  const text = render("slack", "loop");
-  assert.match(text, /LOOP-BODY/);
-  assert.match(text, /`<<<relay>>>`/);
-  assert.doesNotMatch(text, /第 3 轮|signals-slack 第|只汇报做了的事/);
+test("TC-P8 the delivery rule lives in the common block and the loop entry carries only its prompt", () => {
+  const entry = readFileSync(join(PROMPTS, "sections", "32-entry-loop.md"), "utf8");
+  assert.doesNotMatch(entry, /relay>>>|marker|NOOP/, "the entry says what this turn is, not how it is delivered");
+  for (const platform of ["slack", "feishu"]) {
+    for (const kind of ["conversation", "notice", "loop"]) {
+      const text = render(platform, kind);
+      assert.match(text, /回复正文会被原样投递/, `${platform}/${kind} carries the rule`);
+      assert.match(text, /正文只写一行 `NOOP`/);
+      assert.match(text, /不要把 NOOP 当作答复/);
+    }
+    const loop = render(platform, "loop");
+    assert.match(loop, /LOOP-BODY/);
+    assert.doesNotMatch(loop, /第 3 轮|signals-slack 第|只汇报做了的事/);
+  }
 });
 
 test("TC-P9 a scheduled round sends only the origin line when the session exists", () => {

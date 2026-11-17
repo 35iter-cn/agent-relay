@@ -220,6 +220,18 @@ test("TC-SJ8 a scheduled turn with no output posts nothing and finishes", async 
   assert.equal(core.state.jobs[job.job].answer, null);
 });
 
+test("TC-SJ15 a scheduled turn that answers the quiet word posts nothing and finishes", async () => {
+  for (const raw of ["NOOP", "`NOOP`"]) {
+    const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
+    const { core, replies } = harness({ clock, spawn: () => fakeChild({ stdout: raw, code: 0 }) });
+    const job = core.scheduleJob({ ...brief({ name: "quiet-word" }), dueAt: null });
+    await tick();
+    assert.deepEqual(replies, [], `${JSON.stringify(raw)} is not a message: ${JSON.stringify(replies)}`);
+    assert.equal(core.state.jobs[job.job].status, "done");
+    assert.equal(core.state.jobs[job.job].answer, null);
+  }
+});
+
 test("TC-SJ9 a scheduled turn that exits non-zero posts one line", async () => {
   const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
   const { core, replies } = harness({ clock, spawn: () => fakeChild({ stdout: "", code: 1 }) });
