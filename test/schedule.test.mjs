@@ -263,7 +263,7 @@ test("TC-SJ11 a cold session gets the rules before the task", () => {
     brief: "外部推来的一轮",
     full: true,
   });
-  assert.match(text, /## 你是谁/);
+  assert.match(text, /你是我的个人助理/);
   assert.ok(text.indexOf("## 回复规则") < text.indexOf("外部推来的一轮"));
   assert.doesNotMatch(text, /\{\{/);
 });

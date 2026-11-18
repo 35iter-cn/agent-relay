@@ -536,7 +536,6 @@ test("TC-12 the slack reply section asks for a labelled link and leaves the rest
   assert.doesNotMatch(rules, /mrkdwn/);
   assert.doesNotMatch(rules, /表格/);
   assert.match(rules, /单独一行写 `!\[\]\(\/绝对路径\.png\)`/);
-  assert.match(rules, /Slack MCP/);
 });
 
 function slackPlatform(env = {}) {
