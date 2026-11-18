@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 export function emptyState() {
   return {
@@ -31,6 +31,10 @@ export function upgradeState(state) {
     }
     for (const entry of Object.values(next.convs)) {
       if (entry && entry.activeJob === undefined) entry.activeJob = null;
+      if (entry && entry.messageId === undefined) entry.messageId = null;
+    }
+    for (const loop of Object.values(next.loops)) {
+      if (loop) delete loop.thread;
     }
     next.meta.schemaVersion = SCHEMA_VERSION;
   }

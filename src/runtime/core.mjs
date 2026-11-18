@@ -1258,7 +1258,7 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   function startJob(job) {
-    const entry = state.convs[job.key] ?? { session: job.session, rootText: job.inbound.rootText, lastMsgTs: null, activeJob: null };
+    const entry = state.convs[job.key] ?? { session: job.session, rootText: job.inbound.rootText, lastMsgTs: null, messageId: null, activeJob: null };
     if (KEY_WINDOW_MAX_MS > 0) {
       const spent = keyWindowSpentMs(job.key);
       if (spent >= KEY_WINDOW_MAX_MS) {
@@ -1441,7 +1441,7 @@ export function createCore({ adapter, config, deps = {} }) {
     state.jobs[job.id] = job;
     state.inbox.push(job.id);
     state.seen[inbound.dedupeId] = job.id;
-    const entry = state.convs[job.key] ?? { session: job.session, rootText: job.inbound.rootText, lastMsgTs: null, activeJob: null };
+    const entry = state.convs[job.key] ?? { session: job.session, rootText: job.inbound.rootText, lastMsgTs: null, messageId: null, activeJob: null };
     if (!entry.activeJob) entry.activeJob = null;
     entry.lastMsgTs = job.createdAt;
     if (!entry.rootText) entry.rootText = job.inbound.rootText;
@@ -1540,7 +1540,7 @@ export function createCore({ adapter, config, deps = {} }) {
     job.status = "scheduled";
     state.jobs[job.id] = job;
     state.seen[inbound.name] = job.id;
-    const entry = state.convs[key] ?? { session: job.session, rootText: job.inbound.rootText, lastMsgTs: null, activeJob: null };
+    const entry = state.convs[key] ?? { session: job.session, rootText: job.inbound.rootText, lastMsgTs: null, messageId: null, activeJob: null };
     if (!entry.rootText) entry.rootText = job.inbound.rootText;
     state.convs[key] = entry;
     pruneSeen();
@@ -1661,6 +1661,8 @@ export function createCore({ adapter, config, deps = {} }) {
         });
         job.noticeId = notice.id;
         job.parts = [{ i: 0, messageId: notice.messageId ?? null, hash: hashOf(text), sentAt: isoNow() }];
+        const entry = state.convs[job.key];
+        if (entry && notice.messageId) entry.messageId = String(notice.messageId);
         job.status = "done";
         job.answer = undefined;
         job.updatedAt = isoNow();
