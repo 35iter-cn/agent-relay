@@ -14,6 +14,35 @@ export function emptyState() {
   };
 }
 
+function latestBoundNotices(notices) {
+  const latest = new Map();
+  for (const notice of Object.values(notices ?? {})) {
+    if (!notice || notice.reply?.mode !== "conversation") continue;
+    const key = notice.reply.key;
+    if (!key || !notice.messageId) continue;
+    const held = latest.get(key);
+    if (!held || String(notice.sentAt ?? "") >= String(held.sentAt ?? "")) latest.set(key, notice);
+  }
+  return latest;
+}
+
+function bindLegacyConversations(state) {
+  const latest = latestBoundNotices(state.notices);
+  for (const [key, entry] of Object.entries(state.convs ?? {})) {
+    if (!entry || entry.messageId) continue;
+    const notice = latest.get(key);
+    if (notice?.messageId) entry.messageId = String(notice.messageId);
+  }
+  for (const job of Object.values(state.jobs ?? {})) {
+    const inbound = job?.inbound;
+    if (!inbound || inbound.boundKey) continue;
+    const replyTo = inbound.replyTo;
+    if (!replyTo || !state.convs?.[replyTo]) continue;
+    inbound.boundKey = String(replyTo);
+    inbound.replyTo = null;
+  }
+}
+
 export function upgradeState(state) {
   const next = state ?? emptyState();
   next.seen = next.seen ?? {};
@@ -36,6 +65,7 @@ export function upgradeState(state) {
     for (const loop of Object.values(next.loops)) {
       if (loop) delete loop.thread;
     }
+    bindLegacyConversations(next);
     next.meta.schemaVersion = SCHEMA_VERSION;
   }
   return next;

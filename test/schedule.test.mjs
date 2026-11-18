@@ -336,3 +336,28 @@ test("TC-SJ17 a key that is already a message id needs no recorded message", asy
   await tick();
   assert.equal(replies[0].replyTo, "1794206521.110229", "a user thread's key is a message id, so it is used as-is");
 });
+
+test("TC-SJ18 a job scheduled before the fix still lands on the round's message after the upgrade", async () => {
+  const clock = { value: Date.parse("2026-11-16T21:56:00+08:00") };
+  const seed = emptyState();
+  seed.meta.schemaVersion = 3;
+  seed.convs["sentry-fixer-slack-r2"] = { session: "fs-r2", rootText: "第 2 轮", lastMsgTs: null, activeJob: null };
+  seed.notices["ntc-84"] = { id: "ntc-84", messageId: "1794812345.000100", sentAt: "2026-11-09T10:00:00.000Z", reply: { mode: "conversation", key: "sentry-fixer-slack-r2" } };
+  const legacy = createJob(seed, { key: "sentry-fixer-slack-r2", session: "fs-r2", dedupeId: "sentry-recheck-legacy", text: "复核", chatId: "c1", replyTo: "sentry-fixer-slack-r2" });
+  legacy.status = "scheduled";
+  legacy.dueAt = new Date(clock.value - 60_000).toISOString();
+  legacy.expiresAt = new Date(clock.value + 6 * 3_600_000).toISOString();
+  seed.jobs[legacy.id] = legacy;
+  seed.seen[legacy.inbound.dedupeId] = legacy.id;
+
+  const { core, replies } = harness({ clock, state: seed });
+  assert.equal(core.state.convs["sentry-fixer-slack-r2"].messageId, "1794812345.000100", "the bound notice backfills the conversation's message");
+  assert.equal(core.state.jobs[legacy.id].inbound.boundKey, "sentry-fixer-slack-r2", "the legacy reply target becomes the bound key");
+  assert.equal(core.state.jobs[legacy.id].inbound.replyTo, null);
+
+  core.startDueJobs();
+  await tick();
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].replyTo, "1794812345.000100", "the redelivery lands in the round's thread");
+  assert.equal(core.state.jobs[legacy.id].status, "done");
+});
