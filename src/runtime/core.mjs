@@ -791,7 +791,7 @@ export function createCore({ adapter, config, deps = {} }) {
     const started = now();
     const timeoutMs = optInTimeoutMs();
     const mode = workerMode();
-    const env = { ...process.env, AGENT_RELAY_SELF_CHAIN: String(job.chain ?? 0) };
+    const env = { ...process.env, AGENT_RELAY_KEY: inbound.key, AGENT_RELAY_SELF_CHAIN: String(job.chain ?? 0) };
     appendLog({ event: "dispatch", job: job.id, key: inbound.key, session: entry.session, full, mode });
     if (mode === "rpc" && adapter.worker !== "stub") return runRpcJob(job, entry, inbound, prompt, full);
 
@@ -943,7 +943,7 @@ export function createCore({ adapter, config, deps = {} }) {
       bin: adapter.worker === "stub" ? process.execPath : adapter.piBin,
       session,
       cwd: config.cwd,
-      env: { ...process.env, AGENT_RELAY_SELF_CHAIN: String(chain ?? 0) },
+      env: { ...process.env, AGENT_RELAY_KEY: key, AGENT_RELAY_SELF_CHAIN: String(chain ?? 0) },
       log,
       deps: { spawn },
     });
