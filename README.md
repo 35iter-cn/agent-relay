@@ -69,7 +69,9 @@ starting. `agent-relay job help` prints every subcommand, the timing flags and t
 limits; the model is pointed at it instead of carrying the flags in its prompt.
 
 Who is asking matters only for provenance, not for permission: `origin: "self"` means
-the call came from inside a relay turn (the child carries `AGENT_RELAY_SELF_CHAIN`),
+the call came from inside a relay turn (the child carries `AGENT_RELAY_SELF_CHAIN` and
+`AGENT_RELAY_KEY`, the conversation key its session belongs to, so a background job started
+in that turn can schedule a round back into the same conversation after the turn is gone),
 `origin: "external"` means it came from anywhere else. The wake prompt tells the model
 which one it is, and that a brief quoting third-party text is data. Scheduling is
 per-platform: each `serve <platform>` sweeps its own state file, so one stopped daemon

@@ -2273,3 +2273,42 @@ test("TC-ST33 six hours in, a stuck loop round is parked with its session kept, 
   assert.equal(next.key, job.key);
   assert.match(next.inbound.text, /先只看 Slack/);
 });
+
+test("TC-WK1 a print worker learns its conversation key from AGENT_RELAY_KEY", async () => {
+  const seen = [];
+  const previous = process.env.AGENT_RELAY_PLATFORM;
+  process.env.AGENT_RELAY_PLATFORM = "fake";
+  try {
+    const { core } = harness({
+      spawn: (bin, args, options) => (seen.push(options?.env ?? {}), fakeChild({ stdout: "ok" })),
+    });
+    await core.handle(inbound());
+    await tick();
+  } finally {
+    if (previous === undefined) delete process.env.AGENT_RELAY_PLATFORM;
+    else process.env.AGENT_RELAY_PLATFORM = previous;
+  }
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].AGENT_RELAY_KEY, "th-abc");
+  assert.equal(seen[0].AGENT_RELAY_PLATFORM, "fake");
+});
+
+test("TC-WK2 an rpc worker learns its conversation key from AGENT_RELAY_KEY", async () => {
+  const seen = [];
+  const previous = process.env.AGENT_RELAY_PLATFORM;
+  process.env.AGENT_RELAY_PLATFORM = "fake";
+  try {
+    const { core } = harness({
+      spawn: (bin, args, options) => (seen.push(options?.env ?? {}), fakeRpcChild({ answer: "好" })),
+      adapterOverrides: { worker: "pi", workerMode: "rpc" },
+    });
+    await core.handle(inbound());
+    await tick();
+  } finally {
+    if (previous === undefined) delete process.env.AGENT_RELAY_PLATFORM;
+    else process.env.AGENT_RELAY_PLATFORM = previous;
+  }
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].AGENT_RELAY_KEY, "th-abc");
+  assert.equal(seen[0].AGENT_RELAY_PLATFORM, "fake");
+});
