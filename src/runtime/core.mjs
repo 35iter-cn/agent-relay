@@ -11,7 +11,7 @@ import { pruneOldFiles } from "../shared/retention.mjs";
 import { ensurePrivateDir } from "../shared/fs.mjs";
 import { pruneState } from "../state/prune.mjs";
 import { bootNoticeText, readBootId, shouldAnnounceBoot } from "../shared/boot.mjs";
-import { createJob, ctxOf, isFinished } from "../jobs/model.mjs";
+import { createJob, ctxOf, isFinished, kindOf } from "../jobs/model.mjs";
 import { readProcStartTicks } from "../jobs/lease.mjs";
 import { DELIVERY_RETRY_INTERVAL_MS, DELIVERY_RETRY_WINDOW_MS, deliveryError, hashOf, isRetryable, planParts } from "../jobs/delivery.mjs";
 import { extractMedia } from "../jobs/media.mjs";
@@ -81,6 +81,9 @@ const DEFAULT_GRACE_MS = 6 * 3_600_000;
 const RUNAWAY_PER_HOUR = relayEnv("RUNAWAY_PER_HOUR", 12);
 const REAP_POLL_MS = 50;
 const RPC_IDLE_MS = relayEnv("RPC_IDLE_MS", 10 * 60_000);
+const PROBE_TIMEOUT_MS = relayEnv("PROBE_TIMEOUT_MS", 2_000);
+const DEFER_RETRY_MS = relayEnv("DEFER_RETRY_MS", 2_000);
+const DEFER_MAX_ATTEMPTS = relayEnv("DEFER_MAX_ATTEMPTS", 3);
 const MAX_DELIVERY_ATTEMPTS = 3;
 const QUIET_WORD = "NOOP";
 const QUIET_DECORATION = /[`*_~]/g;
@@ -211,7 +214,7 @@ export function createCore({ adapter, config, deps = {} }) {
           lastProgress: fields.local,
           silenceMinutes: Math.max(1, Math.round(silenceMs / 60_000)),
           actionMinutes: Math.round(timings.stallActionMs / 60_000),
-          origin: job.origin ?? "user",
+          kind: kindOf(job),
           roundCapMinutes: Math.round(timings.roundMaxMs / 60_000),
           parkMinutes: Math.round(timings.loopParkMs / 60_000),
         }),
@@ -283,7 +286,7 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   async function checkLoopHealth(job) {
-    if (job.origin !== "loop" || job.status !== "running") return null;
+    if (kindOf(job) !== "loop" || job.status !== "running") return null;
     const elapsed = now() - roundStartedAt(job);
     if (!Number.isFinite(elapsed)) return null;
     if (timings.loopParkMs > 0 && elapsed >= timings.loopParkMs) return parkLoopRound(job, elapsed);
@@ -335,7 +338,7 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   function budgetOf(job) {
-    if (job.origin === "loop") return 0;
+    if (kindOf(job) === "loop") return 0;
     const asked = Number(job.budgetMs);
     if (!Number.isFinite(asked) || asked <= 0) return timings.roundMaxMs;
     return Math.min(asked, timings.roundMaxMs * BUDGET_OVERRIDE_CAP);
@@ -684,7 +687,7 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   function isScheduled(job) {
-    return job.origin === "self" || job.origin === "external";
+    return kindOf(job) === "scheduled";
   }
 
   function optInTimeoutMs() {
@@ -703,11 +706,23 @@ export function createCore({ adapter, config, deps = {} }) {
     return String(job.inbound?.text ?? "").trim();
   }
 
+  function relayHead(job) {
+    const fields = [`kind=${kindOf(job)}`];
+    if (job.inbound?.name) fields.push(`name=${job.inbound.name}`);
+    if (job.dueAt) fields.push(`at=${job.dueAt}`);
+    if (Number(job.lateMs) > 0) fields.push(`late=${Math.round(Number(job.lateMs) / 1000)}s`);
+    return `[relay] ${fields.join(" ")}`;
+  }
+
+  function isScheduledLike(job) {
+    return isScheduled(job) || kindOf(job) === "wake";
+  }
+
   function buildPrompt(job, entry, full) {
     const inbound = runtimeInbound(job);
     const base = { platform: adapter.name, adapter, inbound };
-    if (job.origin === "loop" && job.loop) return prompts.loopRound({ ...base, loop: job.loop });
-    if (isScheduled(job)) return prompts.scheduled({ ...base, brief: scheduledBrief(job), full });
+    if (kindOf(job) === "loop" && job.loop) return prompts.loopRound({ ...base, loop: job.loop });
+    if (isScheduledLike(job)) return prompts.scheduled({ ...base, head: relayHead(job), brief: scheduledBrief(job), full });
     if (job.noticeId) {
       const notice = notices.get(job.noticeId);
       if (notice) return prompts.noticeReply({ ...base, notice });
@@ -718,10 +733,10 @@ export function createCore({ adapter, config, deps = {} }) {
   function execute(job, entry) {
     const inbound = runtimeInbound(job);
     const full = !hasSession(entry.session);
-    if (isScheduled(job) || job.origin === "loop") {
+    if (isScheduledLike(job) || kindOf(job) === "loop") {
       const built = buildPrompt(job, entry, full);
       const render = (prompt) => {
-        if (job.origin === "loop" && !String(prompt ?? "").trim()) {
+        if (kindOf(job) === "loop" && !String(prompt ?? "").trim()) {
           appendLog({ event: "empty-prompt", job: job.id, key: inbound.key });
           job.status = "failed";
           job.error = "empty-prompt";
@@ -884,7 +899,33 @@ export function createCore({ adapter, config, deps = {} }) {
     throw failure;
   }
 
-  async function applyWorkerResult(job, entry, inbound, { text, status, started, mode = "print", exit = 0, killed = false, empty = false }) {
+  function codeFor(text) {
+    const body = String(text ?? "");
+    if (!body) return null;
+    if (body.startsWith(`${EMPTY_RUN_PREFIX} stop=rpc-prompt`)) return "busy";
+    if (body.startsWith(`${EMPTY_RUN_PREFIX} stop=rpc-handshake`)) return "worker-down";
+    if (body.startsWith(`${EMPTY_RUN_PREFIX} exit=`)) return "worker-exit";
+    if (body.startsWith(EMPTY_RUN_PREFIX)) return "empty-run";
+    return null;
+  }
+
+  function outboundText(job, text, delivered = false) {
+    const body = String(text ?? "");
+    if (kindOf(job) === "loop") return body || null;
+    if (body && !body.startsWith(EMPTY_RUN_PREFIX)) return body;
+    if (delivered) return null;
+    const code = codeFor(text);
+    if (code === "worker-exit") {
+      const exit = /exit=([^\s]+)/.exec(body)?.[1] ?? "unknown";
+      return `这一轮中途退出了（退出码 ${exit}）。已完成的改动都在，回复「继续」接着做。`;
+    }
+    if (code === "worker-down") return "这一轮没能启动会话进程。已经记下，再发一次就会重试。";
+    if (code === "busy") return prompts.busyReply();
+    if (kindOf(job) === "conversation") return prompts.emptyRunReply();
+    return null;
+  }
+
+  async function applyWorkerResult(job, entry, inbound, { text, status, started, mode = "print", exit = 0, killed = false, empty = false, delivered = false }) {
     disarmStallTimer(inbound.key);
     children.delete(inbound.key);
     appendLog({ event: "done", job: job.id, key: inbound.key, session: entry.session, exit, killed, elapsedMs: now() - started, mode });
@@ -898,19 +939,22 @@ export function createCore({ adapter, config, deps = {} }) {
       runtimeInbounds.delete(job.id);
       return;
     }
-    job.answer = text;
+    const outbound = outboundText(job, text, delivered);
+    job.answer = outbound;
+    job.raw = String(text ?? "") || null;
+    job.code = job.code ?? codeFor(text);
     job.status = status;
     job.lease = null;
     job.updatedAt = isoNow();
-    if (job.origin === "loop") {
+    if (kindOf(job) === "loop") {
       job.loopOutput = text;
       job.loopRoundStatus = status;
     }
     save();
-    if (job.origin === "loop") await deliverRound(job);
+    if (kindOf(job) === "loop") await deliverRound(job);
     else await deliver(job);
     await dropReceipts(job);
-    if (job.origin === "loop") await finishRound(job);
+    if (kindOf(job) === "loop") await finishRound(job);
     runtimeInbounds.delete(job.id);
   }
 
@@ -922,8 +966,10 @@ export function createCore({ adapter, config, deps = {} }) {
 
   function scheduleIdleClose(key) {
     clearIdleTimer(key);
-    const timer = setTimeout(() => {
+    const timer = setTimeout(async () => {
       idleTimers.delete(key);
+      const probed = await probe(key).catch(() => ({ kind: "stale" }));
+      if (probed.kind === "busy") return scheduleIdleClose(key);
       if (keyIsBusy(key)) return;
       const worker = workers.get(key);
       if (!worker) return;
@@ -948,6 +994,11 @@ export function createCore({ adapter, config, deps = {} }) {
       deps: { spawn },
     });
     workers.set(key, worker);
+    worker.onEvent((record) => {
+      if (record?.type !== "agent_settled") return;
+      if (!releaseWaiter(key)) return;
+      setTimeout(drainInbox, 0);
+    });
     const snapshot = await worker.state();
     if (snapshot?.sessionId && snapshot.sessionId !== session) {
       const file = sessionFileFor(session);
@@ -967,6 +1018,7 @@ export function createCore({ adapter, config, deps = {} }) {
         worker = await acquireWorker(key, entry.session, job.chain);
       } catch (error) {
         log("error", "rpc-handshake", String(error?.message ?? error));
+        scheduleIdleClose(key);
         return applyWorkerResult(job, entry, inbound, {
           text: `[无输出] stop=rpc-handshake\n${String(error?.message ?? error)}`,
           status: "failed",
@@ -975,7 +1027,7 @@ export function createCore({ adapter, config, deps = {} }) {
         });
       }
       const run = { text: "", stopReason: null, segments: [], undelivered: [], sending: Promise.resolve(), index: 0 };
-      const deliverSegments = job.origin === "user";
+      const deliverSegments = kindOf(job) === "conversation";
       let settle;
       const settled = new Promise((resolve) => (settle = resolve));
       const offEvent = worker.onEvent((record) => {
@@ -1031,9 +1083,11 @@ export function createCore({ adapter, config, deps = {} }) {
       try {
         disposition = await worker.prompt(expandAttachments({ prompt, attachments: inbound.attachments }));
       } catch (error) {
+        if (isBusyError(error)) return deferJob(job, started);
         if (timer) clearTimeout(timer);
         offEvent();
         offExit();
+        scheduleIdleClose(key);
         return applyWorkerResult(job, entry, inbound, {
           text: `[无输出] stop=rpc-prompt\n${String(error?.message ?? error)}`,
           status: "failed",
@@ -1042,6 +1096,12 @@ export function createCore({ adapter, config, deps = {} }) {
         });
       }
 
+      if (disposition === "busy") {
+        offEvent();
+        offExit();
+        if (timer) clearTimeout(timer);
+        return deferJob(job, started);
+      }
       const outcome = disposition === "handled" ? { handled: true } : await settled;
       await run.sending;
       if (timer) clearTimeout(timer);
@@ -1066,13 +1126,41 @@ export function createCore({ adapter, config, deps = {} }) {
           status: "failed",
           started,
           mode: "rpc",
+          delivered: deliveredSegments,
         });
       }
       if (pendingAnswer) return applyWorkerResult(job, entry, inbound, { text: pendingAnswer, status: "answered", started, mode: "rpc" });
-      if (deliveredSegments) return applyWorkerResult(job, entry, inbound, { text: null, status: "answered", started, mode: "rpc" });
+      if (deliveredSegments) return applyWorkerResult(job, entry, inbound, { text: null, status: "answered", started, mode: "rpc", delivered: true });
       if (!run.text) return applyWorkerResult(job, entry, inbound, { text: `[无输出] stop=${run.stopReason ?? "stop"}`, status: "answered", started, mode: "rpc", empty: true });
       return applyWorkerResult(job, entry, inbound, { text: run.text, status: "answered", started, mode: "rpc" });
     })();
+  }
+
+  function isBusyError(error) {
+    return /already processing|rpc-timeout prompt/i.test(String(error?.message ?? error));
+  }
+
+  function deferJob(job, started) {
+    const attempts = Number(job.attempts ?? 1);
+    appendLog({ event: "deferred", job: job.id, key: job.key, attempts });
+    if (attempts >= DEFER_MAX_ATTEMPTS) {
+      job.code = "busy";
+      return applyWorkerResult(job, state.convs[job.key], runtimeInbound(job), {
+        text: null,
+        status: "failed",
+        started,
+        mode: "rpc",
+      });
+    }
+    job.status = "queued";
+    job.waitFor = "settled";
+    job.attempts = attempts + 1;
+    job.retryAt = now() + DEFER_RETRY_MS;
+    job.lease = null;
+    job.updatedAt = isoNow();
+    if (state.convs[job.key]?.activeJob === job.id) state.convs[job.key].activeJob = null;
+    save();
+    return job;
   }
 
   async function drainUnconsumedSteers(job, worker) {
@@ -1326,6 +1414,38 @@ export function createCore({ adapter, config, deps = {} }) {
       });
   }
 
+  async function probe(key) {
+    const worker = workers.get(key);
+    if (!worker || worker.exited()) return { kind: "absent" };
+    let snapshot = null;
+    try {
+      snapshot = await worker.state({ timeoutMs: PROBE_TIMEOUT_MS });
+    } catch {
+      snapshot = null;
+    }
+    if (!snapshot) return { kind: "stale" };
+    if (snapshot.isStreaming) return { kind: "busy" };
+    return { kind: "idle", pending: Number(snapshot.pendingMessageCount ?? 0) };
+  }
+
+  function releaseWaiter(key) {
+    let touched = false;
+    for (const job of Object.values(state.jobs ?? {})) {
+      if (!job || job.waitFor !== "settled" || job.key !== key) continue;
+      delete job.waitFor;
+      job.updatedAt = isoNow();
+      touched = true;
+    }
+    if (!touched) return false;
+    save();
+    return true;
+  }
+
+  function allowsJoin(inbound) {
+    const kind = kindOf({ kind: inbound.kind });
+    return kind === "conversation" || kind === "wake";
+  }
+
   function keyIsBusy(key) {
     const activeId = state.convs[key]?.activeJob;
     if (!activeId) return false;
@@ -1338,6 +1458,7 @@ export function createCore({ adapter, config, deps = {} }) {
       const index = state.inbox.findIndex((id) => {
         const job = state.jobs[id];
         if (!job || job.status !== "queued") return false;
+        if (job.waitFor === "settled") return false;
         return !keyIsBusy(job.key);
       });
       if (index < 0) return;
@@ -1485,7 +1606,7 @@ export function createCore({ adapter, config, deps = {} }) {
 
   function recentlyScheduled(key) {
     const since = now() - 3_600_000;
-    return Object.values(state.jobs ?? {}).filter((job) => job.key === key && job.origin !== "user" && Date.parse(job.createdAt ?? "") > since).length;
+    return Object.values(state.jobs ?? {}).filter((job) => job.key === key && kindOf(job) !== "conversation" && Date.parse(job.createdAt ?? "") > since).length;
   }
 
   function findJobByDedupe(dedupe) {
@@ -1510,7 +1631,7 @@ export function createCore({ adapter, config, deps = {} }) {
     return file;
   }
 
-  function scheduleJob({ key, name, prompt, dueAt, graceMs = DEFAULT_GRACE_MS } = {}) {
+  function scheduleJob({ key, name, prompt, dueAt, join = false, graceMs = DEFAULT_GRACE_MS } = {}) {
     if (typeof adapter.selfContext !== "function") return { rejected: "platform" };
     if (!NAME_PATTERN.test(String(name ?? ""))) return { rejected: "name-invalid" };
     if (!state.convs[key]) return { rejected: "unknown-key" };
@@ -1547,7 +1668,7 @@ export function createCore({ adapter, config, deps = {} }) {
     if (at <= now()) {
       if (running.size >= adapter.maxWorkers && state.inbox.length >= adapter.queueDepth) return { rejected: "queue-full" };
       const started = acceptJob(inbound);
-      started.origin = caller.inside ? "self" : "external";
+      started.kind = join ? "wake" : "scheduled";
       started.chain = caller.depth;
       started.dueAt = isoAt(at);
       started.expiresAt = isoAt(at + graceMs);
@@ -1558,7 +1679,7 @@ export function createCore({ adapter, config, deps = {} }) {
     }
 
     const job = createJob(state, inbound, isoNow);
-    job.origin = caller.inside ? "self" : "external";
+    job.kind = join ? "wake" : "scheduled";
     job.chain = caller.depth;
     job.dueAt = isoAt(at);
     job.expiresAt = isoAt(at + graceMs);
@@ -1624,7 +1745,7 @@ export function createCore({ adapter, config, deps = {} }) {
       replyTo: null,
       attachments: [],
     });
-    job.origin = "loop";
+    job.kind = "loop";
     job.chain = 0;
     job.dueAt = isoAt(at - lateMs);
     job.lateMs = lateMs;
@@ -1969,18 +2090,14 @@ export function createCore({ adapter, config, deps = {} }) {
   async function steerTarget(inbound) {
     if (workerMode() !== "rpc" || adapter.worker === "stub") return null;
     if (!adapterSteerEnabled()) return null;
+    if (!allowsJoin(inbound)) return null;
     const worker = workers.get(inbound.key);
     if (!worker || worker.exited()) return null;
     const activeId = state.convs[inbound.key]?.activeJob;
     const active = activeId ? state.jobs[activeId] : null;
-    if (!active || isFinished(active) || active.origin !== "user") return null;
-    try {
-      const snapshot = await worker.state();
-      return snapshot?.isStreaming ? { worker, job: active } : null;
-    } catch (error) {
-      log("warn", "steer-state", String(error?.message ?? error));
-      return null;
-    }
+    if (!active || isFinished(active)) return null;
+    const snapshot = await probe(inbound.key);
+    return snapshot.kind === "busy" ? { worker, job: active } : null;
   }
 
   async function addReceipt(inbound) {
@@ -2054,6 +2171,9 @@ export function createCore({ adapter, config, deps = {} }) {
     if (await deliveredAsSteer(inbound)) return "steered";
 
     const job = acceptJob(inbound);
+    const live = workers.get(inbound.key);
+    const probed = live && !live.exited() ? await probe(inbound.key) : { kind: "absent" };
+    if (probed.kind === "busy") job.waitFor = "settled";
     if (running.size >= adapter.maxWorkers && state.inbox.length > adapter.queueDepth) {
       state.inbox = state.inbox.filter((id) => id !== job.id);
       job.status = "failed";

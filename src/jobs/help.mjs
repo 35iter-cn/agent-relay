@@ -59,12 +59,13 @@ const SUMMARY = [
 const SCHEDULE_VERBS = [
   {
     verb: "create",
-    usage: "schedule --platform <p> --key <k> --name <n> [--in <dur> | --at <iso>] [--grace <dur>]",
+    usage: "schedule --platform <p> --key <k> --name <n> [--in <dur> | --at <iso>] [--grace <dur>] [--join]",
     detail: [
       "prompt 从 stdin 读到 EOF（`<<'EOF'` 或管道都行），落成 ~/.config/agent-relay/prompts/jobs/<name>/prompt.md。",
       "name 唯一且不复用：`[a-z0-9][a-z0-9._-]{0,63}`；同名或文件已存在会被拒（name-taken）。",
       "prompt 写给下一次的自己：为什么、查什么、怎么算做完、证据在哪。上限 8 KiB。",
       "到点用原会话续跑；跑完文件保留，作为这次任务的留档。",
+      "--join：到点若这条会话正在跑，就把这段正文并进当前轮，而不是等它结束；产出按整轮投递。",
     ],
     example: "agent-relay schedule --platform slack --key 1794634082.877169 --name vps-renew-20261201 --at 2026-11-29T10:00:00+08:00 <<'EOF'\n…任务书…\nEOF",
   },

@@ -127,7 +127,7 @@ export function createRpcWorker({ bin, session, cwd, env = {}, log = () => {}, d
       exitListeners.add(listener);
       return () => exitListeners.delete(listener);
     },
-    state: () => command("get_state"),
+    state: (options) => command("get_state", {}, options),
     prompt: async ({ text, images }) => {
       const data = await command("prompt", { message: text, ...(images?.length ? { images } : {}) });
       return data?.disposition ?? "started";

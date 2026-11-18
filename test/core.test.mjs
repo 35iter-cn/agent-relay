@@ -405,7 +405,7 @@ test("TC-27 a failed job keeps its answer for diagnosis", async () => {
   await tick();
   const job = core.state.jobs[core.state.seen.m1];
   assert.equal(job.status, "failed");
-  assert.match(job.answer, /无输出/);
+  assert.match(job.raw, /无输出/);
 });
 
 test("TC-23 every delivered chunk is committed to parts with its hash", async () => {
@@ -751,7 +751,6 @@ test("TC-RT4 a retrying job survives a restart and its due delivery lands", asyn
     session: "fs-th-abc",
     status: "retrying",
     inbound: { text: "hello", rootText: "hello", dedupeId: "m1", messageId: "m1", chatId: "c1" },
-    origin: "user",
     answer: "答案",
     parts: [],
     deliveryRetryAt: new Date(clock.now).toISOString(),
@@ -778,7 +777,6 @@ test("TC-RT5 a chunk that failed last time is looked up before it is sent again"
     session: "fs-th-abc",
     status: "retrying",
     inbound: { text: "hello", rootText: "hello", dedupeId: "m1", messageId: "m1", chatId: "c1" },
-    origin: "user",
     answer: "答案",
     parts: [{ i: 0, messageId: null, hash: hashOf("答案"), sentAt: new Date(clock.now).toISOString(), uncertainSince: clock.now - 20_000 }],
     deliveryRetryAt: new Date(clock.now).toISOString(),
@@ -1900,10 +1898,10 @@ test("TC-RPC23 an error frame is never delivered as an answer segment", async ()
   assert.equal(replies[0].text, "供应商拒答");
 });
 
-test("TC-RPC24 a non-user origin job keeps one message per run", async () => {
+test("TC-RPC24 a scheduled job keeps one message per run", async () => {
   const child = fakeRpcChild({ frames: [{ text: "第一段", stopReason: "stop" }, { text: "第二段", stopReason: "stop" }] });
   const { core, replies } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
-  await core.handle(inbound({ text: "两个问题", origin: "self" }));
+  await core.handle(inbound({ text: "两个问题", kind: "scheduled" }));
   await tick();
   assert.equal(replies.length, 1);
   assert.equal(replies[0].text, "第二段");
@@ -1978,7 +1976,7 @@ test("TC-RPC8 an empty run reports the stop reason and an aborted run fails", as
   const first = harness({ spawn: () => empty, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
   await first.core.handle(inbound({ text: "做点事" }));
   await tick();
-  assert.equal(first.replies.at(-1).text, "[无输出] stop=stop");
+  assert.equal(first.replies.at(-1).text, "这条没处理完，回复「继续」，我接着做。");
 
   const aborted = fakeRpcChild({ answer: "一半", aborted: true });
   const second = harness({ spawn: () => aborted, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
@@ -2167,7 +2165,7 @@ test("TC-ST28 a conversation round keeps the 90-minute budget; a loop round has 
   assert.equal(core.budgetOf(job), 180 * 60_000);
   job.budgetMs = -5;
   assert.equal(core.budgetOf(job), 90 * 60_000);
-  job.origin = "loop";
+  job.kind = "loop";
   assert.equal(core.budgetOf(job), 0);
   job.budgetMs = 600 * 60_000;
   assert.equal(core.budgetOf(job), 0);
@@ -2198,7 +2196,7 @@ test("TC-ST29 a key that already spent the six-hour window is refused before it 
 async function loopRoundJob() {
   const built = await runningJob({ spawn: closingSpawn(), adapterOverrides: { chunkLimit: 4000 } });
   const { core, job } = built;
-  job.origin = "loop";
+  job.kind = "loop";
   job.loop = { id: "daily-briefing-slack", round: 8 };
   core.state.loops = { "daily-briefing-slack": { id: "daily-briefing-slack", title: "每日简报" } };
   job.startedAt = Number(job.startedAt ?? built.clock.now);
@@ -2311,4 +2309,70 @@ test("TC-WK2 an rpc worker learns its conversation key from AGENT_RELAY_KEY", as
   assert.equal(seen.length, 1);
   assert.equal(seen[0].AGENT_RELAY_KEY, "th-abc");
   assert.equal(seen[0].AGENT_RELAY_PLATFORM, "fake");
+});
+
+test("TC-AD1 a message that arrives while pi is streaming with no job behind it is parked, not prompted", async () => {
+  const child = fakeRpcChild({ answer: "第一轮" });
+  const { core, replies } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await core.handle(inbound({ dedupeId: "m1", text: "第一问" }));
+  await tick();
+  const prompted = child.prompted;
+  await core.handle(inbound({ dedupeId: "m2", text: "第二问" }));
+  await tick();
+  assert.equal(child.prompted, prompted, "no second prompt goes into a streaming agent");
+  assert.equal(Object.values(core.state.jobs).at(-1).waitFor, "settled");
+  assert.deepEqual(replies.map((item) => item.text), ["第一轮"]);
+});
+
+test("TC-AD2 the parked message runs once pi settles", async () => {
+  const child = fakeRpcChild({ answer: "答" });
+  const { core } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await core.handle(inbound({ dedupeId: "m1", text: "第一问" }));
+  await tick();
+  const before = child.prompted;
+  await core.handle(inbound({ dedupeId: "m2", text: "第二问" }));
+  await tick();
+  child.stdout.emit("data", `${JSON.stringify({ type: "agent_settled", aborted: false })}\n`);
+  await tick();
+  await tick();
+  assert.equal(child.prompted, before + 1, "the parked job is prompted after the settle");
+});
+
+test("TC-AD3 a prompt rejected with already processing parks the job instead of failing it", async () => {
+  const child = new EventEmitter();
+  child.pid = 888777;
+  child.written = [];
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.prompted = 0;
+  let stateCalls = 0;
+  child.stdin = {
+    writable: true,
+    write: (chunk) => {
+      const record = JSON.parse(String(chunk).trim());
+      child.written.push(record);
+      const respond = (data, success = true) => setImmediate(() => child.stdout.emit("data", `${JSON.stringify({ id: record.id, type: "response", command: record.type, success, data })}\n`));
+      if (record.type === "get_state") {
+        stateCalls += 1;
+        return respond({ sessionId: "fs-th-abc", isStreaming: stateCalls > 1, pendingMessageCount: 0 });
+      }
+      if (record.type === "prompt") {
+        child.prompted += 1;
+        return setImmediate(() => child.stdout.emit("data", `${JSON.stringify({ id: record.id, type: "response", command: record.type, success: false, error: "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message." })}\n`));
+      }
+      return respond({});
+    },
+    end: () => {},
+    on: () => {},
+  };
+  child.kill = () => {};
+  const { core, replies } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await core.handle(inbound({ dedupeId: "m1", text: "问一句" }));
+  await tick();
+  await tick();
+  const job = Object.values(core.state.jobs).at(-1);
+  assert.equal(job.waitFor, "settled", "the job waits for the running turn");
+  assert.notEqual(job.status, "failed");
+  assert.deepEqual(replies, [], "nothing is posted for a deferred prompt");
+  assert.equal(core.state.seen.m1, job.id);
 });

@@ -238,7 +238,7 @@ test("TC-SJ9 a scheduled turn that exits non-zero posts one line", async () => {
   const job = core.scheduleJob({ ...brief({ name: "boom" }), dueAt: null });
   await tick();
   assert.equal(replies.length, 1);
-  assert.match(replies[0].text, /无输出/);
+  assert.match(replies[0].text, /中途退出/);
   assert.equal(core.state.jobs[job.job].status, "failed");
 });
 
@@ -248,7 +248,7 @@ test("TC-SJ10 a scheduled turn sends the origin line and the brief, no template"
   core.scheduleJob({ ...brief({ name: "render", prompt: "读 /tmp/x 的行数" }), dueAt: null });
   await tick();
   assert.equal(prompts.length, 1);
-  assert.match(prompts[0], /^这不是用户刚说的话/);
+  assert.match(prompts[0], /^\[relay\] kind=scheduled name=render at=/);
   assert.match(prompts[0], /读 \/tmp\/x 的行数/);
   assert.doesNotMatch(prompts[0], /\{\{/);
   assert.doesNotMatch(prompts[0], /COMMON|CONV/);
@@ -360,4 +360,20 @@ test("TC-SJ18 a job scheduled before the fix still lands on the round's message 
   assert.equal(replies.length, 1);
   assert.equal(replies[0].replyTo, "1794812345.000100", "the redelivery lands in the round's thread");
   assert.equal(core.state.jobs[legacy.id].status, "done");
+});
+
+test("TC-SC1 --join turns a scheduled turn into a wake turn", async () => {
+  const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
+  const { core } = harness({ clock, spawn: () => fakeChild({ stdout: "" }) });
+  const job = core.scheduleJob({ ...brief({ name: "late" }), dueAt: null, join: true });
+  await tick();
+  assert.equal(core.state.jobs[job.job].kind, "wake");
+});
+
+test("TC-SC2 without --join the turn stays scheduled and waits its turn", async () => {
+  const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
+  const { core } = harness({ clock, spawn: () => fakeChild({ stdout: "" }) });
+  const job = core.scheduleJob({ ...brief({ name: "plain" }), dueAt: null });
+  await tick();
+  assert.equal(core.state.jobs[job.job].kind, "scheduled");
 });

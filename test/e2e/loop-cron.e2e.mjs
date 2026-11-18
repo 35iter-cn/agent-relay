@@ -108,7 +108,7 @@ core.save();
 const firstTick = await core.startDueLoops();
 await wait(1500);
 check("a due cron loop starts exactly one round", firstTick === 1, `started=${firstTick}`);
-check("the round runs in a fresh session", Object.values(core.state.jobs).some((job) => job.origin === "loop" && job.key === "probe-slack-r1"));
+check("the round runs in a fresh session", Object.values(core.state.jobs).some((job) => job.kind === "loop" && job.key === "probe-slack-r1"));
 check("the round output is posted once", readReplies().length === 1, JSON.stringify(readReplies().map((item) => item.key)));
 const afterRound = core.state.loops["probe-slack"];
 check("the cron loop stays armed after its round", afterRound.state === "armed", afterRound.state);

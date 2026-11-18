@@ -1,4 +1,20 @@
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
+
+const KIND_BY_ORIGIN = {
+  user: "conversation",
+  self: "scheduled",
+  external: "scheduled",
+  system: "loop",
+  loop: "loop",
+};
+
+function migrateJobs(jobs) {
+  for (const job of Object.values(jobs ?? {})) {
+    if (!job) continue;
+    if (!job.kind) job.kind = KIND_BY_ORIGIN[job.origin ?? "user"] ?? "conversation";
+    delete job.origin;
+  }
+}
 
 export function emptyState() {
   return {
@@ -66,6 +82,7 @@ export function upgradeState(state) {
       if (loop) delete loop.thread;
     }
     bindLegacyConversations(next);
+    migrateJobs(next.jobs);
     next.meta.schemaVersion = SCHEMA_VERSION;
   }
   return next;

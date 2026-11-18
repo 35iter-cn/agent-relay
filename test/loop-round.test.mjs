@@ -118,7 +118,7 @@ test("TC-LR1 a due loop starts a round in a fresh session and posts it to the ch
   const { core, replies } = harness({ state: { loops: { "loop-fake-1": seededLoop() } } });
   assert.equal(await core.startDueLoops(), 1);
   await settle();
-  const job = Object.values(core.state.jobs).find((item) => item.origin === "loop");
+  const job = Object.values(core.state.jobs).find((item) => item.kind === "loop");
   assert.ok(job);
   assert.equal(job.key, "loop-fake-1-r1");
   assert.equal(job.session, "fs-loop-fake-1-r1");
@@ -161,7 +161,7 @@ test("TC-LR3 replying to a round message continues that round's session", async 
   await settle();
   const roundKey = "loop-fake-1-r1";
   assert.equal(replies.length, 1);
-  const roundJob = Object.values(core.state.jobs).find((item) => item.origin === "loop");
+  const roundJob = Object.values(core.state.jobs).find((item) => item.kind === "loop");
   await core.handle({
     key: "t-other-thread",
     session: "fs-t-other-thread",
@@ -177,7 +177,7 @@ test("TC-LR3 replying to a round message continues that round's session", async 
   assert.equal(replyJob.key, roundKey);
   assert.equal(replyJob.session, roundJob.session);
   assert.equal(core.state.convs[roundKey].session, roundJob.session);
-  assert.equal(replyJob.origin, "user");
+  assert.equal(replyJob.kind, "conversation");
 });
 
 test("TC-LR4 a round still running keeps the next tick from starting another one", async () => {
@@ -197,7 +197,7 @@ test("TC-LR4 a round still running keeps the next tick from starting another one
   const second = await core.startDueLoops();
   assert.equal(second, 0);
   assert.ok(core.state.loops["loop-fake-1"].lastSkipAt, "the dropped trigger is recorded");
-  assert.equal(Object.values(core.state.jobs).filter((job) => job.origin === "loop").length, 1);
+  assert.equal(Object.values(core.state.jobs).filter((job) => job.kind === "loop").length, 1);
 });
 
 test("TC-LR5 three failed rounds pause the loop and raise one notice", async () => {
@@ -257,7 +257,7 @@ test("TC-LR9 loop commands start a manual round and push the anchor", async () =
   writeJsonAtomic(join(config.commandDir("fake"), "1.json"), { op: "loop-run", id: "loop-fake-1", at: new Date().toISOString() });
   await core.drainCommands();
   await settle();
-  const job = Object.values(core.state.jobs).find((item) => item.origin === "loop");
+  const job = Object.values(core.state.jobs).find((item) => item.kind === "loop");
   assert.ok(job);
   assert.equal(job.loop.trigger, "manual");
 
@@ -274,7 +274,7 @@ test("TC-LR10 an empty loop prompt template fails the round instead of spawning 
   });
   await core.startDueLoops();
   await settle();
-  const job = Object.values(core.state.jobs).find((item) => item.origin === "loop");
+  const job = Object.values(core.state.jobs).find((item) => item.kind === "loop");
   assert.equal(spawned, 0);
   assert.equal(job.status, "failed");
   assert.equal(job.error, "empty-prompt");
@@ -474,7 +474,7 @@ test("TC-LR19 an unreadable prompt file fails the round, posts nothing and count
   const { core, replies, config } = harness({ state: { loops: { "loop-fake-1": seededLoop({ prompt: "", promptFile: file }) } } });
   await core.startDueLoops();
   await settle();
-  const round = Object.values(core.state.jobs).find((item) => item.origin === "loop");
+  const round = Object.values(core.state.jobs).find((item) => item.kind === "loop");
   assert.ok(round);
   assert.equal(round.status, "failed");
   assert.equal(round.error, "prompt-unreadable");
