@@ -55,10 +55,11 @@ test("TC-P2 every entry renders common, then the platform block, then its own ta
   for (const platform of ["slack", "feishu"]) {
     for (const entry of ["conversation", "notice", "loop"]) {
       const text = render(platform, entry);
-      const common = text.indexOf("## 你是谁");
+      const self = text.indexOf("你是我的个人助理");
+      const common = text.indexOf("## 你的能力");
       const rules = text.indexOf("## 回复规则");
       const task = text.indexOf("## 本次任务");
-      assert.ok(common >= 0 && rules > common && task > rules, `${platform}/${entry} ordering`);
+      assert.ok(self >= 0 && common > self && rules > common && task > rules, `${platform}/${entry} ordering`);
       assert.doesNotMatch(text, /\{\{/);
     }
   }
@@ -79,7 +80,7 @@ test("TC-P4 platform blocks only appear on their own platform", () => {
   const feishu = render("feishu", "conversation");
   assert.match(slack, /!\[\]\(\/绝对路径\.png\)/);
   assert.doesNotMatch(feishu, /!\[\]\(\/绝对路径\.png\)/);
-  assert.match(slack, /Slack MCP/);
+  assert.doesNotMatch(slack, /飞书/);
   assert.match(feishu, /飞书 MCP/);
   assert.equal(slack.split("## 回复规则").length - 1, 1);
 });
@@ -112,15 +113,15 @@ test("TC-P7 the notice entry never carries the notice body or its instruction", 
   assert.doesNotMatch(text, /不要出现/);
 });
 
-test("TC-P8 the delivery rule lives in the common block and the loop entry carries only its prompt", () => {
+test("TC-P8 the quiet-word rule lives in the common block and the loop entry carries only its prompt", () => {
   const entry = readFileSync(join(PROMPTS, "sections", "32-entry-loop.md"), "utf8");
   assert.doesNotMatch(entry, /relay>>>|marker|NOOP/, "the entry says what this turn is, not how it is delivered");
+  const common = readFileSync(join(PROMPTS, "sections", "10-common.md"), "utf8");
+  assert.match(common, /只允许出现 NOOP 四个字符/);
   for (const platform of ["slack", "feishu"]) {
     for (const kind of ["conversation", "notice", "loop"]) {
       const text = render(platform, kind);
-      assert.match(text, /回复正文会被原样投递/, `${platform}/${kind} carries the rule`);
-      assert.match(text, /正文只写一行 `NOOP`/);
-      assert.match(text, /不要把 NOOP 当作答复/);
+      assert.match(text, /只允许出现 NOOP 四个字符/, `${platform}/${kind} carries the quiet-word rule`);
     }
     const loop = render(platform, "loop");
     assert.match(loop, /LOOP-BODY/);
@@ -134,9 +135,9 @@ test("TC-P9 a scheduled round sends only the origin line when the session exists
   const warm = prompts.scheduled({ ...base, head: "[relay] kind=scheduled name=vps", brief: "VPS 报告", full: false });
   assert.equal(warm.split("\n")[0], "[relay] kind=scheduled name=vps");
   assert.match(warm, /VPS 报告/);
-  assert.doesNotMatch(warm, /## 你是谁|## 回复规则|## 本次任务/);
+  assert.doesNotMatch(warm, /你是我的个人助理|## 回复规则|## 本次任务/);
   const cold = prompts.scheduled({ ...base, head: "[relay] kind=scheduled name=vps", brief: "VPS 报告", full: true });
-  assert.match(cold, /## 你是谁/);
+  assert.match(cold, /你是我的个人助理/);
   assert.match(cold, /## 回复规则/);
   assert.ok(cold.indexOf("VPS 报告") > cold.indexOf("## 回复规则"));
 });
