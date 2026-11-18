@@ -284,7 +284,7 @@ test("TC-SJ13 a platform without selfContext cannot be scheduled", async () => {
   assert.deepEqual(core.scheduleJob({ ...brief({ name: "no-ctx" }), dueAt: null }), { rejected: "platform" });
 });
 
-test("TC-SJ14 slack addresses a thread without a message; contract keeps selfContext optional", () => {
+test("TC-SJ14 slack keeps the conversation key and says which keys are already message ids", () => {
   const slack = createSlack({
     config: {
       readEnv: () => ({ SLACK_APP_TOKEN: "xapp", SLACK_BOT_TOKEN: "xoxb", AGENT_RELAY_SLACK_CHANNEL: "C1", AGENT_RELAY_ALLOWED_USER: "U1" }),
@@ -294,10 +294,14 @@ test("TC-SJ14 slack addresses a thread without a message; contract keeps selfCon
     },
     log: () => {},
   });
-  assert.deepEqual(slack.selfContext("1793850902.242119"), { chatId: "C1", threadId: null, replyTo: "1793850902.242119" });
-
+  assert.deepEqual(slack.selfContext("1793850902.242119"), { chatId: "C1", threadId: null, replyTo: null, boundKey: "1793850902.242119" });
+  assert.deepEqual(slack.selfContext("sentry-fixer-slack-r82").boundKey, "sentry-fixer-slack-r82");
+  assert.equal(slack.resolveThread("1793850902.242119"), "1793850902.242119");
+  assert.equal(slack.resolveThread("sentry-fixer-slack-r82"), null);
+  assert.equal(slack.resolveThread("notice-ntc-166"), null);
 
   const base = { name: "slack", start: () => {}, reply: () => {}, sessionFor: (key) => key };
   assert.doesNotThrow(() => definePlatform(base));
   assert.throws(() => definePlatform({ ...base, selfContext: "nope" }), /selfContext:function/);
+  assert.throws(() => definePlatform({ ...base, resolveThread: "nope" }), /resolveThread:function/);
 });
