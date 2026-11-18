@@ -131,11 +131,11 @@ test("TC-P8 the delivery rule lives in the common block and the loop entry carri
 test("TC-P9 a scheduled round sends only the origin line when the session exists", () => {
   const prompts = builtin();
   const base = { platform: "slack", adapter, inbound: { ...inbound, text: "VPS 报告" } };
-  const warm = prompts.scheduled({ ...base, brief: "VPS 报告", full: false });
-  assert.equal(warm.split("\n")[0], "这不是用户刚说的话：过去的你给现在的自己排了一项任务，现在到点。下面是那份任务书。");
+  const warm = prompts.scheduled({ ...base, head: "[relay] kind=scheduled origin=self name=vps", brief: "VPS 报告", full: false });
+  assert.equal(warm.split("\n")[0], "[relay] kind=scheduled origin=self name=vps");
   assert.match(warm, /VPS 报告/);
   assert.doesNotMatch(warm, /## 你是谁|## 回复规则|## 本次任务/);
-  const cold = prompts.scheduled({ ...base, brief: "VPS 报告", full: true });
+  const cold = prompts.scheduled({ ...base, head: "[relay] kind=scheduled origin=self name=vps", brief: "VPS 报告", full: true });
   assert.match(cold, /## 你是谁/);
   assert.match(cold, /## 回复规则/);
   assert.ok(cold.indexOf("VPS 报告") > cold.indexOf("## 回复规则"));

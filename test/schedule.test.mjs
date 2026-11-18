@@ -238,7 +238,7 @@ test("TC-SJ9 a scheduled turn that exits non-zero posts one line", async () => {
   const job = core.scheduleJob({ ...brief({ name: "boom" }), dueAt: null });
   await tick();
   assert.equal(replies.length, 1);
-  assert.match(replies[0].text, /无输出/);
+  assert.match(replies[0].text, /中途退出/);
   assert.equal(core.state.jobs[job.job].status, "failed");
 });
 
@@ -248,7 +248,7 @@ test("TC-SJ10 a scheduled turn sends the origin line and the brief, no template"
   core.scheduleJob({ ...brief({ name: "render", prompt: "读 /tmp/x 的行数" }), dueAt: null });
   await tick();
   assert.equal(prompts.length, 1);
-  assert.match(prompts[0], /^这不是用户刚说的话/);
+  assert.match(prompts[0], /^\[relay\] kind=scheduled origin=self name=render at=/);
   assert.match(prompts[0], /读 \/tmp\/x 的行数/);
   assert.doesNotMatch(prompts[0], /\{\{/);
   assert.doesNotMatch(prompts[0], /COMMON|CONV/);

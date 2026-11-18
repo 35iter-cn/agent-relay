@@ -13,8 +13,7 @@ export const ENTRY_FILE = {
   loop: "32-entry-loop.md",
 };
 
-export const SCHEDULED_LINE =
-  "这不是用户刚说的话：过去的你给现在的自己排了一项任务，现在到点。下面是那份任务书。";
+
 
 const EMPTY_LABEL_LINE = /^[^：:]+：\s*$/;
 
@@ -70,8 +69,8 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
     return render(parts.join("\n\n"), values({ platform, adapter, inbound, notice, loop }), entry);
   }
 
-  function scheduled({ platform, adapter, inbound, brief, full = false }) {
-    const task = [SCHEDULED_LINE, String(brief ?? "").trim()].filter(Boolean).join("\n\n");
+  function scheduled({ platform, adapter, inbound, head = "", brief, full = false }) {
+    const task = [String(head ?? "").trim(), String(brief ?? "").trim()].filter(Boolean).join("\n\n");
     if (!full) return task;
     const rules = [COMMON_FILE, PLATFORM_FILE[platform] ?? `20-platform-${platform}.md`].map(section).filter(Boolean).join("\n\n");
     return render([rules, task].filter(Boolean).join("\n\n"), values({ platform, adapter, inbound }), "scheduled");
@@ -180,6 +179,14 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
       .trim();
   }
 
+  function emptyRunReply() {
+    return "这条没处理完，回复「继续」，我接着做。";
+  }
+
+  function busyReply() {
+    return "这条没排上：会话一直在忙。已经停止重试，稍后再发一次，或回复「继续」。";
+  }
+
   function interrupt() {
     return message("interrupt.md");
   }
@@ -203,6 +210,8 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
     budgetTerminated,
     keyWindowRejected,
     interrupt,
+    emptyRunReply,
+    busyReply,
     emptyPrompt,
     conversation: (args) => compose({ ...args, entry: "conversation" }),
     noticeReply: (args) => compose({ ...args, entry: "notice" }),

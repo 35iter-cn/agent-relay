@@ -405,7 +405,7 @@ test("TC-27 a failed job keeps its answer for diagnosis", async () => {
   await tick();
   const job = core.state.jobs[core.state.seen.m1];
   assert.equal(job.status, "failed");
-  assert.match(job.answer, /无输出/);
+  assert.match(job.raw, /无输出/);
 });
 
 test("TC-23 every delivered chunk is committed to parts with its hash", async () => {
@@ -1978,7 +1978,7 @@ test("TC-RPC8 an empty run reports the stop reason and an aborted run fails", as
   const first = harness({ spawn: () => empty, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
   await first.core.handle(inbound({ text: "做点事" }));
   await tick();
-  assert.equal(first.replies.at(-1).text, "[无输出] stop=stop");
+  assert.equal(first.replies.at(-1).text, "这条没处理完，回复「继续」，我接着做。");
 
   const aborted = fakeRpcChild({ answer: "一半", aborted: true });
   const second = harness({ spawn: () => aborted, adapterOverrides: { worker: "pi", workerMode: "rpc" } });

@@ -31,7 +31,7 @@ export function usage(stream = process.stderr) {
       `  agent-relay serve <${PLATFORMS.join("|")}>`,
       "  agent-relay notice emit --platform <p> (--text <text> | --text-file <path>) [--title <text>] [--prompt <text> | --prompt-file <path>] [--reply-mode conversation --reply-key <key>]",
       "  agent-relay notice get --platform <p> <id>",
-      "  agent-relay schedule --platform <p> --key <k> --name <n> [--in <dur> | --at <iso>] [--grace <dur>]  (prompt on stdin)",
+      "  agent-relay schedule --platform <p> --key <k> --name <n> [--in <dur> | --at <iso>] [--grace <dur>] [--join]  (prompt on stdin)",
       "  agent-relay schedule list|cancel|help …",
       "  agent-relay job help | agent-relay job list|cancel|restart|redeliver …",
       "  agent-relay loop help | agent-relay loop create|list|show|update|pause|resume|delete|run|log|show-run …",
@@ -409,6 +409,7 @@ export async function handleScheduleCommand(rest, config, log, deps = {}) {
     name,
     prompt,
     dueAt,
+    join: flags.join === true || flags.join === "true",
     graceMs: durationMs(flags.grace, DEFAULT_GRACE_MS),
   });
   if (!reportSent(sent, `scheduled\t${promptPath(config, name)}`)) return;
