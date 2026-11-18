@@ -119,12 +119,12 @@ test("TC-SJ2 a due job starts once and records how late it was", async () => {
   const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
   const { core, prompts } = harness({ clock });
   const dueAt = new Date(clock.value + 60_000).toISOString();
-  core.scheduleJob({ ...brief(), dueAt });
+  await core.scheduleJob({ ...brief(), dueAt });
   clock.value += 61_000;
-  assert.equal(core.startDueJobs(), 1);
+  assert.equal(await core.startDueJobs(), 1);
   await tick();
   assert.equal(prompts.length, 1);
-  assert.equal(core.startDueJobs(), 0);
+  assert.equal(await core.startDueJobs(), 0);
   await tick();
   assert.equal(prompts.length, 1);
   const jobs = Object.values(core.state.jobs);
@@ -135,14 +135,14 @@ test("TC-SJ2 a due job starts once and records how late it was", async () => {
 test("TC-SJ3 a future job stays scheduled until its dueAt passes", async () => {
   const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
   const { core, prompts } = harness({ clock });
-  const job = core.scheduleJob({ ...brief(), dueAt: new Date(clock.value + 120_000).toISOString() });
+  const job = await core.scheduleJob({ ...brief(), dueAt: new Date(clock.value + 120_000).toISOString() });
   assert.ok(job.job);
   assert.equal(core.state.jobs[job.job].status, "scheduled");
-  assert.equal(core.startDueJobs(), 0);
+  assert.equal(await core.startDueJobs(), 0);
   await tick();
   assert.equal(prompts.length, 0);
   clock.value += 121_000;
-  assert.equal(core.startDueJobs(), 1);
+  assert.equal(await core.startDueJobs(), 1);
   await tick();
   assert.equal(prompts.length, 1);
 });
@@ -156,9 +156,9 @@ test("TC-SJ4 while the same key is busy the due job keeps waiting instead of que
   hold.kill = () => {};
   const { core, prompts } = harness({ clock, spawn: () => hold });
   await core.handle({ key: "th-1", session: "fs-th-1", dedupeId: "msg-1", authorId: "u-ok", text: "用户的活", chatId: "c1" });
-  const job = core.scheduleJob({ ...brief({ name: "d-wait" }), dueAt: new Date(clock.value + 1000).toISOString() });
+  const job = await core.scheduleJob({ ...brief({ name: "d-wait" }), dueAt: new Date(clock.value + 1000).toISOString() });
   clock.value += 2000;
-  core.startDueJobs();
+  await core.startDueJobs();
   assert.equal(core.state.jobs[job.job].status, "scheduled");
   assert.equal(core.state.inbox.length, 0);
   assert.ok(core.state.jobs[job.job].waitLoggedAt);
@@ -170,11 +170,11 @@ test("TC-SJ5 five due jobs are all accepted and started without any interval or 
   const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
   const { core, prompts } = harness({ clock });
   for (let i = 0; i < 5; i += 1) {
-    const outcome = core.scheduleJob({ ...brief({ name: `five-${i}` }), dueAt: new Date(clock.value - 1000).toISOString() });
+    const outcome = await core.scheduleJob({ ...brief({ name: `five-${i}` }), dueAt: new Date(clock.value - 1000).toISOString() });
     assert.ok(outcome.job, JSON.stringify(outcome));
   }
   for (let i = 0; i < 6; i += 1) {
-    core.startDueJobs();
+    await core.startDueJobs();
     await tick();
   }
   assert.equal(prompts.length, 5);
@@ -186,7 +186,7 @@ test("TC-SJ6 the thirteenth schedule inside an hour is refused as runaway", asyn
   const dueAt = new Date(clock.value + 3_600_000).toISOString();
   let refused = null;
   for (let i = 0; i < 13; i += 1) {
-    const outcome = core.scheduleJob({ ...brief({ name: `storm-${i}` }), dueAt });
+    const outcome = await core.scheduleJob({ ...brief({ name: `storm-${i}` }), dueAt });
     if (outcome.rejected) refused = outcome.rejected;
   }
   assert.equal(refused, "runaway");
@@ -196,13 +196,13 @@ test("TC-SJ6 the thirteenth schedule inside an hour is refused as runaway", asyn
 test("TC-SJ7 a job past its grace expires without starting", async () => {
   const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
   const { core, prompts } = harness({ clock });
-  const job = core.scheduleJob({
+  const job = await core.scheduleJob({
     ...brief({ name: "late" }),
     dueAt: new Date(clock.value + 60_000).toISOString(),
     graceMs: 6 * 3_600_000,
   });
   clock.value += 7 * 3_600_000;
-  assert.equal(core.startDueJobs(), 1);
+  assert.equal(await core.startDueJobs(), 1);
   assert.equal(core.state.jobs[job.job].status, "cancelled");
   assert.equal(core.state.jobs[job.job].error, "expired");
   await tick();
@@ -212,7 +212,7 @@ test("TC-SJ7 a job past its grace expires without starting", async () => {
 test("TC-SJ8 a scheduled turn with no output posts nothing and finishes", async () => {
   const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
   const { core, replies, logs } = harness({ clock, spawn: () => fakeChild({ stdout: "", code: 0 }) });
-  const job = core.scheduleJob({ ...brief({ name: "quiet" }), dueAt: null });
+  const job = await core.scheduleJob({ ...brief({ name: "quiet" }), dueAt: null });
   await tick();
   assert.deepEqual(replies, []);
   assert.equal(core.state.jobs[job.job].status, "done");
@@ -224,7 +224,7 @@ test("TC-SJ15 a scheduled turn that answers the quiet word posts nothing and fin
   for (const raw of ["NOOP", "`NOOP`"]) {
     const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
     const { core, replies } = harness({ clock, spawn: () => fakeChild({ stdout: raw, code: 0 }) });
-    const job = core.scheduleJob({ ...brief({ name: "quiet-word" }), dueAt: null });
+    const job = await core.scheduleJob({ ...brief({ name: "quiet-word" }), dueAt: null });
     await tick();
     assert.deepEqual(replies, [], `${JSON.stringify(raw)} is not a message: ${JSON.stringify(replies)}`);
     assert.equal(core.state.jobs[job.job].status, "done");
@@ -235,7 +235,7 @@ test("TC-SJ15 a scheduled turn that answers the quiet word posts nothing and fin
 test("TC-SJ9 a scheduled turn that exits non-zero posts one line", async () => {
   const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
   const { core, replies } = harness({ clock, spawn: () => fakeChild({ stdout: "", code: 1 }) });
-  const job = core.scheduleJob({ ...brief({ name: "boom" }), dueAt: null });
+  const job = await core.scheduleJob({ ...brief({ name: "boom" }), dueAt: null });
   await tick();
   assert.equal(replies.length, 1);
   assert.match(replies[0].text, /中途退出/);
@@ -271,7 +271,7 @@ test("TC-SJ11 a cold session gets the rules before the task", () => {
 test("TC-SJ12 cancel moves a scheduled job to cancelled and a started one is left alone", async () => {
   const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
   const { core } = harness({ clock });
-  const job = core.scheduleJob({ ...brief({ name: "cancel-me" }), dueAt: new Date(clock.value + 60_000).toISOString() });
+  const job = await core.scheduleJob({ ...brief({ name: "cancel-me" }), dueAt: new Date(clock.value + 60_000).toISOString() });
   assert.deepEqual(core.cancelScheduled({ name: "cancel-me" }), { job: job.job });
   assert.equal(core.state.jobs[job.job].status, "cancelled");
   assert.equal(core.cancelScheduled({ name: "cancel-me" }).rejected, "already-started");
@@ -281,7 +281,7 @@ test("TC-SJ13 a platform without selfContext cannot be scheduled", async () => {
   const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
   const { core, adapter } = harness({ clock });
   delete adapter.selfContext;
-  assert.deepEqual(core.scheduleJob({ ...brief({ name: "no-ctx" }), dueAt: null }), { rejected: "platform" });
+  assert.deepEqual(await core.scheduleJob({ ...brief({ name: "no-ctx" }), dueAt: null }), { rejected: "platform" });
 });
 
 test("TC-SJ14 slack keeps the conversation key and says which keys are already message ids", () => {
@@ -315,7 +315,7 @@ test("TC-SJ16 a scheduled turn threads under the conversation's bound message, a
   core.state.convs["loop-fake-1-r8"] = { session: "fs-3", rootText: "空轮", lastMsgTs: null, messageId: null, activeJob: null };
 
   for (const [key, name] of [["loop-fake-1-r7", "round"], ["notice-ntc-1", "notice"], ["loop-fake-1-r8", "bare"]]) {
-    const made = core.scheduleJob({ op: "schedule", key, name, prompt: "看进度", dueAt: null, graceMs: 6 * 3_600_000 });
+    const made = await core.scheduleJob({ op: "schedule", key, name, prompt: "看进度", dueAt: null, graceMs: 6 * 3_600_000 });
     assert.ok(made.job, `${name} scheduled`);
     await tick();
   }
@@ -332,7 +332,7 @@ test("TC-SJ17 a key that is already a message id needs no recorded message", asy
   const { core, replies, adapter } = harness({ clock });
   adapter.resolveThread = (key) => (/^\d{10}\.\d+$/.test(String(key)) ? String(key) : null);
   core.state.convs["1794206521.110229"] = { session: "fs-4", rootText: "真人线程", lastMsgTs: null, messageId: null, activeJob: null };
-  core.scheduleJob({ op: "schedule", key: "1794206521.110229", name: "human", prompt: "看进度", dueAt: null, graceMs: 6 * 3_600_000 });
+  await core.scheduleJob({ op: "schedule", key: "1794206521.110229", name: "human", prompt: "看进度", dueAt: null, graceMs: 6 * 3_600_000 });
   await tick();
   assert.equal(replies[0].replyTo, "1794206521.110229", "a user thread's key is a message id, so it is used as-is");
 });
@@ -355,7 +355,7 @@ test("TC-SJ18 a job scheduled before the fix still lands on the round's message 
   assert.equal(core.state.jobs[legacy.id].inbound.boundKey, "sentry-fixer-slack-r2", "the legacy reply target becomes the bound key");
   assert.equal(core.state.jobs[legacy.id].inbound.replyTo, null);
 
-  core.startDueJobs();
+  await core.startDueJobs();
   await tick();
   assert.equal(replies.length, 1);
   assert.equal(replies[0].replyTo, "1794812345.000100", "the redelivery lands in the round's thread");
@@ -365,7 +365,7 @@ test("TC-SJ18 a job scheduled before the fix still lands on the round's message 
 test("TC-SC1 --join turns a scheduled turn into a wake turn", async () => {
   const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
   const { core } = harness({ clock, spawn: () => fakeChild({ stdout: "" }) });
-  const job = core.scheduleJob({ ...brief({ name: "late" }), dueAt: null, join: true });
+  const job = await core.scheduleJob({ ...brief({ name: "late" }), dueAt: null, join: true });
   await tick();
   assert.equal(core.state.jobs[job.job].kind, "wake");
 });
@@ -373,7 +373,94 @@ test("TC-SC1 --join turns a scheduled turn into a wake turn", async () => {
 test("TC-SC2 without --join the turn stays scheduled and waits its turn", async () => {
   const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
   const { core } = harness({ clock, spawn: () => fakeChild({ stdout: "" }) });
-  const job = core.scheduleJob({ ...brief({ name: "plain" }), dueAt: null });
+  const job = await core.scheduleJob({ ...brief({ name: "plain" }), dueAt: null });
   await tick();
   assert.equal(core.state.jobs[job.job].kind, "scheduled");
+});
+
+function rpcChild({ answer = "答案" } = {}) {
+  const child = new EventEmitter();
+  child.pid = 770001;
+  child.written = [];
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.prompted = 0;
+  let streaming = false;
+  child.stdin = {
+    writable: true,
+    write: (chunk) => {
+      const record = JSON.parse(String(chunk).trim());
+      child.written.push(record);
+      const ok = (data) => setImmediate(() => child.stdout.emit("data", `${JSON.stringify({ id: record.id, type: "response", command: record.type, success: true, data })}\n`));
+      if (record.type === "get_state") return ok({ sessionId: "fs-th-1", messageCount: 2, isStreaming: streaming, pendingMessageCount: 0 });
+      if (record.type === "prompt") {
+        child.prompted += 1;
+        streaming = true;
+        ok({ disposition: "started" });
+        if (!child.hold) setImmediate(() => child.settle());
+        return;
+      }
+      if (record.type === "steer") return ok({ disposition: "queued" });
+      if (record.type === "clear_queue") return ok({ steering: [], followUp: [] });
+      return ok({});
+    },
+    end: () => {},
+    on: () => {},
+  };
+  child.settle = () => {
+    child.stdout.emit("data", `${JSON.stringify({ type: "message_end", message: { role: "assistant", content: [{ type: "text", text: answer }], stopReason: "stop" } })}\n`);
+    streaming = false;
+    child.stdout.emit("data", `${JSON.stringify({ type: "agent_settled", aborted: false })}\n`);
+  };
+  child.kill = () => {};
+  return child;
+}
+
+test("TC-SC3 a --join schedule lands as a steer on the running turn instead of a new job", async () => {
+  const child = rpcChild();
+  child.hold = true;
+  const { core, replies, adapter } = harness({ spawn: () => child });
+  adapter.worker = "pi";
+  adapter.workerMode = "rpc";
+  await core.handle({ key: "th-1", session: "fs-th-1", dedupeId: "m1", messageId: "m1", text: "第一问", chatId: "c1", authorId: "u-ok" });
+  await tick();
+  assert.equal(child.prompted, 1, "the first message started the turn");
+  const before = Object.keys(core.state.jobs).length;
+  const made = await core.scheduleJob({ ...brief({ name: "late-wake" }), dueAt: null, join: true });
+  assert.ok(made.outcome === "steered", `steered, got ${JSON.stringify(made)}`);
+  assert.equal(Object.keys(core.state.jobs).length, before, "no extra job is created");
+  const active = core.state.jobs[core.state.convs["th-1"].activeJob];
+  assert.equal((active.steers ?? []).length, 1, "the result is queued on the running turn");
+  assert.equal((active.steers ?? [])[0].kind, "wake");
+  child.settle();
+});
+
+test("TC-SC4 a --join schedule on an idle conversation still starts its own round", async () => {
+  const child = rpcChild();
+  const { core, adapter } = harness({ spawn: () => child });
+  adapter.worker = "pi";
+  adapter.workerMode = "rpc";
+  const made = await core.scheduleJob({ ...brief({ name: "idle-wake" }), dueAt: null, join: true });
+  assert.ok(made.job, `started a round, got ${JSON.stringify(made)}`);
+  assert.equal(core.state.jobs[made.job].kind, "wake");
+});
+
+test("TC-SC5 a due wake job merges into a running turn instead of queueing behind it", async () => {
+  const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
+  const child = rpcChild();
+  child.hold = true;
+  const { core, adapter } = harness({ spawn: () => child, clock });
+  adapter.worker = "pi";
+  adapter.workerMode = "rpc";
+  const made = await core.scheduleJob({ ...brief({ name: "due-wake" }), dueAt: new Date(clock.value + 1000).toISOString(), join: true });
+  await core.handle({ key: "th-1", session: "fs-th-1", dedupeId: "m1", messageId: "m1", text: "第一问", chatId: "c1", authorId: "u-ok" });
+  await tick();
+  clock.value += 3000;
+  await core.startDueJobs();
+  await tick();
+  const wakeJob = core.state.jobs[made.job];
+  assert.equal(wakeJob.status, "done", "the due job closed as merged");
+  assert.ok(wakeJob.mergedInto, "it recorded where it went");
+  assert.equal(core.state.jobs[wakeJob.mergedInto].steers.length, 1, "the running turn picked it up");
+  child.settle();
 });

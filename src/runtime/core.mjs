@@ -604,7 +604,7 @@ export function createCore({ adapter, config, deps = {} }) {
         if (command.op === "emit") {
           await notices.emit({ text: command.text, prompt: command.prompt ?? "", reply: command.reply ?? null, title: command.title ?? "" });
         } else if (command.op === "schedule") {
-          const outcome = scheduleJob(command);
+          const outcome = await scheduleJob(command);
           appendLog({ event: "command-schedule", ...outcome, key: String(command.key ?? "") });
           result = outcome.rejected ? { ok: false, refused: outcome.rejected } : { ok: true, ...outcome };
         } else if (command.op === "cancel-schedule") {
@@ -1631,7 +1631,7 @@ export function createCore({ adapter, config, deps = {} }) {
     return file;
   }
 
-  function scheduleJob({ key, name, prompt, dueAt, join = false, graceMs = DEFAULT_GRACE_MS } = {}) {
+  async function scheduleJob({ key, name, prompt, dueAt, join = false, graceMs = DEFAULT_GRACE_MS } = {}) {
     if (typeof adapter.selfContext !== "function") return { rejected: "platform" };
     if (!NAME_PATTERN.test(String(name ?? ""))) return { rejected: "name-invalid" };
     if (!state.convs[key]) return { rejected: "unknown-key" };
@@ -1666,6 +1666,10 @@ export function createCore({ adapter, config, deps = {} }) {
 
     const caller = callerChain();
     if (at <= now()) {
+      if (join) {
+        const steered = await steerIntoRunning(inbound, join ? "wake" : "scheduled");
+        if (steered) return steered;
+      }
       if (running.size >= adapter.maxWorkers && state.inbox.length >= adapter.queueDepth) return { rejected: "queue-full" };
       const started = acceptJob(inbound);
       started.kind = join ? "wake" : "scheduled";
@@ -2018,7 +2022,7 @@ export function createCore({ adapter, config, deps = {} }) {
     return 0;
   }
 
-  function startDueJobs() {
+  async function startDueJobs() {
     let touched = 0;
     for (const job of Object.values(state.jobs ?? {})) {
       if (job.status !== "scheduled") continue;
@@ -2031,6 +2035,18 @@ export function createCore({ adapter, config, deps = {} }) {
         appendLog({ event: "job-expired", job: job.id, key: job.key, due: job.dueAt });
         touched += 1;
         continue;
+      }
+      if (job.kind === "wake") {
+        const steered = await steerIntoRunning({ ...job.inbound, key: job.key, kind: "wake" }, "wake");
+        if (steered) {
+          job.status = "done";
+          job.answer = null;
+          job.mergedInto = steered.job;
+          job.updatedAt = isoNow();
+          appendLog({ event: "job-merged", job: job.id, key: job.key, into: steered.job });
+          touched += 1;
+          continue;
+        }
       }
       if (keyIsBusy(job.key)) {
         if (!job.waitLoggedAt) {
@@ -2122,6 +2138,25 @@ export function createCore({ adapter, config, deps = {} }) {
         log("warn", "receipt-remove", String(error?.message ?? error));
       }
     }
+  }
+
+  async function steerIntoRunning(inbound, kind) {
+    const target = await steerTarget({ ...inbound, kind });
+    if (!target) return null;
+    const payload = expandAttachments({ prompt: inbound.text, attachments: inbound.attachments });
+    let disposition = null;
+    try {
+      disposition = await target.worker.steer(payload);
+    } catch (error) {
+      log("warn", "steer", String(error?.message ?? error));
+    }
+    if (!disposition) return null;
+    state.seen[inbound.dedupeId] = target.job.id;
+    target.job.steers = [...(target.job.steers ?? []), { ts: inbound.dedupeId, messageId: null, at: isoNow(), text: inbound.text, chars: String(inbound.text ?? "").length, disposition, consumed: false, kind }];
+    target.job.updatedAt = isoNow();
+    save();
+    appendLog({ event: "steer", job: target.job.id, key: inbound.key, chars: String(inbound.text ?? "").length, disposition, kind });
+    return { job: target.job.id, outcome: "steered" };
   }
 
   async function deliveredAsSteer(inbound) {
