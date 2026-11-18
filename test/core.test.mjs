@@ -2167,7 +2167,8 @@ test("TC-ST28 a conversation round keeps the 90-minute budget; a loop round has 
   assert.equal(core.budgetOf(job), 180 * 60_000);
   job.budgetMs = -5;
   assert.equal(core.budgetOf(job), 90 * 60_000);
-  job.origin = "loop";
+  job.kind = "loop";
+  job.origin = "system";
   assert.equal(core.budgetOf(job), 0);
   job.budgetMs = 600 * 60_000;
   assert.equal(core.budgetOf(job), 0);
@@ -2198,7 +2199,8 @@ test("TC-ST29 a key that already spent the six-hour window is refused before it 
 async function loopRoundJob() {
   const built = await runningJob({ spawn: closingSpawn(), adapterOverrides: { chunkLimit: 4000 } });
   const { core, job } = built;
-  job.origin = "loop";
+  job.kind = "loop";
+  job.origin = "system";
   job.loop = { id: "daily-briefing-slack", round: 8 };
   core.state.loops = { "daily-briefing-slack": { id: "daily-briefing-slack", title: "每日简报" } };
   job.startedAt = Number(job.startedAt ?? built.clock.now);

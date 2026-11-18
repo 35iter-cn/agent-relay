@@ -11,7 +11,7 @@ import { pruneOldFiles } from "../shared/retention.mjs";
 import { ensurePrivateDir } from "../shared/fs.mjs";
 import { pruneState } from "../state/prune.mjs";
 import { bootNoticeText, readBootId, shouldAnnounceBoot } from "../shared/boot.mjs";
-import { createJob, ctxOf, isFinished } from "../jobs/model.mjs";
+import { createJob, ctxOf, isFinished, kindOf } from "../jobs/model.mjs";
 import { readProcStartTicks } from "../jobs/lease.mjs";
 import { DELIVERY_RETRY_INTERVAL_MS, DELIVERY_RETRY_WINDOW_MS, deliveryError, hashOf, isRetryable, planParts } from "../jobs/delivery.mjs";
 import { extractMedia } from "../jobs/media.mjs";
@@ -211,7 +211,7 @@ export function createCore({ adapter, config, deps = {} }) {
           lastProgress: fields.local,
           silenceMinutes: Math.max(1, Math.round(silenceMs / 60_000)),
           actionMinutes: Math.round(timings.stallActionMs / 60_000),
-          origin: job.origin ?? "user",
+          kind: kindOf(job),
           roundCapMinutes: Math.round(timings.roundMaxMs / 60_000),
           parkMinutes: Math.round(timings.loopParkMs / 60_000),
         }),
@@ -283,7 +283,7 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   async function checkLoopHealth(job) {
-    if (job.origin !== "loop" || job.status !== "running") return null;
+    if (kindOf(job) !== "loop" || job.status !== "running") return null;
     const elapsed = now() - roundStartedAt(job);
     if (!Number.isFinite(elapsed)) return null;
     if (timings.loopParkMs > 0 && elapsed >= timings.loopParkMs) return parkLoopRound(job, elapsed);
@@ -335,7 +335,7 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   function budgetOf(job) {
-    if (job.origin === "loop") return 0;
+    if (kindOf(job) === "loop") return 0;
     const asked = Number(job.budgetMs);
     if (!Number.isFinite(asked) || asked <= 0) return timings.roundMaxMs;
     return Math.min(asked, timings.roundMaxMs * BUDGET_OVERRIDE_CAP);
@@ -684,7 +684,7 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   function isScheduled(job) {
-    return job.origin === "self" || job.origin === "external";
+    return kindOf(job) === "scheduled";
   }
 
   function optInTimeoutMs() {
@@ -706,7 +706,7 @@ export function createCore({ adapter, config, deps = {} }) {
   function buildPrompt(job, entry, full) {
     const inbound = runtimeInbound(job);
     const base = { platform: adapter.name, adapter, inbound };
-    if (job.origin === "loop" && job.loop) return prompts.loopRound({ ...base, loop: job.loop });
+    if (kindOf(job) === "loop" && job.loop) return prompts.loopRound({ ...base, loop: job.loop });
     if (isScheduled(job)) return prompts.scheduled({ ...base, brief: scheduledBrief(job), full });
     if (job.noticeId) {
       const notice = notices.get(job.noticeId);
@@ -718,10 +718,10 @@ export function createCore({ adapter, config, deps = {} }) {
   function execute(job, entry) {
     const inbound = runtimeInbound(job);
     const full = !hasSession(entry.session);
-    if (isScheduled(job) || job.origin === "loop") {
+    if (isScheduled(job) || kindOf(job) === "loop") {
       const built = buildPrompt(job, entry, full);
       const render = (prompt) => {
-        if (job.origin === "loop" && !String(prompt ?? "").trim()) {
+        if (kindOf(job) === "loop" && !String(prompt ?? "").trim()) {
           appendLog({ event: "empty-prompt", job: job.id, key: inbound.key });
           job.status = "failed";
           job.error = "empty-prompt";
@@ -902,15 +902,15 @@ export function createCore({ adapter, config, deps = {} }) {
     job.status = status;
     job.lease = null;
     job.updatedAt = isoNow();
-    if (job.origin === "loop") {
+    if (kindOf(job) === "loop") {
       job.loopOutput = text;
       job.loopRoundStatus = status;
     }
     save();
-    if (job.origin === "loop") await deliverRound(job);
+    if (kindOf(job) === "loop") await deliverRound(job);
     else await deliver(job);
     await dropReceipts(job);
-    if (job.origin === "loop") await finishRound(job);
+    if (kindOf(job) === "loop") await finishRound(job);
     runtimeInbounds.delete(job.id);
   }
 
@@ -975,7 +975,7 @@ export function createCore({ adapter, config, deps = {} }) {
         });
       }
       const run = { text: "", stopReason: null, segments: [], undelivered: [], sending: Promise.resolve(), index: 0 };
-      const deliverSegments = job.origin === "user";
+      const deliverSegments = kindOf(job) === "conversation";
       let settle;
       const settled = new Promise((resolve) => (settle = resolve));
       const offEvent = worker.onEvent((record) => {
@@ -1485,7 +1485,7 @@ export function createCore({ adapter, config, deps = {} }) {
 
   function recentlyScheduled(key) {
     const since = now() - 3_600_000;
-    return Object.values(state.jobs ?? {}).filter((job) => job.key === key && job.origin !== "user" && Date.parse(job.createdAt ?? "") > since).length;
+    return Object.values(state.jobs ?? {}).filter((job) => job.key === key && kindOf(job) !== "conversation" && Date.parse(job.createdAt ?? "") > since).length;
   }
 
   function findJobByDedupe(dedupe) {
@@ -1548,6 +1548,7 @@ export function createCore({ adapter, config, deps = {} }) {
       if (running.size >= adapter.maxWorkers && state.inbox.length >= adapter.queueDepth) return { rejected: "queue-full" };
       const started = acceptJob(inbound);
       started.origin = caller.inside ? "self" : "external";
+      started.kind = "scheduled";
       started.chain = caller.depth;
       started.dueAt = isoAt(at);
       started.expiresAt = isoAt(at + graceMs);
@@ -1559,6 +1560,7 @@ export function createCore({ adapter, config, deps = {} }) {
 
     const job = createJob(state, inbound, isoNow);
     job.origin = caller.inside ? "self" : "external";
+    job.kind = "scheduled";
     job.chain = caller.depth;
     job.dueAt = isoAt(at);
     job.expiresAt = isoAt(at + graceMs);
@@ -1624,7 +1626,8 @@ export function createCore({ adapter, config, deps = {} }) {
       replyTo: null,
       attachments: [],
     });
-    job.origin = "loop";
+    job.origin = "system";
+    job.kind = "loop";
     job.chain = 0;
     job.dueAt = isoAt(at - lateMs);
     job.lateMs = lateMs;

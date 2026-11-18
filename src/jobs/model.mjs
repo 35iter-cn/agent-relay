@@ -1,3 +1,18 @@
+export const KINDS = new Set(["conversation", "scheduled", "wake", "loop"]);
+
+export const KIND_BY_ORIGIN = {
+  user: "conversation",
+  self: "scheduled",
+  external: "scheduled",
+  system: "loop",
+  loop: "loop",
+};
+
+export function kindOf(job) {
+  if (job?.kind && KINDS.has(job.kind)) return job.kind;
+  return KIND_BY_ORIGIN[job?.origin ?? "user"] ?? "conversation";
+}
+
 export const FINISHED_STATUSES = new Set(["done", "failed", "cancelled", "interrupted"]);
 
 export function isFinished(job) {
@@ -38,6 +53,7 @@ export function createJob(state, inbound, nowIso = () => new Date().toISOString(
       attachments: Array.isArray(inbound.attachments) ? inbound.attachments : [],
     },
     origin: inbound.origin ?? "user",
+    kind: inbound.kind ?? KIND_BY_ORIGIN[inbound.origin ?? "user"] ?? "conversation",
     chain: inbound.chain ?? 0,
     dueAt: inbound.dueAt ?? null,
     expiresAt: inbound.expiresAt ?? null,

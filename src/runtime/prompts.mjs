@@ -97,7 +97,7 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
     return message("restart.md");
   }
 
-  function stallNotice({ task = "", round = "", stuck = "", job = "", identity = {}, lastProgress = "", silenceMinutes = 0, actionMinutes = 0, origin = "user", roundCapMinutes = 0, parkMinutes = 0 } = {}) {
+  function stallNotice({ task = "", round = "", stuck = "", job = "", identity = {}, lastProgress = "", silenceMinutes = 0, actionMinutes = 0, kind = "conversation", roundCapMinutes = 0, parkMinutes = 0 } = {}) {
     const text = render(
       message("stall-notice.md"),
       {
@@ -113,7 +113,7 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
         elapsed_minutes: identity.elapsedMinutes ?? "",
         last_progress: lastProgress,
         silence_minutes: String(silenceMinutes),
-        disposition: stallDisposition({ actionMinutes, origin, roundCapMinutes, parkMinutes }),
+        disposition: stallDisposition({ actionMinutes, kind, roundCapMinutes, parkMinutes }),
         restart_prompt: restartPrompt(),
       },
       "stall-notice",
@@ -121,11 +121,11 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
     return dropEmptyLabels(text);
   }
 
-  function stallDisposition({ actionMinutes = 0, origin = "user", roundCapMinutes = 0, parkMinutes = 0 } = {}) {
+  function stallDisposition({ actionMinutes = 0, kind = "conversation", roundCapMinutes = 0, parkMinutes = 0 } = {}) {
     if (actionMinutes > 0) {
       return `这条通知发出 ${actionMinutes} 分钟后，若仍没有任何工具在跑，这一轮会被自动终止，同样按最后一次进展入账。`;
     }
-    if (origin === "loop") {
+    if (kind === "loop") {
       return `不会因这条通知自动终止：这一轮会一直挂着，到 ${parkMinutes} 分钟时自动停下并保留会话，那时另发一条可以恢复的通知。`;
     }
     return `不会因这条通知自动终止：交互轮仍受 ${roundCapMinutes} 分钟单轮上限约束，到点按最后一次进展入账。`;
