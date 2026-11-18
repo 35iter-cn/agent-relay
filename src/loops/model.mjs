@@ -102,7 +102,7 @@ export function validateLoopChange(change = {}) {
   return refused ?? null;
 }
 
-export function createLoop({ id, prompt, promptFile = null, promptInline = false, cron = null, thread = true, title = null, createdBy = null, nowIso }) {
+export function createLoop({ id, prompt, promptFile = null, promptInline = false, cron = null, title = null, createdBy = null, nowIso }) {
   const file = String(promptFile ?? "").trim();
   const text = file ? "" : String(prompt ?? "").trim();
   return {
@@ -112,7 +112,6 @@ export function createLoop({ id, prompt, promptFile = null, promptInline = false
     promptFile: file || null,
     promptInline: file ? false : Boolean(promptInline && text),
     cron,
-    thread: thread !== false,
     state: "armed",
     createdAt: nowIso,
     createdBy,

@@ -56,12 +56,11 @@ test("TC-LP4 a new loop is armed with no runs and a fresh counter", () => {
   const loop = createLoop({ id: "loop-slack-1", prompt: " 看 CI ", cron: "*/30 * * * *", nowIso: "2026-11-06T00:00:00.000Z", createdBy: "k" });
   assert.equal(loop.prompt, "看 CI");
   assert.equal(loop.state, "armed");
-  assert.equal(loop.thread, true);
   assert.equal(loop.lastRound, 0);
   assert.equal(loop.failStreak, 0);
   assert.equal(loop.lastRunAt, null);
   assert.equal(loop.lastSkipAt, null);
-  assert.equal(createLoop({ id: "x", prompt: "p", cron: "0 9 * * *", thread: false, nowIso: "t" }).thread, false);
+  assert.equal("thread" in loop, false, "a loop has no thread flag: rounds stay at the channel top");
 });
 
 test("TC-LP5 the first due point is the first cron match after createdAt, later ones after lastRunAt", () => {

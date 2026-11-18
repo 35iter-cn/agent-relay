@@ -526,6 +526,12 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
     process.exitCode = rows.some((row) => row.level === "fail") ? 3 : 0;
     return;
   }
+  if (verb === "create" || verb === "update") {
+    if (flags.thread !== undefined || flags["no-thread"] !== undefined) {
+      refuse("thread-flag-removed");
+      return;
+    }
+  }
   if (verb === "create") {
     const platform = loopPlatform(flags, deps.env ?? process.env);
     if (!isPlatform(platform)) {
@@ -569,7 +575,6 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
         promptFile: source.promptFile ?? null,
         promptInline: !source.promptFile && Boolean(source.prompt),
         cron,
-        thread: !flags["no-thread"],
         title,
         createdBy: process.env.AGENT_RELAY_KEY ?? null,
       },
@@ -598,7 +603,6 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
         `state: ${target.state}`,
         `schedule: cron ${target.cron ?? "-"}`,
         `due: ${Number.isFinite(loopDueAt(target)) ? localStamp(loopDueAt(target)) : "-"}`,
-        `thread: ${target.thread !== false}`,
         `rounds: ${target.lastRound ?? 0}  last: ${target.lastOutcome ?? "-"}  streak: ${target.failStreak ?? 0}`,
         ...(Number.isFinite(Date.parse(target.lastSkipAt ?? "")) ? [`skipped: ${localStamp(Date.parse(target.lastSkipAt))}`] : []),
         ...(target.promptFile ? [`prompt-file: ${target.promptFile}`] : [`prompt:`, target.prompt]),
@@ -661,7 +665,6 @@ export async function handleLoopCommand(rest, config, log, deps = {}) {
       }
       command.title = title;
     }
-    if (flags.thread !== undefined || flags["no-thread"] !== undefined) command.thread = !flags["no-thread"];
     await send(command, owner);
     return;
   }

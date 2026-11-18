@@ -146,6 +146,12 @@ Design rules:
   later form its thread carry that id as `root_id`, which lands them on the same key.
   Never fall back to a per-message key for a root message: it splits one conversation
   into two sessions and makes steering impossible.
+- **A bound delivery resolves the conversation's message, not the key.** The key names
+  a conversation; the platform needs a message id to thread under, and only a key that
+  came from a message is one. A job carrying `boundKey` resolves it at delivery time:
+  the conversation's recorded message id, a notice's own message for `notice-<id>`,
+  then `resolveThread` for keys that are already message ids — and the channel top when
+  none answers. A round records the message it delivered, so a later turn has a target.
 - **Progress is one signal, not a per-tool one.** The runtime asks a single
   question — may this round keep running — from two facts it already has: the
   time of the last progress, and whether any tool call is open. It never learns

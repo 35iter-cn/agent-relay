@@ -100,7 +100,6 @@ function seededLoop(overrides = {}) {
     id: "loop-fake-1",
     prompt: "看我的 open PR 有没有 CI 挂掉",
     cron: "*/10 * * * *",
-    thread: true,
     state: "armed",
     createdAt: agoMinutes(60),
     createdBy: "k",
@@ -240,7 +239,7 @@ test("TC-LR7 the hourly round budget skips the tick and warns once", async () =>
   assert.equal(replies.filter((item) => item.key === "notice").length, 1);
 });
 
-test("TC-LR8 the thread hook receives the round key and is optional", async () => {
+test("TC-LR8 a delivered round binds its message to the conversation and opens no thread", async () => {
   const calls = [];
   const { core } = harness({
     state: { loops: { "loop-fake-1": seededLoop() } },
@@ -248,15 +247,8 @@ test("TC-LR8 the thread hook receives the round key and is optional", async () =
   });
   await core.startDueLoops();
   await settle();
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0].key, "loop-fake-1-r1");
-  assert.equal(calls[0].messageId, "n-1");
-  assert.match(calls[0].name, /loop-fake-1 · 第 1 轮/);
-
-  const plain = harness({ state: { loops: { "loop-fake-1": seededLoop({ thread: false }) } }, adapterOverrides: { openRoundThread: async (args) => (calls.push(args), null) } });
-  await plain.core.startDueLoops();
-  await settle();
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 0, "a round stays at the channel top; nothing opens a thread");
+  assert.equal(core.state.convs["loop-fake-1-r1"].messageId, "n-1", "the round's message id is the conversation's bound message");
 });
 
 test("TC-LR9 loop commands start a manual round and push the anchor", async () => {
@@ -300,7 +292,6 @@ test("TC-LR11 the command envelope timestamp never becomes the loop's own schedu
     prompt: "",
     promptFile,
     cron: "*/10 * * * *",
-    thread: true,
     at: new Date().toISOString(),
   });
   await core.drainCommands();
@@ -495,7 +486,7 @@ test("TC-LR19 an unreadable prompt file fails the round, posts nothing and count
   assert.equal(rounds[0].error, "prompt-unreadable");
 });
 
-test("TC-LR22 the delivered header names the loop by its title and the thread uses the same name", async () => {
+test("TC-LR22 the delivered header names the loop by its title, and the header alone", async () => {
   const calls = [];
   const { core, replies } = harness({
     state: { loops: { "loop-fake-1": seededLoop({ title: "每日简报" }) } },
@@ -505,7 +496,7 @@ test("TC-LR22 the delivered header names the loop by its title and the thread us
   await settle();
   assert.equal(replies.length, 1);
   assert.equal(replies[0].text, "📣📣📣 每日简报 · 第 1 轮\n轮次输出");
-  assert.equal(calls[0].name, "每日简报 · 第 1 轮", "the thread name and the notice header agree");
+  assert.equal(calls.length, 0, "the header no longer names a thread");
 
   const cleared = harness({ state: { loops: { "loop-fake-1": seededLoop({ title: null }) } } });
   await cleared.core.startDueLoops();

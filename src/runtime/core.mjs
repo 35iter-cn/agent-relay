@@ -1742,19 +1742,6 @@ export function createCore({ adapter, config, deps = {} }) {
       output: truncateOutput(job.loopOutput ?? ""),
     });
     save();
-    await openRoundThread(job, messageId);
-  }
-
-  async function openRoundThread(job, messageId) {
-    const loop = state.loops?.[job.loop?.id];
-    if (!loop?.thread || !messageId) return;
-    if (typeof adapter.openRoundThread !== "function") return;
-    try {
-      const opened = await adapter.openRoundThread({ messageId, name: roundTitle(loop, job.loop.round), key: job.key });
-      if (opened?.threadId) appendLog({ event: "loop-thread", loop: loop.id, threadId: opened.threadId, key: job.key });
-    } catch (error) {
-      log("warn", "round-thread", String(error?.message ?? error));
-    }
   }
 
   function handleBoundReply(inbound, key) {
@@ -1837,7 +1824,6 @@ export function createCore({ adapter, config, deps = {} }) {
         promptFile,
         promptInline: allowInline,
         cron: command.cron ?? null,
-        thread: command.thread !== false,
         title: command.title ?? null,
         createdBy: command.createdBy ?? null,
         nowIso: isoNow(),
@@ -1890,7 +1876,6 @@ export function createCore({ adapter, config, deps = {} }) {
         if (refused) return { op, refused };
         loop.title = normalizeLoopTitle(command.title);
       }
-      if (command.thread !== undefined) loop.thread = command.thread !== false;
       save();
       return { op, id: loop.id };
     }

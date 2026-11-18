@@ -39,7 +39,6 @@ function loopOf(overrides = {}) {
     id: "loop-slack-1",
     prompt: "看 CI",
     cron: "*/30 * * * *",
-    thread: true,
     state: "armed",
     createdAt: new Date(Date.now() - 3_600_000).toISOString(),
     createdBy: "k",
@@ -88,7 +87,6 @@ test("TC-LC1 create validates before dispatch and routes to the requested platfo
   assert.equal(sent[0].command.promptFile, file);
   assert.equal(sent[0].command.prompt, "");
   assert.equal(sent[0].command.cron, "*/30 * * * *");
-  assert.equal(sent[0].command.thread, true);
 
   const small = await run(["create", "--platform", "slack", "--every", "5m", "--slug", "watch", "--prompt-file", file], config, sent);
   assert.equal(small.code, 3);
@@ -98,12 +96,9 @@ test("TC-LC1 create validates before dispatch and routes to the requested platfo
   assert.equal(long.code, 3);
   assert.match(long.out, /refused: prompt-too-long/);
 
-  const noThread = await run(["create", "--platform", "slack", "--cron", "0 9 * * *", "--slug", "probe", "--prompt-file", promptFileFor(config, "probe-slack", "p\n"), "--no-thread"], config, sent);
-  assert.equal(noThread.code, 0);
-  assert.equal(sent.at(-1).command.thread, false);
-  assert.equal(sent.at(-1).command.cron, "0 9 * * *");
-  assert.equal(sent.at(-1).command.loopAt, undefined, "a loop carries no one-shot timestamp");
-  assert.equal(sent.length, 2);
+  const droppedFlag = await run(["create", "--platform", "slack", "--cron", "0 9 * * *", "--slug", "probe", "--prompt-file", promptFileFor(config, "probe-slack", "p\n"), "--no-thread"], config, sent);
+  assert.notEqual(droppedFlag.code, 0, "the thread flag is gone, so the loop CLI refuses it");
+  assert.equal(sent.length, 1);
 });
 
 test("TC-LC2 the platform defaults to AGENT_RELAY_PLATFORM and the loop id decides the owner", async () => {

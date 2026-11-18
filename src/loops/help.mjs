@@ -3,7 +3,7 @@ import { renderHelp } from "../help.mjs";
 export const LOOP_VERBS = [
   {
     verb: "create",
-    usage: 'loop create --platform <p> --slug <name> --cron "<expr>" --prompt-file <path> [--title <text>] [--no-thread]',
+    usage: 'loop create --platform <p> --slug <name> --cron "<expr>" --prompt-file <path> [--title <text>]',
     detail: [
       "schedule 只有 cron 一种，必须给。",
       '  --cron "<expr>"   5 字段（分 时 日 月 周），按 Asia/Shanghai 定点，如 "0 13 * * *" 是每天 13:00',
@@ -14,7 +14,6 @@ export const LOOP_VERBS = [
       "路径不在那个目录下会被 refused: prompt-file-not-canonical；内联 --prompt 需要 --allow-inline。",
       "每轮是新会话，正文原样投递；正文只有一行 NOOP（或整个输出为空）的轮次不发消息。",
       "--title <text> 每轮消息头的可读名字（≤80 字节，如「每日简报」）。不给就回落到 loop id。",
-      "--no-thread 不给轮次消息开 thread（默认开，平台支持才生效）。",
     ],
     example: 'agent-relay loop create --platform slack --slug intake --cron "*/30 * * * *" --prompt-file ~/.config/agent-relay/prompts/loops/intake-slack/prompt.md',
   },
@@ -22,7 +21,7 @@ export const LOOP_VERBS = [
   { verb: "show", usage: "loop show <id>", detail: ["打一条 loop 的定义、状态、下一次触发点与最近一轮结果。"] },
   {
     verb: "update",
-    usage: 'loop update <id> [--cron "<expr>" | --prompt-file <path> | --prompt <text> --allow-inline | --title <text> | --thread | --no-thread]',
+    usage: 'loop update <id> [--cron "<expr>" | --prompt-file <path> | --prompt <text> --allow-inline | --title <text>]',
     detail: [
       "改 --cron 会替换表达式并清掉上一次的 skipped 记录。",
       "只改 prompt 时 schedule 与 lastRunAt 不动；paused 的 loop 改 schedule 不会自己恢复，要 loop resume。",
