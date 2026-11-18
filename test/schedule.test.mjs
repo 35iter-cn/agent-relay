@@ -361,3 +361,19 @@ test("TC-SJ18 a job scheduled before the fix still lands on the round's message 
   assert.equal(replies[0].replyTo, "1794812345.000100", "the redelivery lands in the round's thread");
   assert.equal(core.state.jobs[legacy.id].status, "done");
 });
+
+test("TC-SC1 --join turns a scheduled turn into a wake turn", async () => {
+  const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
+  const { core } = harness({ clock, spawn: () => fakeChild({ stdout: "" }) });
+  const job = core.scheduleJob({ ...brief({ name: "late" }), dueAt: null, join: true });
+  await tick();
+  assert.equal(core.state.jobs[job.job].kind, "wake");
+});
+
+test("TC-SC2 without --join the turn stays scheduled and waits its turn", async () => {
+  const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
+  const { core } = harness({ clock, spawn: () => fakeChild({ stdout: "" }) });
+  const job = core.scheduleJob({ ...brief({ name: "plain" }), dueAt: null });
+  await tick();
+  assert.equal(core.state.jobs[job.job].kind, "scheduled");
+});

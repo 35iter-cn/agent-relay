@@ -2314,3 +2314,69 @@ test("TC-WK2 an rpc worker learns its conversation key from AGENT_RELAY_KEY", as
   assert.equal(seen[0].AGENT_RELAY_KEY, "th-abc");
   assert.equal(seen[0].AGENT_RELAY_PLATFORM, "fake");
 });
+
+test("TC-AD1 a message that arrives while pi is streaming with no job behind it is parked, not prompted", async () => {
+  const child = fakeRpcChild({ answer: "第一轮" });
+  const { core, replies } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await core.handle(inbound({ dedupeId: "m1", text: "第一问" }));
+  await tick();
+  const prompted = child.prompted;
+  await core.handle(inbound({ dedupeId: "m2", text: "第二问" }));
+  await tick();
+  assert.equal(child.prompted, prompted, "no second prompt goes into a streaming agent");
+  assert.equal(Object.values(core.state.jobs).at(-1).waitFor, "settled");
+  assert.deepEqual(replies.map((item) => item.text), ["第一轮"]);
+});
+
+test("TC-AD2 the parked message runs once pi settles", async () => {
+  const child = fakeRpcChild({ answer: "答" });
+  const { core } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await core.handle(inbound({ dedupeId: "m1", text: "第一问" }));
+  await tick();
+  const before = child.prompted;
+  await core.handle(inbound({ dedupeId: "m2", text: "第二问" }));
+  await tick();
+  child.stdout.emit("data", `${JSON.stringify({ type: "agent_settled", aborted: false })}\n`);
+  await tick();
+  await tick();
+  assert.equal(child.prompted, before + 1, "the parked job is prompted after the settle");
+});
+
+test("TC-AD3 a prompt rejected with already processing parks the job instead of failing it", async () => {
+  const child = new EventEmitter();
+  child.pid = 888777;
+  child.written = [];
+  child.stdout = new EventEmitter();
+  child.stderr = new EventEmitter();
+  child.prompted = 0;
+  let stateCalls = 0;
+  child.stdin = {
+    writable: true,
+    write: (chunk) => {
+      const record = JSON.parse(String(chunk).trim());
+      child.written.push(record);
+      const respond = (data, success = true) => setImmediate(() => child.stdout.emit("data", `${JSON.stringify({ id: record.id, type: "response", command: record.type, success, data })}\n`));
+      if (record.type === "get_state") {
+        stateCalls += 1;
+        return respond({ sessionId: "fs-th-abc", isStreaming: stateCalls > 1, pendingMessageCount: 0 });
+      }
+      if (record.type === "prompt") {
+        child.prompted += 1;
+        return setImmediate(() => child.stdout.emit("data", `${JSON.stringify({ id: record.id, type: "response", command: record.type, success: false, error: "Agent is already processing. Specify streamingBehavior ('steer' or 'followUp') to queue the message." })}\n`));
+      }
+      return respond({});
+    },
+    end: () => {},
+    on: () => {},
+  };
+  child.kill = () => {};
+  const { core, replies } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await core.handle(inbound({ dedupeId: "m1", text: "问一句" }));
+  await tick();
+  await tick();
+  const job = Object.values(core.state.jobs).at(-1);
+  assert.equal(job.waitFor, "settled", "the job waits for the running turn");
+  assert.notEqual(job.status, "failed");
+  assert.deepEqual(replies, [], "nothing is posted for a deferred prompt");
+  assert.equal(core.state.seen.m1, job.id);
+});
