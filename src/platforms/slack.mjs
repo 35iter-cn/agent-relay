@@ -245,6 +245,13 @@ export function sessionFor(thread) {
   return `slack-${String(thread).replace(".", "")}`;
 }
 
+const MESSAGE_TS = /^\d{10}\.\d+$/;
+
+export function resolveThread(key) {
+  const value = String(key ?? "");
+  return MESSAGE_TS.test(value) ? value : null;
+}
+
 export function acceptsEvent(event, { channel = null, allowedUser = null, botUser = null } = {}) {
   if (!event) return { ok: false, why: "empty" };
   if (!channel || !allowedUser) return { ok: false, why: "unconfigured" };
@@ -592,7 +599,8 @@ export function createPlatform({ config, log: baseLog }) {
     piBin: config.workerBin,
     sessionFor,
 
-    selfContext: (key) => ({ chatId: channel, threadId: null, replyTo: key }),
+    selfContext: (key) => ({ chatId: channel, threadId: null, replyTo: null, boundKey: key }),
+    resolveThread,
 
     async start({ onMessage, onReady, core }) {
       coreRef = core;

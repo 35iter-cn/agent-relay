@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { EventEmitter } from "node:events";
 import { createCore, DELIVERY_BACKOFF_MS } from "../src/runtime/core.mjs";
-import { emptyState } from "../src/state/schema.mjs";
+import { emptyState, SCHEMA_VERSION } from "../src/state/schema.mjs";
 import { renderPrompt } from "../src/shared/prompt.mjs";
 import { pruneOldFiles } from "../src/shared/retention.mjs";
 import { readJson, writeJsonAtomic } from "../src/shared/json.mjs";
@@ -310,7 +310,7 @@ test("TC-24 a duplicate for a finished job is dropped", async () => {
 test("legacy seen values are treated as already answered", async () => {
   const { core } = harness({ state: { cursor: null, seen: { old: "2026-01-01T00:00:00.000Z" }, convs: {}, alerts: {}, meta: {} } });
   assert.equal(core.state.seen.old, "legacy");
-  assert.equal(core.state.meta.schemaVersion, 3);
+  assert.equal(core.state.meta.schemaVersion, SCHEMA_VERSION);
   assert.equal(await core.handle(inbound({ dedupeId: "old" })), "duplicate");
   assert.deepEqual(core.state.jobs, {});
 });

@@ -33,6 +33,7 @@ export function createJob(state, inbound, nowIso = () => new Date().toISOString(
       messageId: inbound.messageId ?? null,
       threadId: inbound.threadId ?? null,
       replyTo: inbound.replyTo ?? null,
+      boundKey: inbound.boundKey ?? null,
       channelPost: inbound.channelPost ?? null,
       attachments: Array.isArray(inbound.attachments) ? inbound.attachments : [],
     },

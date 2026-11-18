@@ -71,9 +71,9 @@ function harness({ state = emptyState(), spawn, sessions = [], clock } = {}) {
     worker: "stub",
     piBin: "/bin/true",
     sessionFor: (key) => `fs-${key}`,
-    reply: async (ctx, text) => (replies.push({ key: ctx.key, text }), { messageId: `m-${replies.length}` }),
+    reply: async (ctx, text) => (replies.push({ key: ctx.key, replyTo: ctx.replyTo, text }), { messageId: `m-${replies.length}` }),
     postNotice: async (text) => (replies.push({ key: "notice", text }), { messageId: "notice-1" }),
-    selfContext: (key) => ({ chatId: "c1", threadId: null, replyTo: key }),
+    selfContext: (key) => ({ chatId: "c1", threadId: null, replyTo: null, boundKey: key }),
     buildWorker: ({ prompt }) => (prompts.push(prompt), { bin: "/bin/true", args: [] }),
   };
   const core = createCore({
@@ -284,7 +284,7 @@ test("TC-SJ13 a platform without selfContext cannot be scheduled", async () => {
   assert.deepEqual(core.scheduleJob({ ...brief({ name: "no-ctx" }), dueAt: null }), { rejected: "platform" });
 });
 
-test("TC-SJ14 slack addresses a thread without a message; contract keeps selfContext optional", () => {
+test("TC-SJ14 slack keeps the conversation key and says which keys are already message ids", () => {
   const slack = createSlack({
     config: {
       readEnv: () => ({ SLACK_APP_TOKEN: "xapp", SLACK_BOT_TOKEN: "xoxb", AGENT_RELAY_SLACK_CHANNEL: "C1", AGENT_RELAY_ALLOWED_USER: "U1" }),
@@ -294,10 +294,70 @@ test("TC-SJ14 slack addresses a thread without a message; contract keeps selfCon
     },
     log: () => {},
   });
-  assert.deepEqual(slack.selfContext("1793850902.242119"), { chatId: "C1", threadId: null, replyTo: "1793850902.242119" });
-
+  assert.deepEqual(slack.selfContext("1793850902.242119"), { chatId: "C1", threadId: null, replyTo: null, boundKey: "1793850902.242119" });
+  assert.deepEqual(slack.selfContext("sentry-fixer-slack-r82").boundKey, "sentry-fixer-slack-r82");
+  assert.equal(slack.resolveThread("1793850902.242119"), "1793850902.242119");
+  assert.equal(slack.resolveThread("sentry-fixer-slack-r82"), null);
+  assert.equal(slack.resolveThread("notice-ntc-166"), null);
 
   const base = { name: "slack", start: () => {}, reply: () => {}, sessionFor: (key) => key };
   assert.doesNotThrow(() => definePlatform(base));
   assert.throws(() => definePlatform({ ...base, selfContext: "nope" }), /selfContext:function/);
+  assert.throws(() => definePlatform({ ...base, resolveThread: "nope" }), /resolveThread:function/);
+});
+
+test("TC-SJ16 a scheduled turn threads under the conversation's bound message, a notice's own message, or the channel top", async () => {
+  const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
+  const { core, replies } = harness({ clock });
+  core.state.convs["loop-fake-1-r7"] = { session: "fs-1", rootText: "轮次", lastMsgTs: null, messageId: "1794981707.262569", activeJob: null };
+  core.state.convs["notice-ntc-1"] = { session: "fs-2", rootText: "通知", lastMsgTs: null, messageId: null, activeJob: null };
+  core.state.notices["ntc-1"] = { id: "ntc-1", messageId: "1794474032.795939", reply: { mode: "conversation", key: "notice-ntc-1" } };
+  core.state.convs["loop-fake-1-r8"] = { session: "fs-3", rootText: "空轮", lastMsgTs: null, messageId: null, activeJob: null };
+
+  for (const [key, name] of [["loop-fake-1-r7", "round"], ["notice-ntc-1", "notice"], ["loop-fake-1-r8", "bare"]]) {
+    const made = core.scheduleJob({ op: "schedule", key, name, prompt: "看进度", dueAt: null, graceMs: 6 * 3_600_000 });
+    assert.ok(made.job, `${name} scheduled`);
+    await tick();
+  }
+
+  const byKey = Object.fromEntries(replies.map((item) => [item.key, item.replyTo]));
+  assert.equal(byKey["loop-fake-1-r7"], "1794981707.262569", "a round's own message is the thread root");
+  assert.equal(byKey["notice-ntc-1"], "1794474032.795939", "a notice conversation threads under that notice");
+  assert.equal(byKey["loop-fake-1-r8"], null, "nothing recorded and no platform answer: the channel top");
+  assert.equal(Object.values(core.state.jobs).every((job) => job.status === "done"), true, "no delivery failed");
+});
+
+test("TC-SJ17 a key that is already a message id needs no recorded message", async () => {
+  const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
+  const { core, replies, adapter } = harness({ clock });
+  adapter.resolveThread = (key) => (/^\d{10}\.\d+$/.test(String(key)) ? String(key) : null);
+  core.state.convs["1794206521.110229"] = { session: "fs-4", rootText: "真人线程", lastMsgTs: null, messageId: null, activeJob: null };
+  core.scheduleJob({ op: "schedule", key: "1794206521.110229", name: "human", prompt: "看进度", dueAt: null, graceMs: 6 * 3_600_000 });
+  await tick();
+  assert.equal(replies[0].replyTo, "1794206521.110229", "a user thread's key is a message id, so it is used as-is");
+});
+
+test("TC-SJ18 a job scheduled before the fix still lands on the round's message after the upgrade", async () => {
+  const clock = { value: Date.parse("2026-11-16T21:56:00+08:00") };
+  const seed = emptyState();
+  seed.meta.schemaVersion = 3;
+  seed.convs["sentry-fixer-slack-r2"] = { session: "fs-r2", rootText: "第 2 轮", lastMsgTs: null, activeJob: null };
+  seed.notices["ntc-84"] = { id: "ntc-84", messageId: "1794812345.000100", sentAt: "2026-11-09T10:00:00.000Z", reply: { mode: "conversation", key: "sentry-fixer-slack-r2" } };
+  const legacy = createJob(seed, { key: "sentry-fixer-slack-r2", session: "fs-r2", dedupeId: "sentry-recheck-legacy", text: "复核", chatId: "c1", replyTo: "sentry-fixer-slack-r2" });
+  legacy.status = "scheduled";
+  legacy.dueAt = new Date(clock.value - 60_000).toISOString();
+  legacy.expiresAt = new Date(clock.value + 6 * 3_600_000).toISOString();
+  seed.jobs[legacy.id] = legacy;
+  seed.seen[legacy.inbound.dedupeId] = legacy.id;
+
+  const { core, replies } = harness({ clock, state: seed });
+  assert.equal(core.state.convs["sentry-fixer-slack-r2"].messageId, "1794812345.000100", "the bound notice backfills the conversation's message");
+  assert.equal(core.state.jobs[legacy.id].inbound.boundKey, "sentry-fixer-slack-r2", "the legacy reply target becomes the bound key");
+  assert.equal(core.state.jobs[legacy.id].inbound.replyTo, null);
+
+  core.startDueJobs();
+  await tick();
+  assert.equal(replies.length, 1);
+  assert.equal(replies[0].replyTo, "1794812345.000100", "the redelivery lands in the round's thread");
+  assert.equal(core.state.jobs[legacy.id].status, "done");
 });

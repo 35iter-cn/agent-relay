@@ -402,7 +402,7 @@ export function createCore({ adapter, config, deps = {} }) {
   async function replyToJob(job, text) {
     if (!job) return false;
     try {
-      await adapter.reply(ctxOf(job), text);
+      await adapter.reply(sendContext(job), text);
       return true;
     } catch (error) {
       log("error", "action-reply", String(error?.message ?? error));
@@ -743,7 +743,7 @@ export function createCore({ adapter, config, deps = {} }) {
       job.error = "empty-prompt";
       job.updatedAt = isoNow();
       save();
-      return adapter.reply(ctxOf(job), prompts.emptyPrompt()).catch((error) => log("error", "empty-prompt", String(error?.message ?? error)));
+      return adapter.reply(sendContext(job), prompts.emptyPrompt()).catch((error) => log("error", "empty-prompt", String(error?.message ?? error)));
     };
     if (typeof built?.then === "function") return built.then(run);
     return run(built);
@@ -856,7 +856,7 @@ export function createCore({ adapter, config, deps = {} }) {
       let sent = 0;
       for (const step of plan) {
         if (step.action === "skip") continue;
-        if (step.kind === "media") await adapter.postMedia(ctxOf(job), step.files);
+        if (step.kind === "media") await adapter.postMedia(sendContext(job), step.files);
         else await replyNow(job, step.text);
         sent += 1;
       }
@@ -871,7 +871,7 @@ export function createCore({ adapter, config, deps = {} }) {
     let failure = null;
     for (let attempt = 1; attempt <= MAX_DELIVERY_ATTEMPTS; attempt += 1) {
       try {
-        await adapter.reply(ctxOf(job), text);
+        await adapter.reply(sendContext(job), text);
         return;
       } catch (error) {
         failure = error;
@@ -1132,6 +1132,31 @@ export function createCore({ adapter, config, deps = {} }) {
     return media.files.length || media.invalid.length ? media : null;
   }
 
+  function conversationTarget(key) {
+    if (!key) return null;
+    const recorded = state.convs[key]?.messageId;
+    if (recorded) return String(recorded);
+    const noticePrefix = "notice-";
+    if (String(key).startsWith(noticePrefix)) {
+      const messageId = state.notices?.[String(key).slice(noticePrefix.length)]?.messageId;
+      if (messageId) return String(messageId);
+    }
+    return null;
+  }
+
+  function deliveryTarget(job) {
+    const bound = job.inbound?.boundKey;
+    if (!bound) return job.inbound?.replyTo ?? null;
+    const recorded = conversationTarget(bound);
+    if (recorded) return recorded;
+    return typeof adapter.resolveThread === "function" ? adapter.resolveThread(bound) : null;
+  }
+
+  function sendContext(job) {
+    const ctx = ctxOf(job);
+    return { ...ctx, replyTo: ctx.replyTo ?? deliveryTarget(job) };
+  }
+
   async function deliverParts(job) {
     const canEdit = typeof adapter.edit === "function";
     const canLocate = typeof adapter.locateReply === "function";
@@ -1142,7 +1167,7 @@ export function createCore({ adapter, config, deps = {} }) {
       if (step.action === "skip") continue;
       try {
         if (step.action === "locate-or-send") {
-          const located = canLocate ? await adapter.locateReply(ctxOf(job), { text: step.text, since: step.since }) : null;
+          const located = canLocate ? await adapter.locateReply(sendContext(job), { text: step.text, since: step.since }) : null;
           if (located) {
             job.parts = [...job.parts.filter((part) => part.i !== step.i), { i: step.i, messageId: String(located), hash: hashOf(step.text), sentAt: isoNow(), located: true }];
             job.updatedAt = isoNow();
@@ -1153,17 +1178,17 @@ export function createCore({ adapter, config, deps = {} }) {
           appendLog({ event: canLocate ? "delivery-locate-missed" : "delivery-no-locator", job: job.id, key: job.key, part: step.i });
         }
         if (step.kind === "media") {
-          await adapter.postMedia(ctxOf(job), step.files);
+          await adapter.postMedia(sendContext(job), step.files);
           job.parts = [...job.parts.filter((part) => part.i !== step.i), { i: step.i, kind: "media", messageId: null, hash: step.hash, sentAt: isoNow() }];
         } else if (step.action === "edit") {
-          const ok = await adapter.edit(ctxOf(job), step.messageId, step.text);
+          const ok = await adapter.edit(sendContext(job), step.messageId, step.text);
           if (!ok) {
             log("warn", "edit-skip", job.id, step.i);
             continue;
           }
           job.parts = [...job.parts.filter((part) => part.i !== step.i), { i: step.i, messageId: step.messageId, hash: hashOf(step.text), sentAt: isoNow() }];
         } else {
-          const sent = await adapter.reply(ctxOf(job), step.text);
+          const sent = await adapter.reply(sendContext(job), step.text);
           if (!sent?.messageId) throw deliveryError("reply returned no messageId", { code: "no-message-id" });
           job.parts = [...job.parts.filter((part) => part.i !== step.i), { i: step.i, messageId: String(sent.messageId), hash: hashOf(step.text), sentAt: isoNow() }];
         }
@@ -1258,7 +1283,7 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   function startJob(job) {
-    const entry = state.convs[job.key] ?? { session: job.session, rootText: job.inbound.rootText, lastMsgTs: null, activeJob: null };
+    const entry = state.convs[job.key] ?? { session: job.session, rootText: job.inbound.rootText, lastMsgTs: null, messageId: null, activeJob: null };
     if (KEY_WINDOW_MAX_MS > 0) {
       const spent = keyWindowSpentMs(job.key);
       if (spent >= KEY_WINDOW_MAX_MS) {
@@ -1327,7 +1352,7 @@ export function createCore({ adapter, config, deps = {} }) {
     }
     if (!job.noticeSent) {
       try {
-        await adapter.reply(ctxOf(job), prompts.interrupt());
+        await adapter.reply(sendContext(job), prompts.interrupt());
       } catch (error) {
         log("error", "interrupt-reply", String(error?.message ?? error));
       }
@@ -1441,7 +1466,7 @@ export function createCore({ adapter, config, deps = {} }) {
     state.jobs[job.id] = job;
     state.inbox.push(job.id);
     state.seen[inbound.dedupeId] = job.id;
-    const entry = state.convs[job.key] ?? { session: job.session, rootText: job.inbound.rootText, lastMsgTs: null, activeJob: null };
+    const entry = state.convs[job.key] ?? { session: job.session, rootText: job.inbound.rootText, lastMsgTs: null, messageId: null, activeJob: null };
     if (!entry.activeJob) entry.activeJob = null;
     entry.lastMsgTs = job.createdAt;
     if (!entry.rootText) entry.rootText = job.inbound.rootText;
@@ -1540,7 +1565,7 @@ export function createCore({ adapter, config, deps = {} }) {
     job.status = "scheduled";
     state.jobs[job.id] = job;
     state.seen[inbound.name] = job.id;
-    const entry = state.convs[key] ?? { session: job.session, rootText: job.inbound.rootText, lastMsgTs: null, activeJob: null };
+    const entry = state.convs[key] ?? { session: job.session, rootText: job.inbound.rootText, lastMsgTs: null, messageId: null, activeJob: null };
     if (!entry.rootText) entry.rootText = job.inbound.rootText;
     state.convs[key] = entry;
     pruneSeen();
@@ -1661,6 +1686,8 @@ export function createCore({ adapter, config, deps = {} }) {
         });
         job.noticeId = notice.id;
         job.parts = [{ i: 0, messageId: notice.messageId ?? null, hash: hashOf(text), sentAt: isoNow() }];
+        const entry = state.convs[job.key];
+        if (entry && notice.messageId) entry.messageId = String(notice.messageId);
         job.status = "done";
         job.answer = undefined;
         job.updatedAt = isoNow();
@@ -1715,19 +1742,6 @@ export function createCore({ adapter, config, deps = {} }) {
       output: truncateOutput(job.loopOutput ?? ""),
     });
     save();
-    await openRoundThread(job, messageId);
-  }
-
-  async function openRoundThread(job, messageId) {
-    const loop = state.loops?.[job.loop?.id];
-    if (!loop?.thread || !messageId) return;
-    if (typeof adapter.openRoundThread !== "function") return;
-    try {
-      const opened = await adapter.openRoundThread({ messageId, name: roundTitle(loop, job.loop.round), key: job.key });
-      if (opened?.threadId) appendLog({ event: "loop-thread", loop: loop.id, threadId: opened.threadId, key: job.key });
-    } catch (error) {
-      log("warn", "round-thread", String(error?.message ?? error));
-    }
   }
 
   function handleBoundReply(inbound, key) {
@@ -1810,7 +1824,6 @@ export function createCore({ adapter, config, deps = {} }) {
         promptFile,
         promptInline: allowInline,
         cron: command.cron ?? null,
-        thread: command.thread !== false,
         title: command.title ?? null,
         createdBy: command.createdBy ?? null,
         nowIso: isoNow(),
@@ -1863,7 +1876,6 @@ export function createCore({ adapter, config, deps = {} }) {
         if (refused) return { op, refused };
         loop.title = normalizeLoopTitle(command.title);
       }
-      if (command.thread !== undefined) loop.thread = command.thread !== false;
       save();
       return { op, id: loop.id };
     }
