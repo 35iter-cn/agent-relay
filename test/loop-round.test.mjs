@@ -177,7 +177,7 @@ test("TC-LR3 replying to a round message continues that round's session", async 
   assert.equal(replyJob.key, roundKey);
   assert.equal(replyJob.session, roundJob.session);
   assert.equal(core.state.convs[roundKey].session, roundJob.session);
-  assert.equal(replyJob.origin, "user");
+  assert.equal(replyJob.kind, "conversation");
 });
 
 test("TC-LR4 a round still running keeps the next tick from starting another one", async () => {

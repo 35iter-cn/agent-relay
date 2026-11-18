@@ -11,8 +11,8 @@ const KIND_BY_ORIGIN = {
 function migrateJobs(jobs) {
   for (const job of Object.values(jobs ?? {})) {
     if (!job) continue;
-    if (job.origin === "loop") job.origin = "system";
     if (!job.kind) job.kind = KIND_BY_ORIGIN[job.origin ?? "user"] ?? "conversation";
+    delete job.origin;
   }
 }
 

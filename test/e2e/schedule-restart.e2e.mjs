@@ -131,7 +131,7 @@ await wait(400);
 const delivered = Object.values(readState().jobs).find((job) => job.inbound?.name === "d-late");
 check("a missed due time still starts the turn once", dispatched.length === 1, `dispatched=${dispatched.length}`);
 check("the late delay is recorded", (delivered?.lateMs ?? 0) >= 1000 && (delivered?.lateMs ?? 0) < 60_000, `${delivered?.lateMs}`);
-check("the wake prompt carries the relay head and the brief", /\[relay\] kind=scheduled origin=self name=d-late/.test(dispatched[0] ?? "") && /读进度/.test(dispatched[0] ?? ""));
+check("the wake prompt carries the relay head and the brief", /\[relay\] kind=scheduled name=d-late/.test(dispatched[0] ?? "") && /读进度/.test(dispatched[0] ?? ""));
 check("the turn replies once", readReplies().filter((item) => item.key === KEY).length === 1);
 check("the event log records job-due", readEvents().some((event) => event.event === "job-due"));
 skew = 31_000;

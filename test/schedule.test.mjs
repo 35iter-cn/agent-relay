@@ -248,7 +248,7 @@ test("TC-SJ10 a scheduled turn sends the origin line and the brief, no template"
   core.scheduleJob({ ...brief({ name: "render", prompt: "读 /tmp/x 的行数" }), dueAt: null });
   await tick();
   assert.equal(prompts.length, 1);
-  assert.match(prompts[0], /^\[relay\] kind=scheduled origin=self name=render at=/);
+  assert.match(prompts[0], /^\[relay\] kind=scheduled name=render at=/);
   assert.match(prompts[0], /读 \/tmp\/x 的行数/);
   assert.doesNotMatch(prompts[0], /\{\{/);
   assert.doesNotMatch(prompts[0], /COMMON|CONV/);

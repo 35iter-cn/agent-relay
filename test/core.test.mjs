@@ -751,7 +751,6 @@ test("TC-RT4 a retrying job survives a restart and its due delivery lands", asyn
     session: "fs-th-abc",
     status: "retrying",
     inbound: { text: "hello", rootText: "hello", dedupeId: "m1", messageId: "m1", chatId: "c1" },
-    origin: "user",
     answer: "答案",
     parts: [],
     deliveryRetryAt: new Date(clock.now).toISOString(),
@@ -778,7 +777,6 @@ test("TC-RT5 a chunk that failed last time is looked up before it is sent again"
     session: "fs-th-abc",
     status: "retrying",
     inbound: { text: "hello", rootText: "hello", dedupeId: "m1", messageId: "m1", chatId: "c1" },
-    origin: "user",
     answer: "答案",
     parts: [{ i: 0, messageId: null, hash: hashOf("答案"), sentAt: new Date(clock.now).toISOString(), uncertainSince: clock.now - 20_000 }],
     deliveryRetryAt: new Date(clock.now).toISOString(),
@@ -1900,10 +1898,10 @@ test("TC-RPC23 an error frame is never delivered as an answer segment", async ()
   assert.equal(replies[0].text, "供应商拒答");
 });
 
-test("TC-RPC24 a non-user origin job keeps one message per run", async () => {
+test("TC-RPC24 a scheduled job keeps one message per run", async () => {
   const child = fakeRpcChild({ frames: [{ text: "第一段", stopReason: "stop" }, { text: "第二段", stopReason: "stop" }] });
   const { core, replies } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
-  await core.handle(inbound({ text: "两个问题", origin: "self" }));
+  await core.handle(inbound({ text: "两个问题", kind: "scheduled" }));
   await tick();
   assert.equal(replies.length, 1);
   assert.equal(replies[0].text, "第二段");
@@ -2168,7 +2166,6 @@ test("TC-ST28 a conversation round keeps the 90-minute budget; a loop round has 
   job.budgetMs = -5;
   assert.equal(core.budgetOf(job), 90 * 60_000);
   job.kind = "loop";
-  job.origin = "system";
   assert.equal(core.budgetOf(job), 0);
   job.budgetMs = 600 * 60_000;
   assert.equal(core.budgetOf(job), 0);
@@ -2200,7 +2197,6 @@ async function loopRoundJob() {
   const built = await runningJob({ spawn: closingSpawn(), adapterOverrides: { chunkLimit: 4000 } });
   const { core, job } = built;
   job.kind = "loop";
-  job.origin = "system";
   job.loop = { id: "daily-briefing-slack", round: 8 };
   core.state.loops = { "daily-briefing-slack": { id: "daily-briefing-slack", title: "每日简报" } };
   job.startedAt = Number(job.startedAt ?? built.clock.now);

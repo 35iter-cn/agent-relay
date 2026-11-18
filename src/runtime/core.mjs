@@ -707,7 +707,7 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   function relayHead(job) {
-    const fields = [`kind=${kindOf(job)}`, `origin=${job.origin ?? "self"}`];
+    const fields = [`kind=${kindOf(job)}`];
     if (job.inbound?.name) fields.push(`name=${job.inbound.name}`);
     if (job.dueAt) fields.push(`at=${job.dueAt}`);
     if (Number(job.lateMs) > 0) fields.push(`late=${Math.round(Number(job.lateMs) / 1000)}s`);
@@ -921,7 +921,7 @@ export function createCore({ adapter, config, deps = {} }) {
     }
     if (code === "worker-down") return "这一轮没能启动会话进程。已经记下，再发一次就会重试。";
     if (code === "busy") return prompts.busyReply();
-    if (kindOf(job) === "conversation" && job.origin === "user") return prompts.emptyRunReply();
+    if (kindOf(job) === "conversation") return prompts.emptyRunReply();
     return null;
   }
 
@@ -1442,7 +1442,7 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   function allowsJoin(inbound) {
-    const kind = kindOf({ kind: inbound.kind, origin: inbound.origin ?? "user" });
+    const kind = kindOf({ kind: inbound.kind });
     return kind === "conversation" || kind === "wake";
   }
 
@@ -1668,7 +1668,6 @@ export function createCore({ adapter, config, deps = {} }) {
     if (at <= now()) {
       if (running.size >= adapter.maxWorkers && state.inbox.length >= adapter.queueDepth) return { rejected: "queue-full" };
       const started = acceptJob(inbound);
-      started.origin = caller.inside ? "self" : "external";
       started.kind = join ? "wake" : "scheduled";
       started.chain = caller.depth;
       started.dueAt = isoAt(at);
@@ -1680,7 +1679,6 @@ export function createCore({ adapter, config, deps = {} }) {
     }
 
     const job = createJob(state, inbound, isoNow);
-    job.origin = caller.inside ? "self" : "external";
     job.kind = join ? "wake" : "scheduled";
     job.chain = caller.depth;
     job.dueAt = isoAt(at);
@@ -1747,7 +1745,6 @@ export function createCore({ adapter, config, deps = {} }) {
       replyTo: null,
       attachments: [],
     });
-    job.origin = "system";
     job.kind = "loop";
     job.chain = 0;
     job.dueAt = isoAt(at - lateMs);
