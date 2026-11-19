@@ -84,6 +84,20 @@ export function resolveOptions(section = {}) {
   return { options: { relay: unflatten({ ...defaults, ...given }) }, problems: [] };
 }
 
+export const GROUP_PATTERN = /^[a-z][a-z0-9-]{0,15}$/;
+
+export function groupChannel(section, group) {
+  const groups = section?.groups ?? {};
+  const fallbackName = section?.defaultGroup ?? "main";
+  const fallback = groups[fallbackName] ?? null;
+  const name = String(group ?? "").trim();
+  if (!name) return { chatId: fallback, group: fallbackName };
+  if (!GROUP_PATTERN.test(name)) return { refused: "bad-group" };
+  const hit = groups[name];
+  if (hit) return { chatId: hit, group: name };
+  return { chatId: fallback, group: fallbackName, unmapped: name };
+}
+
 export function readConfigFile(file) {
   if (!existsSync(file)) return { file, missing: true };
   let raw;

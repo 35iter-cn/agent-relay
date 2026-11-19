@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { DEFAULTS } from "../src/config.mjs";
 import { createPlatform as slack } from "../src/platforms/slack.mjs";
 import { createPlatform as feishu } from "../src/platforms/feishu.mjs";
 
@@ -14,6 +15,10 @@ const config = {
   userPromptsDir: "/tmp/tc/user-prompts",
   uploadsDir: "/tmp/tc/uploads",
   cli: "agent-relay",
+  configFile: "/tmp/tc/config.json",
+  configProblem: null,
+  options: DEFAULTS,
+  platform: () => null,
   readEnv: () => ({}),
   envFile: (name) => `/tmp/tc/${name}`,
   stateFile: () => "/tmp/tc/state.json",

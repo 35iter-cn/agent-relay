@@ -10,6 +10,7 @@ import { emptyState } from "../src/state/schema.mjs";
 import { pruneState } from "../src/state/prune.mjs";
 import { createJob } from "../src/jobs/model.mjs";
 import { definePlatform } from "../src/platforms/contract.mjs";
+import { DEFAULTS } from "../src/config.mjs";
 import { createPlatform as createSlack } from "../src/platforms/slack.mjs";
 import { writeJsonAtomic } from "../src/shared/json.mjs";
 
@@ -287,10 +288,11 @@ test("TC-SJ13 a platform without selfContext cannot be scheduled", async () => {
 test("TC-SJ14 slack keeps the conversation key and says which keys are already message ids", () => {
   const slack = createSlack({
     config: {
-      readEnv: () => ({ SLACK_APP_TOKEN: "xapp", SLACK_BOT_TOKEN: "xoxb", AGENT_RELAY_SLACK_CHANNEL: "C1", AGENT_RELAY_ALLOWED_USER: "U1" }),
-      envFile: (name) => `/nonexistent/${name}`,
-      home: tmpdir(),
       configDir: tmpdir(),
+      configFile: "/tmp/config.json",
+      configProblem: null,
+      options: DEFAULTS,
+      platform: (name) => (name === "slack" ? { appToken: "xapp", botToken: "xoxb", allowedUser: "U1", defaultGroup: "main", groups: { main: "C1" } } : null),
     },
     log: () => {},
   });

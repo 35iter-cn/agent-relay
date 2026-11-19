@@ -5,11 +5,12 @@ import { join } from "node:path";
 import assert from "node:assert/strict";
 import { stripMentions, sessionFor, acceptsEvent, heartbeatVerdict, refreshDelayMs, alertAllowed, pruneThreads, decideProgressMode, createRuntime, createPlatform, createAttachmentDownloader, createMediaUploader, composeText, shouldAlertFiles, createReplyLocator, FILES_ALERT, MEDIA_ALERT } from "../src/platforms/slack.mjs";
 import { uploadDirFor } from "../src/platforms/shared/uploads.mjs";
+import { DEFAULTS } from "../src/config.mjs";
 import { planParts } from "../src/jobs/delivery.mjs";
 
-const TEST_SCOPE = { channel: "CTEST", allowedUser: "UTEST", botUser: "UBOT" };
+const TEST_SCOPE = { channels: new Set(["CTEST"]), allowedUser: "UTEST", botUser: "UBOT" };
 
-const base = { channel: TEST_SCOPE.channel, ts: "1792558469.808939", text: "帮我扫一下 <@UTEST>", user: TEST_SCOPE.allowedUser };
+const base = { channel: "CTEST", ts: "1792558469.808939", text: "帮我扫一下 <@UTEST>", user: TEST_SCOPE.allowedUser };
 
 test("mentions are stripped together with their surrounding space", () => {
   assert.equal(stripMentions("<@U1> 帮我看下"), "帮我看下");
@@ -35,7 +36,7 @@ test("TC-10 the bot's own messages are ignored", () => {
 test("TC-10c a message the user sent through an app's user token keeps its author", () => {
   // Slack tags chat.postMessage calls made with an OAuth app's user token with
   // that app's bot_id, while leaving user on the human who authorised it.
-  assert.deepEqual(acceptsEvent({ ...base, bot_id: "B123" }, TEST_SCOPE), { ok: true, thread: base.ts });
+  assert.deepEqual(acceptsEvent({ ...base, bot_id: "B123" }, TEST_SCOPE), { ok: true, thread: base.ts, channel: "CTEST" });
 });
 
 test("TC-10 only the allowed author in the configured channel is accepted", () => {
@@ -44,7 +45,7 @@ test("TC-10 only the allowed author in the configured channel is accepted", () =
   assert.deepEqual(acceptsEvent({ ...base, text: "   " }, TEST_SCOPE), { ok: false, why: "empty-text" });
   assert.deepEqual(acceptsEvent(null, TEST_SCOPE), { ok: false, why: "empty" });
   assert.deepEqual(acceptsEvent(base, {}), { ok: false, why: "unconfigured" });
-  assert.deepEqual(acceptsEvent(base, { channel: TEST_SCOPE.channel }), { ok: false, why: "unconfigured" });
+  assert.deepEqual(acceptsEvent(base, { channels: TEST_SCOPE.channels }), { ok: false, why: "unconfigured" });
 });
 
 test("thread replies join the parent thread, top-level messages start one", () => {
@@ -53,6 +54,14 @@ test("thread replies join the parent thread, top-level messages start one", () =
   assert.equal(reply.thread, "1792558000.000100");
   const top = acceptsEvent(base, TEST_SCOPE);
   assert.equal(top.thread, base.ts);
+});
+
+test("TC-10d every configured group channel is accepted and reports its own channel", () => {
+  const scope = { channels: new Set(["CTEST", "CLOOP"]), allowedUser: "UTEST", botUser: "UBOT" };
+  const inLoop = acceptsEvent({ ...base, channel: "CLOOP" }, scope);
+  assert.equal(inLoop.ok, true);
+  assert.equal(inLoop.channel, "CLOOP");
+  assert.deepEqual(acceptsEvent({ ...base, channel: "C-other" }, scope), { ok: false, why: "channel" });
 });
 
 test("subtypes that carry real content are accepted, others ignored", () => {
@@ -378,15 +387,14 @@ test("slack refuses to start without a channel or an allowed user", async () => 
     throw new Error(`exit ${code}`);
   };
   try {
-    const base = { SLACK_APP_TOKEN: "xapp", SLACK_BOT_TOKEN: "xoxb", AGENT_RELAY_SLACK_CHANNEL: "CTEST" };
     const missingUser = createPlatform({
-      config: { readEnv: () => base, envFile: (name) => `/tmp/${name}`, home: "/tmp", configDir: "/tmp" },
+      config: slackConfig({ allowedUser: "" }),
       log: (...parts) => logs.push(parts.map(String).join(" ")),
     });
     await assert.rejects(() => missingUser.start({ onMessage: async () => {}, core: { state: { convs: {} }, save: () => {} } }), /exit 1/);
 
     const missingChannel = createPlatform({
-      config: { readEnv: () => ({ SLACK_APP_TOKEN: "xapp", SLACK_BOT_TOKEN: "xoxb", AGENT_RELAY_ALLOWED_USER: "UTEST" }), envFile: (name) => `/tmp/${name}`, home: "/tmp", configDir: "/tmp" },
+      config: slackConfig({ groups: {} }),
       log: (...parts) => logs.push(parts.map(String).join(" ")),
     });
     await assert.rejects(() => missingChannel.start({ onMessage: async () => {}, core: { state: { convs: {} }, save: () => {} } }), /exit 1/);
@@ -394,8 +402,8 @@ test("slack refuses to start without a channel or an allowed user", async () => 
     process.exit = originalExit;
   }
   assert.deepEqual(exits, [1, 1]);
-  assert.ok(logs.some((line) => line.includes("AGENT_RELAY_SLACK_CHANNEL")));
-  assert.ok(logs.some((line) => line.includes("AGENT_RELAY_ALLOWED_USER")));
+  assert.ok(logs.some((line) => line.includes("slack.allowedUser")));
+  assert.ok(logs.some((line) => line.includes("slack.groups.main")));
 });
 
 function attachmentHarness({ files, response, info } = {}) {
@@ -522,7 +530,7 @@ test("AC-8 a file without a download url is resolved through files.info", async 
 
 test("AC-9 messages without files never download anything", () => {
   const source = readFileSync(new URL("../src/platforms/slack.mjs", import.meta.url), "utf8");
-  assert.match(source, /event\.files\?\.length \? await downloadAttachments\(event\.files\)/);
+  assert.match(source, /event\.files\?\.length \? await downloadAttachments\(event\.files, verdict\.channel\)/);
   assert.equal(acceptsEvent({ ...base, text: "   " }, TEST_SCOPE).ok, false);
   assert.equal(acceptsEvent({ ...base, user: "U-stranger", files: [slackFile()] }, TEST_SCOPE).ok, false);
   assert.equal(acceptsEvent({ ...base, user: "U-stranger", bot_id: "B1", files: [slackFile()] }, TEST_SCOPE).ok, false);
@@ -538,12 +546,29 @@ test("TC-12 the slack reply section asks for a labelled link and leaves the rest
   assert.match(rules, /单独一行写 `!\[\]\(\/绝对路径\.png\)`/);
 });
 
-function slackPlatform(env = {}) {
-  const values = { SLACK_APP_TOKEN: "xapp", SLACK_BOT_TOKEN: "xoxb", AGENT_RELAY_SLACK_CHANNEL: "CTEST", AGENT_RELAY_ALLOWED_USER: "UTEST", ...env };
-  return createPlatform({
-    config: { readEnv: () => values, envFile: (name) => `/tmp/${name}`, home: "/tmp", configDir: "/tmp" },
+export function slackConfig(section = {}) {
+  const slack = {
+    appToken: "xapp",
+    botToken: "xoxb",
+    allowedUser: "UTEST",
+    botUser: "UBOT",
+    cookies: { xoxc: "xoxc", xoxd: "xoxd" },
+    defaultGroup: "main",
+    groups: { main: "CTEST" },
+    ...section,
+  };
+  return {
+    configDir: "/tmp",
+    configFile: "/tmp/config.json",
+    configProblem: null,
+    options: DEFAULTS,
+    platform: (name) => (name === "slack" ? slack : null),
     log: () => {},
-  });
+  };
+}
+
+function slackPlatform(section = {}) {
+  return createPlatform({ config: slackConfig(section), log: () => {} });
 }
 
 test("TC-16 the adapter chunks a long answer into 8000 character messages and every piece fits", () => {
