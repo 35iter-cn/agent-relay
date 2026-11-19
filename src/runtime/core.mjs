@@ -89,6 +89,8 @@ const QUIET_WORD = "NOOP";
 const QUIET_DECORATION = /[`*_~]/g;
 const EMPTY_RUN_PREFIX = "[无输出]";
 export const DELIVERY_BACKOFF_MS = [1_500, 5_000, 15_000];
+export const SYSTEM_GROUP = "system";
+export const LOOP_GROUP = "loop";
 
 export function createCore({ adapter, config, deps = {} }) {
   const now = deps.now ?? (() => Date.now());
@@ -205,6 +207,7 @@ export function createCore({ adapter, config, deps = {} }) {
     try {
       const notice = await notices.emit({
         title: NOTICE_TITLES.stall,
+        group: SYSTEM_GROUP,
         text: prompts.stallNotice({
           task: oneLine(fields.task),
           round: fields.round && fields.round !== fields.task ? oneLine(fields.round) : "",
@@ -302,6 +305,7 @@ export function createCore({ adapter, config, deps = {} }) {
     try {
       await notices.emit({
         title: NOTICE_TITLES.stall,
+        group: SYSTEM_GROUP,
         text: prompts.loopRunning({
           job: jobLabel(job),
           identity: identityLines(job),
@@ -357,6 +361,7 @@ export function createCore({ adapter, config, deps = {} }) {
         try {
           await notices.emit({
             title: NOTICE_TITLES.stall,
+            group: SYSTEM_GROUP,
             text: prompts.budgetNotice({ minutes: Math.round(budget / 60_000), left: Math.max(1, Math.round((budget - elapsed) / 60_000)), job: job.id }),
           });
         } catch (error) {
@@ -602,7 +607,7 @@ export function createCore({ adapter, config, deps = {} }) {
       let result = { ok: true };
       try {
         if (command.op === "emit") {
-          await notices.emit({ text: command.text, prompt: command.prompt ?? "", reply: command.reply ?? null, title: command.title ?? "" });
+          await notices.emit({ text: command.text, prompt: command.prompt ?? "", reply: command.reply ?? null, title: command.title ?? "", group: command.group ?? "" });
         } else if (command.op === "schedule") {
           const outcome = await scheduleJob(command);
           appendLog({ event: "command-schedule", ...outcome, key: String(command.key ?? "") });
@@ -1222,12 +1227,12 @@ export function createCore({ adapter, config, deps = {} }) {
 
   function conversationTarget(key) {
     if (!key) return null;
-    const recorded = state.convs[key]?.messageId;
-    if (recorded) return String(recorded);
+    const entry = state.convs[key];
+    if (entry?.messageId) return { messageId: String(entry.messageId), chatId: entry.chatId ?? null };
     const noticePrefix = "notice-";
     if (String(key).startsWith(noticePrefix)) {
       const messageId = state.notices?.[String(key).slice(noticePrefix.length)]?.messageId;
-      if (messageId) return String(messageId);
+      if (messageId) return { messageId: String(messageId), chatId: entry?.chatId ?? null };
     }
     return null;
   }
@@ -1236,13 +1241,18 @@ export function createCore({ adapter, config, deps = {} }) {
     const bound = job.inbound?.boundKey;
     if (!bound) return job.inbound?.replyTo ?? null;
     const recorded = conversationTarget(bound);
-    if (recorded) return recorded;
+    if (recorded) return recorded.messageId;
     return typeof adapter.resolveThread === "function" ? adapter.resolveThread(bound) : null;
   }
 
   function sendContext(job) {
     const ctx = ctxOf(job);
-    return { ...ctx, replyTo: ctx.replyTo ?? deliveryTarget(job) };
+    const bound = job.inbound?.boundKey ? conversationTarget(job.inbound.boundKey) : null;
+    return {
+      ...ctx,
+      chatId: ctx.chatId ?? bound?.chatId ?? state.convs?.[job.key]?.chatId ?? null,
+      replyTo: ctx.replyTo ?? deliveryTarget(job),
+    };
   }
 
   async function deliverParts(job) {
@@ -1362,6 +1372,7 @@ export function createCore({ adapter, config, deps = {} }) {
     try {
       await notices.emit({
         text: `上一轮的回复没送出去（${job.deliveryError ?? "平台连接失败"}）。内容还在，\`agent-relay job redeliver ${job.key}\` 可以补发。`,
+        group: SYSTEM_GROUP,
         reply: { mode: "conversation", key: job.key },
       });
       appendLog({ event: "delivery-gave-up", job: job.id, key: job.key, notified: true });
@@ -1372,6 +1383,7 @@ export function createCore({ adapter, config, deps = {} }) {
 
   function startJob(job) {
     const entry = state.convs[job.key] ?? { session: job.session, rootText: job.inbound.rootText, lastMsgTs: null, messageId: null, activeJob: null };
+    entry.chatId = job.inbound.chatId ?? entry.chatId ?? null;
     if (KEY_WINDOW_MAX_MS > 0) {
       const spent = keyWindowSpentMs(job.key);
       if (spent >= KEY_WINDOW_MAX_MS) {
@@ -1553,7 +1565,7 @@ export function createCore({ adapter, config, deps = {} }) {
     for (const loop of legacy) {
       loop.state = "paused";
       notices
-        .emit({ text: `${loop.id} 用的是已移除的 every / at schedule，已暂停；用 --cron 重建后再 loop resume。`, title: NOTICE_TITLES.pause })
+        .emit({ text: `${loop.id} 用的是已移除的 every / at schedule，已暂停；用 --cron 重建后再 loop resume。`, title: NOTICE_TITLES.pause, group: SYSTEM_GROUP })
         .catch((error) => log("warn", "legacy-schedule-notice", String(error?.message ?? error)));
     }
     save();
@@ -1571,7 +1583,7 @@ export function createCore({ adapter, config, deps = {} }) {
     if (!shouldAnnounceBoot(state.meta.bootNotice?.bootId, bootId)) return false;
     const at = new Date(now());
     try {
-      const notice = await notices.emit({ text: bootNoticeText(at, localStamp), title: NOTICE_TITLES.boot });
+      const notice = await notices.emit({ text: bootNoticeText(at, localStamp), title: NOTICE_TITLES.boot, group: SYSTEM_GROUP });
       state.meta.bootNotice = { bootId, at: at.toISOString(), noticeId: notice.id };
       save();
       log("info", "boot-notice", bootId, notice.id);
@@ -1807,12 +1819,16 @@ export function createCore({ adapter, config, deps = {} }) {
         const notice = await notices.emit({
           text,
           title: roundTitle(job.loop, job.loop.round),
+          group: LOOP_GROUP,
           reply: { mode: "conversation", key: job.key },
         });
         job.noticeId = notice.id;
         job.parts = [{ i: 0, messageId: notice.messageId ?? null, hash: hashOf(text), sentAt: isoNow() }];
         const entry = state.convs[job.key];
-        if (entry && notice.messageId) entry.messageId = String(notice.messageId);
+        if (entry) {
+          if (notice.messageId) entry.messageId = String(notice.messageId);
+          if (notice.chatId) entry.chatId = String(notice.chatId);
+        }
         job.status = "done";
         job.answer = undefined;
         job.updatedAt = isoNow();
@@ -1848,7 +1864,7 @@ export function createCore({ adapter, config, deps = {} }) {
       if (loop.failStreak >= 3 && loop.state === "armed") {
         loop.state = "paused";
         notices
-          .emit({ text: `${loop.id} 连续 ${loop.failStreak} 轮失败，已暂停：${job.error ?? outcome}`, title: NOTICE_TITLES.pause })
+          .emit({ text: `${loop.id} 连续 ${loop.failStreak} 轮失败，已暂停：${job.error ?? outcome}`, title: NOTICE_TITLES.pause, group: SYSTEM_GROUP })
           .catch((error) => log("warn", "loop-pause-notice", String(error?.message ?? error)));
       }
     }
@@ -1893,7 +1909,7 @@ export function createCore({ adapter, config, deps = {} }) {
     state.meta.loopThrottleAt = isoAt(now());
     save();
     notices
-      .emit({ text: `本平台这一小时的 loop 轮数已到上限（${LOOP_ROUNDS_PER_HOUR}），后面的轮次跳过。`, title: NOTICE_TITLES.throttle })
+      .emit({ text: `本平台这一小时的 loop 轮数已到上限（${LOOP_ROUNDS_PER_HOUR}），后面的轮次跳过。`, title: NOTICE_TITLES.throttle, group: SYSTEM_GROUP })
       .catch((error) => log("warn", "loop-throttle-notice", String(error?.message ?? error)));
   }
 

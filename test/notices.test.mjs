@@ -105,7 +105,8 @@ test("emit posts the text, keeps the prompt and survives a restart", async () =>
   assert.equal(notice.id, "ntc-1");
   assert.equal(notice.messageId, "m-42");
   assert.equal(notice.prompt, "杀掉或继续");
-  assert.deepEqual(Object.keys(notice).sort(), ["id", "messageId", "platform", "prompt", "sentAt", "text"]);
+  assert.deepEqual(Object.keys(state.notices["ntc-1"]).sort(), ["id", "messageId", "platform", "prompt", "sentAt", "text"]);
+  assert.equal(notice.chatId, null);
   assert.equal(service.match(["m-42"]).id, "ntc-1");
 
   writeJsonAtomic(file, state);
@@ -142,7 +143,7 @@ test("TC-NT9 a notice is never threaded: its own ts has to stay the reply target
   };
   const service = createNoticeService({ state, save: () => {}, adapter, now });
   const notice = await service.emit({ text: "卡住了" });
-  assert.equal(calls[0].length, 1);
+  assert.deepEqual(calls[0][1], { group: "" });
   assert.equal(notice.thread, undefined);
   assert.equal(service.match([notice.messageId]).id, notice.id);
 });
