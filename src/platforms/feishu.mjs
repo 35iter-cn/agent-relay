@@ -3,11 +3,14 @@ import { mkdirSync, readFileSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { chunkText } from "../shared/chunk.mjs";
 import { splitTables, tableBullet } from "../shared/markdown.mjs";
-import { relayEnv } from "../shared/env.mjs";
+
 import { createRootCache } from "./shared/root-cache.mjs";
 import { ensurePrivateDir } from "../shared/fs.mjs";
 import { MAX_ATTACHMENTS, MAX_BYTES, uploadDirFor, pruneUploads, extFor } from "./shared/uploads.mjs";
 
+const LIVENESS_CHECK_MS = 60_000;
+const LIVENESS_MISSES = 3;
+const ALERT_COOLDOWN_MS = 30 * 60_000;
 const CARD_LIMIT = 3000;
 const MAX_TABLES = 5;
 const DOWNLOAD_TIMEOUT_MS = 15_000;
@@ -320,14 +323,14 @@ export function withTimeout(promise, ms) {
 }
 
 export function createPlatform({ config, log: baseLog, createClient = defaultClientFactory, loadSdk = () => import("@larksuiteoapi/node-sdk") }) {
-  const env = { ...config.readEnv(config.envFile("feishu.env")), ...process.env };
-  const appId = env.FEISHU_APP_ID;
-  const appSecret = env.FEISHU_APP_SECRET;
-  const chatId = env.FEISHU_CHAT_ID;
-  const allowedUser = relayEnv("ALLOWED_USER", null, env);
-  const livenessCheckMs = relayEnv("LIVENESS_CHECK_MS", 60_000);
-  const livenessMisses = relayEnv("LIVENESS_MISSES", 3);
-  const alertCooldownMs = relayEnv("ALERT_COOLDOWN_MS", 30 * 60_000);
+  const section = config.platform("feishu");
+  const appId = section?.appId ?? null;
+  const appSecret = section?.appSecret ?? null;
+  const chatId = section?.chatId ?? null;
+  const allowedUser = section?.allowedUser ?? null;
+  const livenessCheckMs = LIVENESS_CHECK_MS;
+  const livenessMisses = LIVENESS_MISSES;
+  const alertCooldownMs = ALERT_COOLDOWN_MS;
   const log = baseLog;
   let state = null;
   let coreRef = null;
@@ -370,8 +373,16 @@ export function createPlatform({ config, log: baseLog, createClient = defaultCli
 
   async function ensureRuntime() {
     if (runtime) return runtime;
-    if (!appId || !appSecret) {
-      log("error", "missing-credential", "FEISHU_APP_ID / FEISHU_APP_SECRET");
+    if (config.configProblem) {
+      log("error", config.configProblem.split(":")[0], config.configFile, config.configProblem);
+      process.exit(1);
+    }
+    if (!section) {
+      log("error", "missing-config", config.configFile, "feishu section");
+      process.exit(1);
+    }
+    if (!appId || !appSecret || !chatId) {
+      log("error", "missing-config", config.configFile, !appId ? "feishu.appId" : !appSecret ? "feishu.appSecret" : "feishu.chatId");
       process.exit(1);
     }
     client = await createClient({ appId, appSecret });
@@ -436,13 +447,13 @@ export function createPlatform({ config, log: baseLog, createClient = defaultCli
     surface: "本话题",
     allowedUser,
     chunkLimit: CARD_LIMIT,
-    timeoutMs: relayEnv("TIMEOUT_MS", 0),
-    maxWorkers: relayEnv("MAX_WORKERS", 5),
-    queueDepth: relayEnv("QUEUE_DEPTH", 3),
-    worker: relayEnv("WORKER", "pi"),
-    workerMode: relayEnv("WORKER_MODE", "rpc"),
-    steer: relayEnv("STEER", "on"),
-    piBin: config.workerBin,
+    timeoutMs: 0,
+    maxWorkers: config.options.relay.queue.maxWorkers,
+    queueDepth: config.options.relay.queue.depth,
+    worker: "pi",
+    workerMode: "rpc",
+    steer: "on",
+    piBin: config.options.relay.worker.bin,
     sessionFor,
     prune: () => pruneUploads(config.uploadsDir),
 
@@ -450,7 +461,7 @@ export function createPlatform({ config, log: baseLog, createClient = defaultCli
       coreRef = core;
       state = core.state;
       if (!allowedUser) {
-        log("error", "missing-credential", config.envFile("feishu.env"), "AGENT_RELAY_ALLOWED_USER");
+        log("error", "missing-config", config.configFile, "feishu.allowedUser");
         process.exit(1);
       }
       await ensureRuntime();
