@@ -60,14 +60,22 @@ test("TC-JH2 a single verb prints only its own block", async () => {
   assert.doesNotMatch(out, /limits:/);
 });
 
-test("TC-JH2b schedule help describes stdin, name uniqueness and the example", () => {
+test("TC-JH2b schedule help keeps the body on stdin and spells out the values it accepts", () => {
   const overview = scheduleHelp();
-  assert.match(overview, /stdin/);
-  assert.match(overview, /schedule cancel/);
-  assert.match(overview, /同类任务一次只排一个/);
+  assert.match(overview, /12 self-started rounds per key per hour/);
+  assert.match(overview, /refused:<reason>/);
+  assert.doesNotMatch(overview, /do not exist/);
   const create = scheduleHelp("create");
-  assert.match(create, /name-taken/);
+  assert.match(create, /stdin to EOF, at least 1 byte and at most 8 KiB/);
+  assert.match(create, /90s, 30m, 1\.5h, 1d/);
+  assert.match(create, /0m means now/);
+  assert.match(create, /unique for good/);
+  assert.match(create, /steer this body into a round already running/);
+  assert.match(create, /default 6h/);
+  assert.doesNotMatch(create, /refused:stdin-is-tty|refused:name-taken|do not exist/);
   assert.match(create, /example:/);
+  assert.match(create, /<<'EOF'/);
+  for (const line of create.split("\n")) assert.ok(line.length <= 100, `${line.length} cols: ${line}`);
 });
 
 test("TC-JH3 bare job is a usage hint, help is a success and an unknown verb is refused", async () => {

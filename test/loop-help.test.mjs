@@ -40,36 +40,40 @@ async function run(argv, config, sent = []) {
   return { code, out: out.join("") };
 }
 
-test("TC-LH1 the overview lists every subcommand plus the schedules, gates and exit codes", async () => {
+test("TC-LH1 the overview lists every verb plus flow, schedule, prompt, limits and exit", async () => {
   const config = makeConfig();
   const { code, out } = await run(["help"], config);
   assert.equal(code, 0);
-  for (const { usage } of LOOP_VERBS) assert.ok(out.includes(usage), `missing usage: ${usage}`);
-  assert.match(out, /schedules:/);
-  assert.match(out, /cron "<expr>"/);
-  assert.match(out, /上一轮还在跑就跳过那个点/);
-  assert.doesNotMatch(out, /--every/);
-  assert.doesNotMatch(out, /--at <iso>/);
-  assert.doesNotMatch(out, /every <dur>/);
-  assert.doesNotMatch(out, /every >= 10m/);
-  assert.match(out, /gates:/);
-  assert.match(out, /每平台最多 20 条 loop/);
-  assert.match(out, /exit:/);
+  assert.equal(out.split("\n").filter((line) => line.startsWith("usage:")).length, 1, "one usage label");
+  for (const { usage } of LOOP_VERBS) {
+    const first = `  ${usage.split("\n")[0]}`;
+    assert.ok(out.includes(first), `missing usage: ${first}`);
+  }
+  const blocks = await Promise.all(LOOP_VERBS.map(({ verb }) => run(["help", verb], config)));
+  for (const [index, block] of blocks.entries()) assert.match(block.out, /^usage: /m, LOOP_VERBS[index].verb);
+  for (const heading of ["flow:", "schedule:", "prompt:", "limits:", "exit:"]) assert.ok(out.includes(heading), heading);
+  assert.match(out, /min hour dom mon dow/);
+  assert.match(out, /skipped points are not caught up/);
+  assert.match(out, /20 loops per platform/);
   assert.match(out, /refused:<reason>/);
+  assert.doesNotMatch(out, /--every/);
+  assert.doesNotMatch(out, /--at </);
+  assert.doesNotMatch(out, /job start/);
+  assert.doesNotMatch(out, /--to </);
+  assert.doesNotMatch(out, /refused:stdin-is-tty|refused:name-taken|refused:too-many-loops|refused:prompt-file-not-canonical/);
 });
 
-test("TC-LH2 a single verb prints only its own block", async () => {
+test("TC-LH2 a single verb prints only its own block, with an example", async () => {
   const config = makeConfig();
   const { code, out } = await run(["help", "create"], config);
   assert.equal(code, 0);
-  assert.match(out, /create --platform/);
-  assert.match(out, /--cron "<expr>"/);
-  assert.match(out, /上一轮还在跑/);
-  assert.match(out, /job start --in/);
-  assert.doesNotMatch(out, /--every/);
+  assert.match(out, /loop create --platform/);
+  assert.match(out, /--prompt-file/);
+  assert.match(out, /prompts\/loops\/<id>\/prompt\.md/);
   assert.match(out, /example:/);
+  assert.doesNotMatch(out, /flow:/);
+  assert.doesNotMatch(out, /20 loops per platform/);
   assert.doesNotMatch(out, /loop help \[<verb>\]/);
-  assert.doesNotMatch(out, /schedules:/);
   const helpOnly = await run(["help", "help"], config);
   assert.equal(helpOnly.code, 0);
   assert.match(helpOnly.out, /loop help \[<verb>\]/);
@@ -96,14 +100,21 @@ test("TC-LH4 help never touches the daemon, the state file or an unknown verb", 
   assert.equal(sent.length, 0);
 });
 
-test("TC-LH5 the help table and the dispatch table hold the same verbs", () => {
+test("TC-LH5 the help table and the dispatch table hold the same verbs, each with an example", () => {
   const helpVerbs = LOOP_VERBS.map((entry) => entry.verb).filter((verb) => verb !== "help");
   assert.deepEqual([...LOOP_ACTIONS].sort(), helpVerbs.sort());
-  for (const verb of ["help", ...helpVerbs]) assert.ok(loopHelp(verb), `${verb} renders`);
+  for (const verb of ["help", ...helpVerbs]) {
+    const block = loopHelp(verb);
+    assert.ok(block, `${verb} renders`);
+    assert.match(block, /^usage: /m);
+    assert.match(block, /example:/, `${verb} carries an example`);
+    for (const line of block.split("\n")) assert.ok(line.length <= 100, `${verb} ${line.length} cols: ${line}`);
+  }
   assert.equal(loopHelp("nope"), null);
   assert.match(loopHelp(), /agent-relay loop/);
-  assert.match(loopHelp(), /模型读这三行就够/);
-  assert.match(loopHelp(), /正文原样投递/);
-  assert.doesNotMatch(loopHelp(), /relay>>>|marker/);
-  assert.doesNotMatch(loopHelp("create"), /模型读这三行就够/);
+  assert.match(loopHelp(), /one prompt, one schedule/);
+  assert.match(loopHelp(), /round whose whole text is NOOP/);
+  assert.doesNotMatch(loopHelp(), /relay>>>|marker|QUIET_WORD/);
+  assert.doesNotMatch(loopHelp("create"), /start at flow:/);
+  for (const line of loopHelp().split("\n")) assert.ok(line.length <= 100, `${line.length} cols: ${line}`);
 });

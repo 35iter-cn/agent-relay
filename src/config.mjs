@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { log as defaultLog } from "./shared/log.mjs";
+import { configureTimeZone } from "./shared/time.mjs";
 
 const SRC_DIR = dirname(fileURLToPath(import.meta.url));
 
@@ -12,6 +13,7 @@ export const CONFIG_FILE = "config.json";
 // constant in the module that owns it.
 export const DEFAULTS = {
   relay: {
+    timeZone: "",
     worker: { bin: "pi" },
     turn: { roundMaxMs: 90 * 60_000 },
     queue: { maxWorkers: 5, depth: 3 },
@@ -28,6 +30,19 @@ export const REMOVED_KEYS = {
   "relay.turn.timeoutMs": "单轮没有墙钟熔断，边界是预算与 park",
   "relay.stall.actionMs": "卡住通知不会自动终止任务",
 };
+
+// "" means the machine's zone; anything else has to be one Intl accepts, so a typo
+// fails at startup instead of throwing RangeError on the first formatted timestamp.
+export function isTimeZone(value) {
+  const name = String(value ?? "").trim();
+  if (!name) return true;
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: name });
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 function isPlainObject(value) {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -73,6 +88,12 @@ export function resolveOptions(section = {}) {
     if (typeof expected === "number") {
       if (typeof value !== "number" || !Number.isFinite(value) || value < 0) {
         problems.push(`relay.${path}: expected a non-negative number, got ${JSON.stringify(value)}`);
+      }
+      continue;
+    }
+    if (path === "timeZone") {
+      if (!isTimeZone(value)) {
+        problems.push(`relay.timeZone: expected "" or an IANA zone name, got ${JSON.stringify(value)}`);
       }
       continue;
     }
@@ -132,6 +153,7 @@ export function createConfig({ env = process.env } = {}) {
   const file = join(configDir, CONFIG_FILE);
   const loaded = readConfigFile(file);
   const resolved = resolveOptions(loaded.config?.relay);
+  configureTimeZone(resolved.options.relay.timeZone);
   const problem = loaded.missing
     ? `missing-config: ${file}`
     : loaded.problem ?? (resolved.problems.length ? `bad-config: ${resolved.problems.join("; ")}` : null);

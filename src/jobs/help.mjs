@@ -59,31 +59,40 @@ const SUMMARY = [
 const SCHEDULE_VERBS = [
   {
     verb: "create",
-    usage: "schedule --platform <p> --key <k> --name <n> [--in <dur> | --at <iso>] [--grace <dur>] [--join]",
+    usage: "schedule --platform <p> --key <k> --name <n> [--in <dur> | --at <iso>]\n[--grace <dur>] [--join]",
     detail: [
-      "prompt 从 stdin 读到 EOF（`<<'EOF'` 或管道都行），落成 ~/.config/agent-relay/prompts/jobs/<name>/prompt.md。",
-      "name 唯一且不复用：`[a-z0-9][a-z0-9._-]{0,63}`；同名或文件已存在会被拒（name-taken）。",
-      "prompt 写给下一次的自己：为什么、查什么、怎么算做完、证据在哪。上限 8 KiB。",
-      "到点用原会话续跑；跑完文件保留，作为这次任务的留档。",
-      "--join：到点若这条会话正在跑，就把这段正文并进当前轮，而不是等它结束；产出按整轮投递。",
+      "the body comes from stdin to EOF, at least 1 byte and at most 8 KiB",
+      "<dur> is a number and a unit: 90s, 30m, 1.5h, 1d. 0m means now",
+      "<at> is an ISO timestamp with an offset",
+      "name: [a-z0-9][a-z0-9._-]{0,63}, unique for good",
+      "neither --in nor --at: the round runs as soon as this conversation goes idle",
+      "--grace <dur>   how long a due round may wait for the thread, default 6h",
+      "--join          steer this body into a round already running at that moment",
+      "                instead of waiting behind it",
     ],
-    example: "agent-relay schedule --platform slack --key 1794634082.877169 --name vps-renew-20261201 --at 2026-11-29T10:00:00+08:00 <<'EOF'\n…任务书…\nEOF",
+    example: `agent-relay schedule --platform slack --key 1794634082.877169 --name vps-renew-20261201 \\
+    --at 2026-11-29T10:00:00+08:00 <<'EOF'
+why this round exists, what to check, what done looks like, where the evidence goes
+EOF`,
   },
-  { verb: "list", usage: "schedule list --platform <p>", detail: ["列出还没跑的轮次。"] },
-  { verb: "cancel", usage: "schedule cancel --platform <p> <name>", detail: ["撤掉还没跑的排期；已经开跑的会被拒（already-started），改用 `job cancel <id>`。"] },
-  { verb: "help", usage: "schedule help [<verb>]", detail: ["不带 <verb> 时列全部子命令。"] },
+  { verb: "list", usage: "schedule list --platform <p>", detail: ["the rounds that have not started yet"], example: "schedule list --platform slack" },
+  {
+    verb: "cancel",
+    usage: "schedule cancel --platform <p> <name>",
+    detail: ["drops a round that has not started; one already running is a job, so job cancel <id>"],
+    example: "schedule cancel --platform slack vps-renew-20261201",
+  },
+  { verb: "help", usage: "schedule help [<verb>]", detail: ["every verb, or the one you name"], example: "schedule help create" },
 ];
 
 const SCHEDULE_SECTIONS = [
-  { heading: "inputs", lines: ["正文只从 stdin 读：`--prompt`、`--prompt-file` 都不存在。", "stdin 是终端时拒绝（stdin-is-tty），读到 0 字节拒绝（empty-prompt）。"] },
-  { heading: "exit", lines: ["0 已受理（scheduled / cancelled）；1 daemon 没在跑；3 refused:<reason>"] },
+  { heading: "limits", lines: ["12 self-started rounds per key per hour", "one job per conversation at a time; a due round waits for the thread to go idle"] },
+  { heading: "exit", lines: ["0 accepted (scheduled / cancelled) | 1 daemon not running | 3 refused:<reason>"] },
 ];
 
 const SCHEDULE_SUMMARY = [
-  "排一轮：正文走 stdin，name 唯一，到点用原会话续跑",
-  "管理还没跑的：schedule list / schedule cancel <name>",
-  "同类任务一次只排一个：等这一轮到期跑完，看执行情况再决定排不排下一个",
-  "参数、闸、退出码见下面的表",
+  "queue one round; at the due time this same conversation runs it, with its context",
+  "the body is stdin, the name is unique and never reused, one task of a kind at a time",
 ];
 
 export function jobHelp(verb = "") {
@@ -91,5 +100,5 @@ export function jobHelp(verb = "") {
 }
 
 export function scheduleHelp(verb = "") {
-  return renderHelp({ title: "agent-relay schedule — 排一轮未来的任务", summary: SCHEDULE_SUMMARY, verbs: SCHEDULE_VERBS, sections: SCHEDULE_SECTIONS, verb });
+  return renderHelp({ title: "agent-relay schedule — one round, queued for a later moment", summary: SCHEDULE_SUMMARY, verbs: SCHEDULE_VERBS, sections: SCHEDULE_SECTIONS, verb });
 }

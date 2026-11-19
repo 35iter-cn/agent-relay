@@ -9,6 +9,13 @@ is not repeated here.
 - **Never commit to `main` directly.** Branch, push, open a PR, squash-merge.
 - **No secrets, no deployment identifiers in the sources.** Platform ids, channels,
   tenant or host names live in `~/.config/agent-relay/`.
+- **Configuration is the config file's job.** A new knob is a key in `config.json` — a
+  default under `relay` in `src/config.mjs` when it needs a default — and never an
+  environment variable. The only environment variables are process identity: `HOME`,
+  `AGENT_RELAY_CONFIG_DIR`, `AGENT_RELAY_WORKDIR`, `AGENT_RELAY_SESSIONS_DIR`,
+  `AGENT_RELAY_PLATFORM`, and the per-turn `AGENT_RELAY_KEY` / `AGENT_RELAY_SELF_CHAIN`,
+  because the config file cannot say where it lives. The README's config tables are the
+  inventory; a new key lands there in the same commit.
 - **`bun test` green before a push.** `bun run e2e` green when the change touches
   stall handling or termination.
 
