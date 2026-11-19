@@ -23,7 +23,9 @@ import { MAX_PROMPT_FILE_BYTES, resolveLoopPrompt, validatePromptFile } from "..
 import { loopDueAt, loopLateMs, roundSkipReason, roundsInLastHour } from "../src/loops/schedule.mjs";
 import { roundKeyFor, roundTitle, truncateOutput } from "../src/loops/round.mjs";
 import { appendRound, findRound, listRounds, loopHistoryFile, pruneHistory, readRoundLines } from "../src/loops/history.mjs";
+import { configureTimeZone } from "../src/shared/time.mjs";
 
+configureTimeZone("Asia/Shanghai");
 const nowIso = () => new Date().toISOString();
 
 test("TC-LP1 a loop without a cron expression is refused, and the retired schedules are not schedules", () => {

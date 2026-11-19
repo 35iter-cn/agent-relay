@@ -248,34 +248,48 @@ prompts/                            # per-job and per-loop prompt overrides
 logs/<platform>/<day>.jsonl
 ```
 
-`config.json` holds one section per platform. Every value a daemon needs is there:
-credentials, the Slack cookies, and the group table.
+`config.json` has one section per platform plus an optional `relay` section. This is the
+whole file; no other key is read.
 
-```json
-{
-  "slack": {
-    "appToken": "xapp-…",
-    "botToken": "xoxb-…",
-    "allowedUser": "U…",
-    "botUser": "U…",
-    "cookies": { "xoxc": "…", "xoxd": "…" },
-    "defaultGroup": "main",
-    "groups": { "main": "C…", "system": "C…", "loop": "C…", "hours": "C…" }
-  },
-  "feishu": { "appId": "cli_…", "appSecret": "…", "chatId": "oc_…", "allowedUser": "ou_…" }
-}
-```
+| top level | required | what it is |
+| --- | --- | --- |
+| `slack` | for the slack daemon | the Slack section below |
+| `feishu` | for the feishu daemon | the Feishu section below |
+| `relay` | no | tuning overrides, table below |
 
-Every group is a peer: `main` is the conversation channel and the fallback named by
-`defaultGroup`; `system`, `loop` and `hours` each carry one kind of notice. A sender
-names its group (`--to system`), and a name that is missing from the table falls back
-to `defaultGroup` with one warning — a notice is never lost to a typo.
+`slack`:
 
-Tuning values live in `src/config.mjs` as `DEFAULTS`; `config.json` only carries the
-keys you want to change, under `relay`:
+| key | required | what it is |
+| --- | --- | --- |
+| `appToken` | at startup | `xapp-…`, the Socket Mode connection |
+| `botToken` | at startup | `xoxb-…`, posting, editing and reactions |
+| `allowedUser` | at startup | the one Slack user id whose messages are accepted |
+| `botUser` | no | the bot's own user id, so its messages are dropped |
+| `cookies.xoxc` / `cookies.xoxd` | for thread reads and file downloads | the web session pair: `xoxc`, and the `d` cookie as `xoxd` |
+| `defaultGroup` | no, `main` | the group a notice falls back to |
+| `groups.<name>` | at startup | group name → channel id; the values are also the only channels listened to |
+
+`feishu`:
+
+| key | required | what it is |
+| --- | --- | --- |
+| `appId` | at startup | `cli_…` |
+| `appSecret` | at startup | the app secret |
+| `chatId` | at startup | `oc_…`, the one chat it serves |
+| `allowedUser` | at startup | the one `ou_…` whose messages are accepted |
+
+A group name matches `[a-z][a-z0-9-]{0,15}`. Every group is a peer: `main` is the
+conversation channel and the fallback named by `defaultGroup`; `system`, `loop` and
+`hours` each carry one kind of notice. A sender names its group (`--to system`), and a
+name that is missing from the table falls back to `defaultGroup` with one warning — a
+notice is never lost to a typo.
+
+Tuning values live in `src/config.mjs` as `DEFAULTS`; `config.json` carries only the keys
+you want to change, under `relay`:
 
 | key | default | what it does |
 | --- | --- | --- |
+| `timeZone` | `""` | the zone cron, log days and upload folders are read in. `""` is this machine's zone; otherwise an IANA name such as `Asia/Shanghai` |
 | `worker.bin` | `pi` | worker executable |
 | `turn.roundMaxMs` | 90m | wall-clock budget of a conversation turn |
 | `queue.maxWorkers` / `queue.depth` | 5 / 3 | parallel workers, queue depth before "busy" |
@@ -285,7 +299,8 @@ keys you want to change, under `relay`:
 
 A removed key (`worker.mode`, `worker.steer`, `turn.timeoutMs`, `stall.actionMs`) is
 refused at startup with its name: those behaviours are now the only behaviour. A
-wrong type, a negative number or an unknown key is refused the same way.
+wrong type, a negative number, an unknown key or a zone name `Intl` does not know is
+refused the same way.
 
 Only process identity stays in the environment: `HOME`, `AGENT_RELAY_CONFIG_DIR`
 (the config file cannot say where it lives), `AGENT_RELAY_WORKDIR`,

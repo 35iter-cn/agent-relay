@@ -1,4 +1,4 @@
-import { TIME_ZONE } from "../shared/time.mjs";
+import { zoneFormatter } from "../shared/time.mjs";
 
 export const CRON_HORIZON_MS = 4 * 365 * 86_400_000;
 export const CRON_FIELD_RANGES = [
@@ -15,8 +15,7 @@ const DAY_MS = 86_400_000;
 
 const WEEKDAY_NAMES = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
 
-const PARTS = new Intl.DateTimeFormat("en-US", {
-  timeZone: TIME_ZONE,
+const PARTS_INTS = {
   hour12: false,
   year: "numeric",
   month: "numeric",
@@ -25,7 +24,7 @@ const PARTS = new Intl.DateTimeFormat("en-US", {
   minute: "numeric",
   second: "numeric",
   weekday: "short",
-});
+};
 
 function parseField(field, min, max) {
   if (!field) return null;
@@ -80,7 +79,7 @@ export function parseCron(expr) {
 
 export function localParts(ms) {
   const parts = {};
-  for (const part of PARTS.formatToParts(new Date(ms))) parts[part.type] = part.value;
+  for (const part of zoneFormatter("en-US", PARTS_INTS).formatToParts(new Date(ms))) parts[part.type] = part.value;
   return {
     year: Number(parts.year),
     month: Number(parts.month),

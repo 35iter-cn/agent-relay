@@ -1,7 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { CRON_HORIZON_MS, cronNext, localParts, matchesCron, parseCron } from "../src/loops/cron.mjs";
+import { configureTimeZone } from "../src/shared/time.mjs";
 
+configureTimeZone("Asia/Shanghai");
 const at = (iso) => Date.parse(iso);
 
 test("TC-CR1 a five-field expression accepts the cron grammar and rejects everything else", () => {

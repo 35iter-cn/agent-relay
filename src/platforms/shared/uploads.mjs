@@ -1,5 +1,6 @@
 import { readdirSync, rmdirSync, statSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
+import { zoneFormatter } from "../../shared/time.mjs";
 
 export const MAX_ATTACHMENTS = 4;
 export const MAX_BYTES = 20 * 1024 * 1024;
@@ -7,17 +8,11 @@ export const UPLOAD_TTL_MS = 7 * 86_400_000;
 
 const EXT_BY_TYPE = { "image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp" };
 const TYPE_BY_EXT = { jpg: "image/jpeg", jpeg: "image/jpeg", png: "image/png", gif: "image/gif", webp: "image/webp" };
-const CLOCK = new Intl.DateTimeFormat("en-CA", {
-  timeZone: "Asia/Shanghai",
-  year: "numeric",
-  month: "2-digit",
-  day: "2-digit",
-  hour: "2-digit",
-  minute: "2-digit",
-  hourCycle: "h23",
-});
+const CLOCK_INTS = { year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hourCycle: "h23" };
 
-export function uploadDirFor(configDir, chatId, date = new Date(), format = CLOCK) {
+export const uploadClock = () => zoneFormatter("en-CA", CLOCK_INTS);
+
+export function uploadDirFor(configDir, chatId, date = new Date(), format = uploadClock()) {
   const day = format.format(date).slice(0, 10).replaceAll("-", "");
   return join(configDir, "uploads", chatId, day);
 }

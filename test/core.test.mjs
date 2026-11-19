@@ -13,7 +13,9 @@ import { createPrompts } from "../src/runtime/prompts.mjs";
 import { workerFromChild } from "./fixtures/rpc-stub.mjs";
 import { oneLine, stallStuckText } from "../src/runtime/core.mjs";
 import { hashOf } from "../src/jobs/delivery.mjs";
+import { configureTimeZone } from "../src/shared/time.mjs";
 
+configureTimeZone("Asia/Shanghai");
 function controlledChild() {
   const child = new EventEmitter();
   child.pid = 999999;

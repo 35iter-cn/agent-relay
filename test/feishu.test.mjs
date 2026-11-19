@@ -7,7 +7,9 @@ import { conversationKey, sessionFor, textOf, textOfMessage, bodyOf, msgTypeOf, 
 import { DEFAULTS } from "../src/config.mjs";
 import { bootNoticeText, readBootId, shouldAnnounceBoot } from "../src/shared/boot.mjs";
 import { localStamp } from "../src/shared/time.mjs";
+import { configureTimeZone } from "../src/shared/time.mjs";
 
+configureTimeZone("Asia/Shanghai");
 function fakeClient({ reaction = { code: 0, data: { reaction_id: "r1" } }, reply = { code: 0, data: { message_id: "m-out" } }, patch = { code: 0 }, create = { code: 0, data: { message_id: "m-notify" } } } = {}) {
   const calls = [];
   const client = {
