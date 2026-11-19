@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { handleJobCommand, JOB_ACTIONS } from "../src/cli.mjs";
+import { handleJobCommand, handleScheduleCommand, JOB_ACTIONS } from "../src/cli.mjs";
 import { JOB_VERBS, jobHelp, scheduleHelp } from "../src/jobs/help.mjs";
 
 function makeConfig() {
@@ -91,6 +91,32 @@ test("TC-JH3 bare job is a usage hint, help is a success and an unknown verb is 
   assert.equal(unknown.code, 3);
   assert.match(unknown.out, /refused: unknown-verb/);
   assert.equal(sent.length, 0);
+});
+
+test("TC-JH5 schedule takes --help as a question, not as a create", async () => {
+  const config = makeConfig();
+  const out = [];
+  const write = (chunk) => (out.push(String(chunk)), true);
+  const stdout = process.stdout.write;
+  const stderr = process.stderr.write;
+  process.stdout.write = write;
+  process.stderr.write = write;
+  process.exitCode = 0;
+  const sent = [];
+  const dispatch = async (cfg, platform, command) => (sent.push({ platform, command }), { delivered: true });
+  let code = null;
+  try {
+    await handleScheduleCommand(["--help"], config, () => {}, { sendCommand: dispatch, env: {} });
+    code = process.exitCode;
+  } finally {
+    process.stdout.write = stdout;
+    process.stderr.write = stderr;
+    process.exitCode = 0;
+  }
+  assert.equal(code, 0);
+  assert.equal(out.join(""), scheduleHelp(), "--help answers with the schedule help");
+  assert.doesNotMatch(out.join(""), /agent-relay serve/, "not the global usage");
+  assert.equal(sent.length, 0, "nothing was created");
 });
 
 test("TC-JH4 the job help table and the dispatch table hold the same verbs", () => {

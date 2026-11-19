@@ -55,10 +55,10 @@ test("TC-P2 every entry renders common, then the platform block, then its own ta
     for (const entry of ["conversation", "notice", "loop"]) {
       const text = render(platform, entry);
       const self = text.indexOf("你是我的个人助理");
-      const common = text.indexOf("## 你的能力");
+      const tools = text.indexOf("## 你的工具");
       const rules = text.indexOf("## 回复规则");
       const task = text.indexOf("## 本次任务");
-      assert.ok(self >= 0 && common > self && rules > common && task > rules, `${platform}/${entry} ordering`);
+      assert.ok(self >= 0 && tools > self && rules > tools && task > rules, `${platform}/${entry} ordering`);
       assert.doesNotMatch(text, /\{\{/);
     }
   }
@@ -126,6 +126,15 @@ test("TC-P8 the quiet-word rule lives in the common block and the loop entry car
     assert.match(loop, /LOOP-BODY/);
     assert.doesNotMatch(loop, /第 3 轮|signals-slack 第|只汇报做了的事/);
   }
+});
+
+test("TC-P12 the delivery rules the kernel refuses to guess stay in the common block", () => {
+  const common = readFileSync(join(PROMPTS, "sections", "10-common.md"), "utf8");
+  assert.match(common, /不是草稿/, "the body is the message, not a draft");
+  assert.match(common, /留在思考里/, "working notes stay out of the body");
+  assert.match(common, /不许用 NOOP 敷衍/, "an awaited turn cannot answer with the quiet word");
+  assert.doesNotMatch(common, /首轮/, "the quiet word is the whole body's rule, not the first round's");
+  assert.match(common, /凭据/, "no credentials in a body, a commit or an issue");
 });
 
 test("TC-P9 a scheduled round sends only the origin line when the session exists", () => {
