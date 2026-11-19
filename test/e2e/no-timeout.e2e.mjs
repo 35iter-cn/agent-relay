@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 const { createCore } = await import("../../src/runtime/core.mjs");
+const { e2eWorker } = await import("../fixtures/rpc-e2e.mjs");
 const { isoAt } = await import("../../src/shared/time.mjs");
 
 const KEY = "e2e-nt-1";
@@ -46,7 +47,6 @@ const adapter = {
   sessionFor: () => SESSION,
   reply: async (inbound, text) => (appendFileSync(repliesPath, `${JSON.stringify({ key: inbound.key, text })}\n`), { messageId: `reply-${Date.now()}` }),
   postNotice: async (text) => (appendFileSync(repliesPath, `${JSON.stringify({ key: "notice", text })}\n`), { messageId: `notice-${Date.now()}` }),
-  buildWorker: () => ({ bin: "bash", args: ["-c", `sleep ${WORKER_MS / 1000}; echo worked-to-the-end`] }),
 };
 
 const config = {
@@ -72,6 +72,7 @@ const core = createCore({
   adapter,
   config,
   deps: {
+    workerFactory: e2eWorker({ answer: "worked-to-the-end", delayMs: 3000 }),
     log: (level, ...parts) => {
       if (level === "error" || level === "warn") process.stderr.write(`[${level}] ${parts.join(" ")}\n`);
     },
@@ -133,3 +134,4 @@ if (failures.length) {
   process.exit(1);
 }
 process.stdout.write("\nno-timeout e2e ok\n");
+process.exit(0);

@@ -37,7 +37,8 @@ never carries third-party text it does not need.
 That means:
 
 - adding a new notification type is a change in the sender, not in this repo:
-  `agent-relay notice emit --platform feishu --text "$(…)" --prompt-file …`
+  `agent-relay notice emit --platform slack --to system --text "$(…)" --prompt-file …`
+  (the group is named by the sender; the table is configuration)
 - the policy for acting on a notice lives in that `prompt`; the relay itself only
   knows `agent-relay job cancel|restart <job-id>` and the `schedule` entry described
   below — each entry point validates its own arguments. Inbound text is never parsed:
@@ -216,8 +217,8 @@ Attachments: feishu downloads message resources through the SDK, slack downloads
 and a 200 `text/html` body means the scope is missing. All write into
 `uploads/<chat>/<yyyymmdd>/`, capped at 4 files per inbound message (20 MB each,
 7-day retention) by `src/platforms/shared/uploads.mjs`; the landed paths reach the
-worker as `@path` arguments. `.slack-xoxc.tmp` is unrelated to this — it only feeds
-`conversations.replies`.
+worker inside the prompt. The Slack cookies in `config.json` are unrelated to this —
+they only feed `conversations.replies`.
 
 Outbound images are the mirror of that: a worker asks for a picture to be sent by
 putting `![](/absolute/path.png)` on a line of its own in stdout (png/jpg/jpeg/gif/webp,
@@ -236,25 +237,61 @@ bun scripts/install.mjs --systemd  # also link the systemd template unit
 agent-relay serve feishu
 ```
 
-Configuration lives in `~/.config/agent-relay/` (override with
+Configuration lives in `~/.config/agent-relay/` (override the directory with
 `AGENT_RELAY_CONFIG_DIR`):
 
 ```
-feishu.env | slack-app.env
-.slack-xoxc.tmp                     # slack root-text reads only
+config.json                         # credentials, groups and any tuning override (0600)
 relay-<platform>.json               # state: conversations, jobs, notices
 relay-<platform>.cmd/               # CLI → daemon command queue
+prompts/                            # per-job and per-loop prompt overrides
 logs/<platform>/<day>.jsonl
 ```
 
-Environment knobs use the `AGENT_RELAY_` prefix (the legacy `RELAY_` prefix is
-still read): `AGENT_RELAY_STALL_MS`, `AGENT_RELAY_TOOL_STALL_MS`,
-`AGENT_RELAY_STALL_CHECK_MS`, `AGENT_RELAY_TIMEOUT_MS`, `AGENT_RELAY_MAX_WORKERS`,
-`AGENT_RELAY_QUEUE_DEPTH`, `AGENT_RELAY_WORKER`, `AGENT_RELAY_ALLOWED_USER`; the
-slack adapter adds its own `PING_MS` / `PONG_TIMEOUT_MS` / `ALERT_COOLDOWN_MS`.
-With nothing set, one turn times out after 2 hours, `MAX_WORKERS` is 5,
-`QUEUE_DEPTH` is 3 and the stall watchdog runs once a minute — the source
-defaults are the production values, so no systemd drop-in is involved.
+`config.json` holds one section per platform. Every value a daemon needs is there:
+credentials, the Slack cookies, and the group table.
+
+```json
+{
+  "slack": {
+    "appToken": "xapp-…",
+    "botToken": "xoxb-…",
+    "allowedUser": "U…",
+    "botUser": "U…",
+    "cookies": { "xoxc": "…", "xoxd": "…" },
+    "defaultGroup": "main",
+    "groups": { "main": "C…", "system": "C…", "loop": "C…", "hours": "C…" }
+  },
+  "feishu": { "appId": "cli_…", "appSecret": "…", "chatId": "oc_…", "allowedUser": "ou_…" }
+}
+```
+
+Every group is a peer: `main` is the conversation channel and the fallback named by
+`defaultGroup`; `system`, `loop` and `hours` each carry one kind of notice. A sender
+names its group (`--to system`), and a name that is missing from the table falls back
+to `defaultGroup` with one warning — a notice is never lost to a typo.
+
+Tuning values live in `src/config.mjs` as `DEFAULTS`; `config.json` only carries the
+keys you want to change, under `relay`:
+
+| key | default | what it does |
+| --- | --- | --- |
+| `worker.bin` | `pi` | worker executable |
+| `turn.roundMaxMs` | 90m | wall-clock budget of a conversation turn |
+| `queue.maxWorkers` / `queue.depth` | 5 / 3 | parallel workers, queue depth before "busy" |
+| `stall.silenceMs` / `stall.toolMs` / `stall.checkMs` | 10m / 10m / 1m | stall thresholds and watchdog cadence |
+| `budget.keyWindowMs` / `keyWindowMaxMs` / `graceMs` | 6h / 3h / 10m | per-conversation budget window, cap and tool grace |
+| `loop.noticeMs` / `renoticeMs` / `noticeMax` / `parkMs` | 45m / 2h / 3 / 6h | a loop round's running notice, reminder, count and park |
+
+A removed key (`worker.mode`, `worker.steer`, `turn.timeoutMs`, `stall.actionMs`) is
+refused at startup with its name: those behaviours are now the only behaviour. A
+wrong type, a negative number or an unknown key is refused the same way.
+
+Only process identity stays in the environment: `HOME`, `AGENT_RELAY_CONFIG_DIR`
+(the config file cannot say where it lives), `AGENT_RELAY_WORKDIR`,
+`AGENT_RELAY_SESSIONS_DIR`, `AGENT_RELAY_PLATFORM`, and the per-turn
+`AGENT_RELAY_KEY` / `AGENT_RELAY_SELF_CHAIN`. Every other `AGENT_RELAY_*` knob is
+ignored now — tuning is the config file's job.
 
 CLI commands write a JSON file into `relay-<platform>.cmd/` and wait up to 20s for
 the daemon to consume it: `delivered` means the daemon handled it, `pending` means

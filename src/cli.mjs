@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { existsSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { createConfig } from "./config.mjs";
+import { GROUP_PATTERN, createConfig } from "./config.mjs";
 import { ensurePrivateDir } from "./shared/fs.mjs";
 import { createLog } from "./shared/log.mjs";
 import { createCore } from "./runtime/core.mjs";
@@ -29,7 +29,7 @@ export function usage(stream = process.stderr) {
     [
       "usage:",
       `  agent-relay serve <${PLATFORMS.join("|")}>`,
-      "  agent-relay notice emit --platform <p> (--text <text> | --text-file <path>) [--title <text>] [--prompt <text> | --prompt-file <path>] [--reply-mode conversation --reply-key <key>]",
+      "  agent-relay notice emit --platform <p> (--text <text> | --text-file <path>) [--title <text>] [--to <group>] [--prompt <text> | --prompt-file <path>] [--reply-mode conversation --reply-key <key>]",
       "  agent-relay notice get --platform <p> <id>",
       "  agent-relay schedule --platform <p> --key <k> --name <n> [--in <dur> | --at <iso>] [--grace <dur>] [--join]  (prompt on stdin)",
       "  agent-relay schedule list|cancel|help …",
@@ -222,15 +222,15 @@ export function textFlag(flags, name) {
   return typeof flags[name] === "string" ? flags[name].trim() : "";
 }
 
-export async function emitNotice(config, platform, text, prompt = "", log = createLog(), reply = null, title = "") {
-  const sent = await sendCommand(config, platform, { op: "emit", text, prompt, reply, title }).catch((error) => {
+export async function emitNotice(config, platform, text, prompt = "", log = createLog(), reply = null, title = "", group = "") {
+  const sent = await sendCommand(config, platform, { op: "emit", text, prompt, reply, title, group }).catch((error) => {
     log("warn", "notice-command", String(error?.message ?? error));
     return { delivered: false };
   });
   if (sent.delivered) return { delivered: true };
   const adapter = await loadPlatform(platform, config, log);
-  const posted = await adapter.postNotice(withTitle(title, text));
-  return { delivered: false, messageId: posted?.messageId ?? null };
+  const posted = await adapter.postNotice(withTitle(title, text), { group });
+  return { delivered: false, messageId: posted?.messageId ?? null, chatId: posted?.chatId ?? null };
 }
 
 export function loopPlatform(flags, env = process.env) {
@@ -706,11 +706,17 @@ export async function main(argv = process.argv.slice(2)) {
     const text = textFlag(flags, "text");
     const prompt = textFlag(flags, "prompt");
     const title = typeof flags.title === "string" ? flags.title : "";
+    const group = typeof flags.to === "string" ? flags.to.trim() : "";
     if (!isPlatform(platform) || !text) usage();
+    if (group && group !== "default" && !GROUP_PATTERN.test(group)) {
+      process.stderr.write("refused: bad-group\n");
+      process.exitCode = 3;
+      return;
+    }
     const replyMode = typeof flags["reply-mode"] === "string" ? flags["reply-mode"] : "";
     const replyKey = typeof flags["reply-key"] === "string" ? flags["reply-key"] : "";
     const reply = replyMode ? { mode: replyMode, key: replyKey || undefined } : null;
-    const result = await emitNotice(config, platform, text, prompt, log, reply, title);
+    const result = await emitNotice(config, platform, text, prompt, log, reply, title, group === "default" ? "" : group);
     process.stdout.write(`${result.delivered ? "delivered" : `sent ${result.messageId ? 1 : 0}`}\n`);
     return;
   }

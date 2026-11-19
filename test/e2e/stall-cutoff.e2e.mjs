@@ -4,10 +4,10 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readd
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
-process.env.AGENT_RELAY_STALL_CHECK_MS = "1000";
-process.env.AGENT_RELAY_TOOL_STALL_MS = "2000";
 
 const { createCore } = await import("../../src/runtime/core.mjs");
+const { DEFAULTS } = await import("../../src/config.mjs");
+const { e2eWorker } = await import("../fixtures/rpc-e2e.mjs");
 const { localDay, localStamp, isoAt } = await import("../../src/shared/time.mjs");
 
 const KEY = "e2e-th-1";
@@ -66,7 +66,6 @@ const adapter = {
   onProgressDone: async (ctx) => {
     progressSeen.push(ctx.progress);
   },
-  buildWorker: () => ({ bin: "bash", args: ["-c", "sleep 600"] }),
 };
 
 const config = {
@@ -79,6 +78,10 @@ const config = {
   userPromptsDir,
   uploadsDir: join(configDir, "uploads"),
   cli: "agent-relay",
+  configFile: join(configDir, "config.json"),
+  configProblem: null,
+  options: { relay: { ...DEFAULTS.relay, stall: { silenceMs: 2_000, toolMs: 2_000, checkMs: 500 } } },
+  platform: () => null,
   readEnv: () => ({}),
   envFile: (name) => join(configDir, name),
   stateFile: (platform) => join(configDir, `relay-${platform}.json`),
@@ -95,6 +98,7 @@ const core = createCore({
   adapter,
   config,
   deps: {
+    workerFactory: e2eWorker(),
     now: () => Date.now() + skew,
     log: (level, ...parts) => {
       if (level === "error" || level === "warn") process.stderr.write(`[${level}] ${parts.join(" ")}\n`);
@@ -200,3 +204,4 @@ if (failures.length) {
   process.exit(1);
 }
 process.stdout.write(`\nall e2e checks passed in ${dir}\n`);
+process.exit(0);

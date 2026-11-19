@@ -10,7 +10,9 @@ import { emptyState } from "../src/state/schema.mjs";
 import { pruneState } from "../src/state/prune.mjs";
 import { createJob } from "../src/jobs/model.mjs";
 import { definePlatform } from "../src/platforms/contract.mjs";
+import { DEFAULTS } from "../src/config.mjs";
 import { createPlatform as createSlack } from "../src/platforms/slack.mjs";
+import { workerFromChild } from "./fixtures/rpc-stub.mjs";
 import { writeJsonAtomic } from "../src/shared/json.mjs";
 
 function fakeChild({ stdout = "", code = 0 } = {}) {
@@ -28,7 +30,7 @@ function fakeChild({ stdout = "", code = 0 } = {}) {
 
 const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
 
-function harness({ state = emptyState(), spawn, sessions = [], clock } = {}) {
+function harness({ state = emptyState(), spawn, sessions = [], clock, rpc = false } = {}) {
   const dir = mkdtempSync(join(tmpdir(), "relay-schedule-"));
   const sessionsDir = join(dir, "sessions");
   const promptsDir = join(dir, "prompts");
@@ -74,13 +76,26 @@ function harness({ state = emptyState(), spawn, sessions = [], clock } = {}) {
     reply: async (ctx, text) => (replies.push({ key: ctx.key, replyTo: ctx.replyTo, text }), { messageId: `m-${replies.length}` }),
     postNotice: async (text) => (replies.push({ key: "notice", text }), { messageId: "notice-1" }),
     selfContext: (key) => ({ chatId: "c1", threadId: null, replyTo: null, boundKey: key }),
-    buildWorker: ({ prompt }) => (prompts.push(prompt), { bin: "/bin/true", args: [] }),
   };
+  const spawnFn = spawn ?? (() => fakeChild({ stdout: "ok" }));
+  const workerDeps = rpc
+    ? { spawn: spawnFn }
+    : {
+        workerFactory: (options = {}) => {
+          const worker = workerFromChild(spawnFn(), options);
+          const send = worker.prompt;
+          worker.prompt = (text) => {
+            prompts.push(typeof text === "string" ? text : String(text?.text ?? ""));
+            return send(text);
+          };
+          return worker;
+        },
+      };
   const core = createCore({
     adapter,
     config,
     deps: {
-      spawn: spawn ?? (() => fakeChild({ stdout: "ok" })),
+      ...workerDeps,
       log: (level, ...parts) => logs.push([level, ...parts].join(" ")),
       now: clock ? () => clock.value : undefined,
     },
@@ -287,10 +302,11 @@ test("TC-SJ13 a platform without selfContext cannot be scheduled", async () => {
 test("TC-SJ14 slack keeps the conversation key and says which keys are already message ids", () => {
   const slack = createSlack({
     config: {
-      readEnv: () => ({ SLACK_APP_TOKEN: "xapp", SLACK_BOT_TOKEN: "xoxb", AGENT_RELAY_SLACK_CHANNEL: "C1", AGENT_RELAY_ALLOWED_USER: "U1" }),
-      envFile: (name) => `/nonexistent/${name}`,
-      home: tmpdir(),
       configDir: tmpdir(),
+      configFile: "/tmp/config.json",
+      configProblem: null,
+      options: DEFAULTS,
+      platform: (name) => (name === "slack" ? { appToken: "xapp", botToken: "xoxb", allowedUser: "U1", defaultGroup: "main", groups: { main: "C1" } } : null),
     },
     log: () => {},
   });
@@ -419,7 +435,7 @@ function rpcChild({ answer = "答案" } = {}) {
 test("TC-SC3 a --join schedule lands as a steer on the running turn instead of a new job", async () => {
   const child = rpcChild();
   child.hold = true;
-  const { core, replies, adapter } = harness({ spawn: () => child });
+  const { core, replies, adapter } = harness({ spawn: () => child, rpc: true });
   adapter.worker = "pi";
   adapter.workerMode = "rpc";
   await core.handle({ key: "th-1", session: "fs-th-1", dedupeId: "m1", messageId: "m1", text: "第一问", chatId: "c1", authorId: "u-ok" });
@@ -437,7 +453,7 @@ test("TC-SC3 a --join schedule lands as a steer on the running turn instead of a
 
 test("TC-SC4 a --join schedule on an idle conversation still starts its own round", async () => {
   const child = rpcChild();
-  const { core, adapter } = harness({ spawn: () => child });
+  const { core, adapter } = harness({ spawn: () => child, rpc: true });
   adapter.worker = "pi";
   adapter.workerMode = "rpc";
   const made = await core.scheduleJob({ ...brief({ name: "idle-wake" }), dueAt: null, join: true });
@@ -449,7 +465,7 @@ test("TC-SC5 a due wake job merges into a running turn instead of queueing behin
   const clock = { value: Date.parse("2026-11-05T20:00:00+08:00") };
   const child = rpcChild();
   child.hold = true;
-  const { core, adapter } = harness({ spawn: () => child, clock });
+  const { core, adapter } = harness({ spawn: () => child, clock, rpc: true });
   adapter.worker = "pi";
   adapter.workerMode = "rpc";
   const made = await core.scheduleJob({ ...brief({ name: "due-wake" }), dueAt: new Date(clock.value + 1000).toISOString(), join: true });

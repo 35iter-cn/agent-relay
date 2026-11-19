@@ -1,8 +1,8 @@
 export const PLATFORMS = ["feishu", "slack"];
 
 const REQUIRED = { name: "string", start: "function", reply: "function", sessionFor: "function" };
-const OPTIONAL = ["postNotice", "postMedia", "edit", "onProgress", "onProgressDone", "addReceipt", "removeReceipt", "buildWorker", "prune", "selfContext", "resolveThread", "locateReply"];
-const VALUES = { workerMode: "string", steer: "string" };
+const OPTIONAL = ["postNotice", "postMedia", "edit", "onProgress", "onProgressDone", "addReceipt", "removeReceipt", "prune", "selfContext", "resolveThread", "locateReply"];
+const VALUES = { piBin: "string" };
 
 export function definePlatform(platform) {
   const missing = [];

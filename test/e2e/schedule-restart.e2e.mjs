@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 const { createCore } = await import("../../src/runtime/core.mjs");
+const { e2eWorker } = await import("../fixtures/rpc-e2e.mjs");
 const { isoAt } = await import("../../src/shared/time.mjs");
 const { writeJsonAtomic } = await import("../../src/shared/json.mjs");
 const { emptyState } = await import("../../src/state/schema.mjs");
@@ -46,10 +47,6 @@ const adapter = {
     return { messageId: `notice-${Date.now()}` };
   },
   selfContext: (key) => ({ chatId: "c1", threadId: null, replyTo: key }),
-  buildWorker: ({ prompt }) => {
-    dispatched.push(prompt);
-    return { bin: "bash", args: ["-c", prompt.includes("SLOW") ? "sleep 30" : "echo 这一轮做完了"] };
-  },
 };
 
 const config = {
@@ -78,6 +75,7 @@ const makeCore = () =>
     adapter,
     config,
     deps: {
+      workerFactory: e2eWorker({ answer: "这一轮做完了", holdOn: "SLOW", dispatched }),
       now: () => Date.now() + skew,
       log: () => {},
       stallGraceMs: 500,
@@ -158,3 +156,4 @@ if (failures.length) {
   process.exit(1);
 }
 process.stdout.write("ok\n");
+process.exit(0);

@@ -3,19 +3,20 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { chunkText } from "../shared/chunk.mjs";
 import { deliveryError } from "../jobs/delivery.mjs";
-import { relayEnv } from "../shared/env.mjs";
+import { GROUP_PATTERN, groupChannel } from "../config.mjs";
 import { ensurePrivateDir } from "../shared/fs.mjs";
 import { normalizeSlackMarkdown } from "../shared/markdown.mjs";
 import { createRootCache } from "./shared/root-cache.mjs";
 import { MAX_ATTACHMENTS, MAX_BYTES, extFor, uploadDirFor, pruneUploads } from "./shared/uploads.mjs";
 
-const PING_MS = relayEnv("PING_MS", 10_000);
-const SERVER_PING_TIMEOUT_MS = relayEnv("SERVER_PING_TIMEOUT_MS", 30_000);
-const PONG_TIMEOUT_MS = relayEnv("PONG_TIMEOUT_MS", 10_000);
+const PING_MS = 10_000;
+const SERVER_PING_TIMEOUT_MS = 30_000;
+const PONG_TIMEOUT_MS = 10_000;
+const REFRESH_MS = 0;
 const MIN_REFRESH_MS = 60_000;
 const HELLO_TIMEOUT_MS = 15_000;
 const HEARTBEAT_LOG_EVERY = 3;
-const ALERT_COOLDOWN_MS = relayEnv("ALERT_COOLDOWN_MS", 30 * 60_000);
+const ALERT_COOLDOWN_MS = 30 * 60_000;
 const PASSING_SUBTYPES = ["thread_broadcast", "file_share"];
 const CHUNK_LIMIT = 8_000;
 const THREAD_RETENTION_MS = 30 * 86_400_000;
@@ -25,6 +26,7 @@ export const FILES_ALERT = "relay: Slack 附件下载失败，检查 app 是否�
 export const PROGRESS_EMOJI = "thinking_face";
 export const RECEIPT_EMOJI = "inbox_tray";
 const PLACEHOLDER_TEXT = "⏳ 正在处理…";
+const ROUTE_FALLBACK_ERRORS = new Set(["channel_not_found", "not_in_channel", "is_archived"]);
 const PERMANENT_REPLY_ERRORS = new Set([
   "invalid_thread_ts",
   "thread_not_found",
@@ -76,9 +78,9 @@ export function createMediaUploader({ channel, token, log = () => {}, reply, fet
     return ticket.file_id;
   }
 
-  async function complete(thread, ids) {
-    const body = new URLSearchParams({ files: JSON.stringify(ids.map((id) => ({ id }))), channel_id: channel });
-    if (thread) body.set("thread_ts", thread);
+  async function complete(ctx, ids) {
+    const body = new URLSearchParams({ files: JSON.stringify(ids.map((id) => ({ id }))), channel_id: ctx?.chatId ?? channel });
+    if (ctx?.replyTo) body.set("thread_ts", ctx.replyTo);
     const parsed = await form("files.completeUploadExternal", body);
     if (!parsed.ok) throw slackFailure(`completeUploadExternal ${parsed.error ?? "unknown"}`, parsed.error);
     return parsed;
@@ -95,7 +97,7 @@ export function createMediaUploader({ channel, token, log = () => {}, reply, fet
     try {
       const ids = [];
       for (const file of files) ids.push(await uploadFile(file));
-      await complete(ctx?.replyTo ?? null, ids);
+      await complete(ctx, ids);
       return { messageId: null, degraded: false };
     } catch (error) {
       if (!PERMISSION_ERRORS.has(error?.slackError)) throw error;
@@ -117,7 +119,8 @@ export async function sendMarkdown(api, method, { text, ...rest }, log = () => {
 
 export function createRuntime({ api, log, channel, emoji = PROGRESS_EMOJI }) {
   async function postMessage(ctx, text) {
-    const params = { channel, text, ...(ctx.replyTo ? { thread_ts: ctx.replyTo } : {}) };
+    const target = ctx?.chatId ?? channel;
+    const params = { channel: target, text, ...(ctx.replyTo ? { thread_ts: ctx.replyTo } : {}) };
     const res = await sendMarkdown(api, "chat.postMessage", params, log);
     if (!res.ok) throw deliveryError(`postMessage ${res.error ?? "failed"}`, { retryable: !PERMANENT_REPLY_ERRORS.has(res.error), code: res.error ?? null });
     if (!res.ts) throw deliveryError("postMessage returned no ts", { code: "no-ts" });
@@ -129,7 +132,7 @@ export function createRuntime({ api, log, channel, emoji = PROGRESS_EMOJI }) {
       if (!api) throw deliveryError("no SLACK_BOT_TOKEN", { retryable: false, code: "no-token" });
       const entry = ctx.progress;
       if (entry?.mode === "placeholder" && entry.messageId && entry.pending) {
-        const patched = await sendMarkdown(api, "chat.update", { channel, ts: entry.messageId, text }, log);
+        const patched = await sendMarkdown(api, "chat.update", { channel: ctx?.chatId ?? channel, ts: entry.messageId, text }, log);
         if (patched.ok) {
           entry.pending = false;
           return { messageId: entry.messageId, patched: true };
@@ -146,7 +149,7 @@ export function createRuntime({ api, log, channel, emoji = PROGRESS_EMOJI }) {
 
     async edit(ctx, messageId, text) {
       if (!api || !messageId) return false;
-      const res = await sendMarkdown(api, "chat.update", { channel, ts: messageId, text }, log);
+      const res = await sendMarkdown(api, "chat.update", { channel: ctx?.chatId ?? channel, ts: messageId, text }, log);
       if (res.ok) return true;
       log("warn", "edit", res.error);
       return false;
@@ -154,11 +157,11 @@ export function createRuntime({ api, log, channel, emoji = PROGRESS_EMOJI }) {
 
     async onProgress(ctx) {
       if (!api || !ctx.messageId) return null;
-      const res = await api("reactions.add", { channel, timestamp: ctx.messageId, name: emoji });
+      const res = await api("reactions.add", { channel: ctx?.chatId ?? channel, timestamp: ctx.messageId, name: emoji });
       const mode = decideProgressMode(res.ok ? null : res.error);
       if (mode === "reaction") return { mode: "reaction", messageId: ctx.messageId, name: emoji };
       if (mode === "placeholder") {
-        const sent = await api("chat.postMessage", { channel, text: PLACEHOLDER_TEXT, ...(ctx.replyTo ? { thread_ts: ctx.replyTo } : {}) }).catch((error) => {
+        const sent = await api("chat.postMessage", { channel: ctx?.chatId ?? channel, text: PLACEHOLDER_TEXT, ...(ctx.replyTo ? { thread_ts: ctx.replyTo } : {}) }).catch((error) => {
           log("warn", "placeholder", String(error?.message ?? error));
           return { ok: false };
         });
@@ -170,7 +173,7 @@ export function createRuntime({ api, log, channel, emoji = PROGRESS_EMOJI }) {
 
     async addReceipt(ctx) {
       if (!api || !ctx.messageId) return null;
-      const res = await api("reactions.add", { channel, timestamp: ctx.messageId, name: RECEIPT_EMOJI });
+      const res = await api("reactions.add", { channel: ctx?.chatId ?? channel, timestamp: ctx.messageId, name: RECEIPT_EMOJI });
       if (!res.ok && !ALREADY_CLEANED.has(res.error)) {
         log("warn", "receipt-add", res.error);
         return null;
@@ -181,7 +184,7 @@ export function createRuntime({ api, log, channel, emoji = PROGRESS_EMOJI }) {
     async removeReceipt(ctx) {
       const receipt = ctx.receipt;
       if (!api || !receipt?.messageId) return;
-      const res = await api("reactions.remove", { channel, timestamp: receipt.messageId, name: receipt.name ?? RECEIPT_EMOJI });
+      const res = await api("reactions.remove", { channel: ctx?.chatId ?? channel, timestamp: receipt.messageId, name: receipt.name ?? RECEIPT_EMOJI });
       if (!res.ok && !ALREADY_CLEANED.has(res.error)) log("warn", "receipt-remove", res.error);
     },
 
@@ -189,12 +192,12 @@ export function createRuntime({ api, log, channel, emoji = PROGRESS_EMOJI }) {
       const entry = ctx.progress;
       if (!api || !entry) return;
       if (entry.mode === "reaction") {
-        const res = await api("reactions.remove", { channel, timestamp: entry.messageId ?? ctx.messageId, name: entry.name ?? emoji });
+        const res = await api("reactions.remove", { channel: ctx?.chatId ?? channel, timestamp: entry.messageId ?? ctx.messageId, name: entry.name ?? emoji });
         if (!res.ok && !ALREADY_CLEANED.has(res.error)) log("warn", "progress-remove", res.error);
         return;
       }
       if (entry.mode === "placeholder" && entry.messageId && entry.pending) {
-        const res = await api("chat.delete", { channel, ts: entry.messageId });
+        const res = await api("chat.delete", { channel: ctx?.chatId ?? channel, ts: entry.messageId });
         if (!res.ok && !ALREADY_CLEANED.has(res.error)) log("warn", "progress-delete", res.error);
       }
     },
@@ -206,10 +209,10 @@ export function normalizeForMatch(text) {
 }
 
 export function createReplyLocator({ channel, readCookies, log = () => {}, fetchFn = (...args) => fetch(...args) }) {
-  async function threadMessages(thread, oldest) {
+  async function threadMessages(thread, oldest, chatId = channel) {
     const cookies = readCookies();
     const url = new URL("https://slack.com/api/conversations.replies");
-    url.searchParams.set("channel", channel);
+    url.searchParams.set("channel", chatId);
     url.searchParams.set("ts", thread);
     url.searchParams.set("oldest", String(oldest));
     url.searchParams.set("inclusive", "true");
@@ -227,7 +230,7 @@ export function createReplyLocator({ channel, readCookies, log = () => {}, fetch
     const startedAt = Number(since);
     const oldest = Number.isFinite(startedAt) ? Math.max(0, Math.floor((startedAt - LOCATE_SKEW_MS) / 1000)) : 0;
     try {
-      const messages = await threadMessages(thread, oldest);
+      const messages = await threadMessages(thread, oldest, ctx?.chatId ?? channel);
       const hit = messages.find((message) => message?.bot_id && normalizeForMatch(message.text) === wanted);
       return hit?.ts ?? null;
     } catch (error) {
@@ -252,16 +255,16 @@ export function resolveThread(key) {
   return MESSAGE_TS.test(value) ? value : null;
 }
 
-export function acceptsEvent(event, { channel = null, allowedUser = null, botUser = null } = {}) {
+export function acceptsEvent(event, { channels = null, allowedUser = null, botUser = null } = {}) {
   if (!event) return { ok: false, why: "empty" };
-  if (!channel || !allowedUser) return { ok: false, why: "unconfigured" };
-  if (event.channel !== channel) return { ok: false, why: "channel" };
+  if (!channels?.size || !allowedUser) return { ok: false, why: "unconfigured" };
+  if (!channels.has(event.channel)) return { ok: false, why: "channel" };
   if (event.user === botUser) return { ok: false, why: "bot" };
   if (event.bot_id && event.user !== allowedUser) return { ok: false, why: "bot" };
   if (event.user !== allowedUser) return { ok: false, why: "author" };
   if (event.subtype && !PASSING_SUBTYPES.includes(event.subtype)) return { ok: false, why: "subtype" };
   if (!stripMentions(event.text) && !event.files?.length) return { ok: false, why: "empty-text" };
-  return { ok: true, thread: event.thread_ts ?? event.ts };
+  return { ok: true, thread: event.thread_ts ?? event.ts, channel: event.channel };
 }
 
 export function fileOf(file) {
@@ -306,10 +309,10 @@ export function createAttachmentDownloader({ config, log, channel, token, api, f
     return { bytes: Buffer.from(await res.arrayBuffer()), type };
   }
 
-  return async function downloadAttachments(files) {
+  return async function downloadAttachments(files, chatId = channel) {
     const all = Array.isArray(files) ? files.slice() : [];
     const picked = all.slice(0, MAX_ATTACHMENTS);
-    const dir = uploadDirFor(config.configDir, channel);
+    const dir = uploadDirFor(config.configDir, chatId ?? channel);
     const saved = [];
     const failed = [];
     for (const file of picked) {
@@ -359,13 +362,15 @@ export function pruneThreads(threads, now = Date.now(), retentionMs = THREAD_RET
 }
 
 export function createPlatform({ config, log: baseLog }) {
-  const env = { ...config.readEnv(config.envFile("slack-app.env")), ...process.env };
-  const appToken = env.SLACK_APP_TOKEN;
-  const channel = relayEnv("SLACK_CHANNEL", null, env);
-  const allowedUser = env.SLACKD_ALLOWED_USER ?? relayEnv("ALLOWED_USER", null, env);
-  const botUser = env.SLACKD_BOT_USER ?? null;
-  const botToken = env.SLACK_BOT_TOKEN;
-  const progressEmoji = env.SLACK_PROGRESS_EMOJI ?? PROGRESS_EMOJI;
+  const section = config.platform("slack");
+  const appToken = section?.appToken ?? null;
+  const defaultTarget = groupChannel(section, "");
+  const channel = defaultTarget.chatId ?? null;
+  const allowedUser = section?.allowedUser ?? null;
+  const botUser = section?.botUser ?? null;
+  const botToken = section?.botToken ?? null;
+  const channels = new Set(Object.values(section?.groups ?? {}));
+  const progressEmoji = PROGRESS_EMOJI;
   const log = baseLog;
   const typing = { timer: null, cursor: 0, busy: false, keys: new Set() };
   let state = null;
@@ -373,9 +378,9 @@ export function createPlatform({ config, log: baseLog }) {
   let cookies = null;
 
   function readCookies() {
-    const lines = readFileSync(config.envFile(".slack-xoxc.tmp"), "utf8").split("\n").map((line) => line.trim()).filter(Boolean);
-    if (lines.length < 2) throw new Error(".slack-xoxc.tmp needs two lines");
-    return { xoxc: lines[0], xoxd: lines[1] };
+    const cookies = section?.cookies ?? {};
+    if (!cookies.xoxc || !cookies.xoxd) throw new Error("config.json needs slack.cookies.xoxc and xoxd");
+    return { xoxc: String(cookies.xoxc), xoxd: String(cookies.xoxd) };
   }
 
   function apiFor(token) {
@@ -390,10 +395,10 @@ export function createPlatform({ config, log: baseLog }) {
     };
   }
 
-  async function fetchRoot(thread) {
+  async function fetchRoot(thread, chatId = channel) {
     if (!cookies) throw new Error("no cookies");
     const url = new URL("https://slack.com/api/conversations.replies");
-    url.searchParams.set("channel", channel);
+    url.searchParams.set("channel", chatId);
     url.searchParams.set("ts", thread);
     url.searchParams.set("limit", "1");
     const res = await fetch(url, { headers: { Authorization: `Bearer ${cookies.xoxc}`, Cookie: `d=${cookies.xoxd}` } });
@@ -407,11 +412,11 @@ export function createPlatform({ config, log: baseLog }) {
     save: () => coreRef?.save(),
     log,
     sessionFor,
-    fetchRootText: (thread) => fetchRoot(thread),
+    fetchRootText: (thread, _key, chatId) => fetchRoot(thread, chatId),
   });
 
-  async function rootTextFor(thread) {
-    return rootCache.textFor(thread, thread);
+  async function rootTextFor(thread, chatId) {
+    return rootCache.textFor(thread, thread, chatId);
   }
 
   function alertOnce(kind, text) {
@@ -513,7 +518,7 @@ export function createPlatform({ config, log: baseLog }) {
         conn.hello = envelope;
         conn.lastServerPingAt = Date.now();
         conn.lifetimeMs = Number(envelope.debug_info?.approximate_connection_time ?? 0) * 1_000;
-        const refreshIn = refreshDelayMs(conn.lifetimeMs, relayEnv("REFRESH_MS", 0));
+        const refreshIn = refreshDelayMs(conn.lifetimeMs, REFRESH_MS);
         log("info", "hello", `${envelope.num_connections ?? 1} conn`, `lifetime=${Math.round(conn.lifetimeMs / 1_000)}s`, `refresh=${Math.round(refreshIn / 1_000)}s`);
         conn.refreshTimer = setTimeout(() => conn.shutdown("refresh"), refreshIn);
         conn.onHello?.();
@@ -590,43 +595,43 @@ export function createPlatform({ config, log: baseLog }) {
     surface: "本 thread",
     allowedUser,
     chunkLimit: CHUNK_LIMIT,
-    timeoutMs: relayEnv("TIMEOUT_MS", 0),
-    maxWorkers: relayEnv("MAX_WORKERS", 5),
-    queueDepth: relayEnv("QUEUE_DEPTH", 3),
-    worker: relayEnv("WORKER", "pi"),
-    workerMode: relayEnv("WORKER_MODE", "rpc"),
-    steer: relayEnv("STEER", "on"),
-    piBin: config.workerBin,
+    maxWorkers: config.options.relay.queue.maxWorkers,
+    queueDepth: config.options.relay.queue.depth,
+    piBin: config.options.relay.worker.bin,
     sessionFor,
 
-    selfContext: (key) => ({ chatId: channel, threadId: null, replyTo: null, boundKey: key }),
+    selfContext: (key) => ({ chatId: state?.convs?.[key]?.chatId ?? channel, threadId: null, replyTo: null, boundKey: key }),
     resolveThread,
 
     async start({ onMessage, onReady, core }) {
       coreRef = core;
       state = core.state;
-      if (!appToken) {
-        log("error", "missing-credential", config.envFile("slack-app.env"), "SLACK_APP_TOKEN");
+      if (config.configProblem) {
+        log("error", config.configProblem.split(":")[0], config.configFile, config.configProblem);
         process.exit(1);
       }
-      if (!channel || !allowedUser) {
-        log("error", "missing-credential", config.envFile("slack-app.env"), !channel ? "AGENT_RELAY_SLACK_CHANNEL" : "AGENT_RELAY_ALLOWED_USER");
+      if (!section) {
+        log("error", "missing-config", config.configFile, "slack section");
+        process.exit(1);
+      }
+      if (!appToken || !botToken || !channel || !allowedUser) {
+        log("error", "missing-config", config.configFile, !appToken ? "slack.appToken" : !botToken ? "slack.botToken" : !channel ? `slack.groups.${section.defaultGroup ?? "main"}` : "slack.allowedUser");
         process.exit(1);
       }
       try {
         cookies = readCookies();
       } catch (error) {
-        log("error", "missing-credential", config.envFile(".slack-xoxc.tmp"), String(error));
+        log("error", "missing-cookies", config.configFile, String(error));
       }
       const handle = async (event) => {
-        const verdict = acceptsEvent(event, { channel, allowedUser, botUser });
+        const verdict = acceptsEvent(event, { channels, allowedUser, botUser });
         if (!verdict.ok) return log("ignore", verdict.why, event?.ts ?? "");
         const thread = verdict.thread;
         const stripped = stripMentions(event.text ?? "");
-        const parsed = event.files?.length ? await downloadAttachments(event.files) : { saved: [], failed: [], truncated: 0 };
+        const parsed = event.files?.length ? await downloadAttachments(event.files, verdict.channel) : { saved: [], failed: [], truncated: 0 };
         const text = composeText(stripped, parsed);
         if (shouldAlertFiles(parsed)) alertOnce("files", FILES_ALERT);
-        const rootText = await rootTextFor(thread);
+        const rootText = await rootTextFor(thread, verdict.channel);
         await onMessage({
           key: thread,
           session: sessionFor(thread),
@@ -634,7 +639,7 @@ export function createPlatform({ config, log: baseLog }) {
           messageId: event.ts,
           authorId: event.user,
           text,
-          chatId: channel,
+          chatId: verdict.channel,
           rootText: rootText || text,
           replyTo: thread,
           replyIds: [thread, event.thread_ts].filter(Boolean),
@@ -744,16 +749,31 @@ export function createPlatform({ config, log: baseLog }) {
       return pruneUploads(config.uploadsDir);
     },
 
-    async postNotice(text) {
-      if (!botToken) throw new Error("postNotice: SLACK_BOT_TOKEN missing");
+    async postNotice(text, { group = "" } = {}) {
+      if (!botToken) throw new Error("postNotice: slack.botToken missing");
+      const target = groupChannel(section, group);
+      if (target.refused) throw new Error(`postNotice ${target.refused}`);
+      if (target.unmapped) log("warn", "notice-group", `${target.unmapped} → ${target.group}`);
       const api = apiFor(botToken);
-      let last = null;
-      for (const part of chunkText(text, CHUNK_LIMIT)) {
-        const res = await sendMarkdown(api, "chat.postMessage", { channel, text: part }, log);
-        if (!res.ok) throw new Error(`postNotice ${res.error}`);
-        last = res.ts ?? last;
+      const send = async (chatId) => {
+        let last = null;
+        for (const part of chunkText(text, CHUNK_LIMIT)) {
+          const res = await sendMarkdown(api, "chat.postMessage", { channel: chatId, text: part }, log);
+          if (!res.ok) {
+            const error = Object.assign(new Error(`postNotice ${res.error}`), { slackError: res.error });
+            throw error;
+          }
+          last = res.ts ?? last;
+        }
+        return { messageId: last, chatId };
+      };
+      try {
+        return await send(target.chatId);
+      } catch (error) {
+        if (!ROUTE_FALLBACK_ERRORS.has(error?.slackError) || !channel || target.chatId === channel) throw error;
+        log("warn", "notice-group-fallback", String(error.slackError), `${target.chatId} → ${channel}`);
+        return send(channel);
       }
-      return { messageId: last };
     },
   };
 

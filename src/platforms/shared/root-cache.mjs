@@ -12,14 +12,14 @@ export function pruneConversations(convs, now = Date.now(), retentionMs = CONVER
 
 export function createRootCache({ getState, save, log = () => {}, fetchRootText, sessionFor, maxFail = 3 }) {
   return {
-    async textFor(identity, key) {
+    async textFor(identity, key, chatId = null) {
       const state = getState();
       if (!state) return null;
       const entry = state.convs[key] ?? { session: sessionFor(key), rootText: null, rootFail: 0 };
       state.convs[key] = entry;
       if (entry.rootText !== null && entry.rootText !== undefined) return entry.rootText || null;
       try {
-        const text = await fetchRootText(identity, key);
+        const text = await fetchRootText(identity, key, chatId);
         if (text === null) {
           entry.rootText = "";
           save();

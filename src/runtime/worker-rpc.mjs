@@ -5,9 +5,9 @@ export const HANDSHAKE_MS = 10_000;
 export const STDERR_CAP = 8 * 1024;
 const DIALOG_METHODS = new Set(["select", "confirm", "input", "editor"]);
 
-export function createRpcWorker({ bin, session, cwd, env = {}, log = () => {}, deps = {}, handshakeMs = HANDSHAKE_MS }) {
+export function createRpcWorker({ bin, session, cwd, env = {}, log = () => {}, deps = {}, handshakeMs = HANDSHAKE_MS, args = null }) {
   const spawn = deps.spawn ?? spawnProcess;
-  const child = spawn(bin, ["--mode", "rpc", "--session-id", session], {
+  const child = spawn(bin, args ?? ["--mode", "rpc", "--session-id", session], {
     cwd,
     detached: true,
     stdio: ["pipe", "pipe", "pipe"],

@@ -4,6 +4,7 @@ import { existsSync, mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { conversationKey, sessionFor, textOf, textOfMessage, bodyOf, msgTypeOf, attachmentsOf, withTimeout, stripMentions, isAcceptedSender, isAcceptedChat, shouldAlertLiveness, toCard, decideProgressMode, createRuntime, createPlatform } from "../src/platforms/feishu.mjs";
+import { DEFAULTS } from "../src/config.mjs";
 import { bootNoticeText, readBootId, shouldAnnounceBoot } from "../src/shared/boot.mjs";
 import { localStamp } from "../src/shared/time.mjs";
 
@@ -213,6 +214,15 @@ function adapterConfig({ env = adapterEnv, configDir = adapterPaths.configDir, h
     uploadsDir: join(configDir, "uploads"),
     agentHoursDir: join(configDir, "agent-hours"),
     ledgerDir: join(configDir, "agent-hours/ledger"),
+    configFile: join(configDir, "config.json"),
+    configProblem: null,
+    options: DEFAULTS,
+    platform: (name) => (name === "feishu" ? {
+      appId: env.FEISHU_APP_ID,
+      appSecret: env.FEISHU_APP_SECRET,
+      chatId: env.FEISHU_CHAT_ID,
+      allowedUser: env.AGENT_RELAY_ALLOWED_USER,
+    } : null),
     readEnv: () => env,
     envFile: (name) => join(configDir, name),
     stateFile: (platform) => join(configDir, `relay-${platform}.json`),
@@ -269,7 +279,7 @@ test("TC-N2 missing credentials log one line and exit instead of a TypeError", a
   } finally {
     process.exit = originalExit;
   }
-  assert.ok(logs.some((line) => line.includes("missing-credential")));
+  assert.ok(logs.some((line) => line.includes("missing-config")));
   assert.deepEqual(exits, [1]);
 });
 
@@ -293,7 +303,7 @@ test("TC-N5 a missing allowed user refuses to start instead of accepting everyon
     process.exit = originalExit;
   }
   assert.deepEqual(exits, [1]);
-  assert.ok(logs.some((line) => line.includes("AGENT_RELAY_ALLOWED_USER")));
+  assert.ok(logs.some((line) => line.includes("feishu.allowedUser")));
 });
 
 test("TC-N4 a platform error surfaces the code instead of being swallowed", async () => {

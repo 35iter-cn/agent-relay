@@ -38,12 +38,12 @@ export function createNoticeService({ state, save, adapter, now = () => Date.now
   state.notices = state.notices ?? {};
   state.meta = state.meta ?? {};
 
-  function post(text) {
+  function post(text, group = "") {
     if (typeof adapter.postNotice !== "function") throw new Error(`platform ${adapter.name} cannot post notices`);
-    return adapter.postNotice(text);
+    return adapter.postNotice(text, { group });
   }
 
-  async function emit({ text = "", prompt = "", reply = null, title = "" } = {}) {
+  async function emit({ text = "", prompt = "", reply = null, title = "", group = "" } = {}) {
     const binding = normalizeReply(reply);
     const bound = binding?.mode === "conversation";
     const body = String(text ?? "").trim();
@@ -51,7 +51,7 @@ export function createNoticeService({ state, save, adapter, now = () => Date.now
     const shown = withTitle(title, body);
     const kept = bound ? { prompt: "", truncated: false } : truncatePrompt(prompt);
     if (kept.truncated) log("warn", "notice-prompt", `truncated to ${MAX_PROMPT_BYTES} bytes`);
-    const sent = await post(shown);
+    const sent = await post(shown, group);
     const seq = Number(state.meta.noticeSeq ?? 0) + 1;
     state.meta.noticeSeq = seq;
     const notice = {
@@ -67,8 +67,8 @@ export function createNoticeService({ state, save, adapter, now = () => Date.now
     }
     state.notices[notice.id] = notice;
     save();
-    log("info", "notice", notice.id, notice.messageId ?? "-", bound ? `bound:${binding.key}` : `${body.length} chars`);
-    return notice;
+    log("info", "notice", notice.id, notice.messageId ?? "-", bound ? `bound:${binding.key}` : `${body.length} chars`, group || "-");
+    return { ...notice, chatId: sent?.chatId ? String(sent.chatId) : null };
   }
 
   function get(id) {

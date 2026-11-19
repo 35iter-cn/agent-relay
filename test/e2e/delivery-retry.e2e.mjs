@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 
 const { createCore } = await import("../../src/runtime/core.mjs");
+const { e2eWorker } = await import("../fixtures/rpc-e2e.mjs");
 const { isoAt } = await import("../../src/shared/time.mjs");
 
 const KEY = "e2e-th-delivery";
@@ -69,7 +70,6 @@ const adapter = {
     appendFileSync(repliesPath, `${JSON.stringify({ key: "notice", text })}\n`);
     return { messageId: `notice-${Date.now()}` };
   },
-  buildWorker: () => ({ bin: "bash", args: ["-c", "echo 答案正文"] }),
 };
 
 const config = {
@@ -97,6 +97,7 @@ const core = createCore({
   adapter,
   config,
   deps: {
+    workerFactory: e2eWorker({ answer: "答案正文" }),
     deliveryRetryMs: 0,
     now: () => clock.now,
     log: (level, ...parts) => {
@@ -229,3 +230,4 @@ if (failures.length) {
   process.exit(1);
 }
 process.stdout.write(`\nall e2e delivery checks passed in ${dir}\n`);
+process.exit(0);

@@ -13,6 +13,9 @@ is not repeated here.
   stall handling or termination.
 
 - **Anything the relay says on its own initiative goes through the notice entry**, and the notice says how a reply is handled: `reply: { mode: "conversation", key }` continues that conversation's session, everything else (`mode: "prompt"`, or no binding at all) keeps the `notice-<id>` behaviour. A loop round is a bound notice — delivering it any other way either loses the reply binding or hands the reply to the wrong session.
+- **A notice names its group.** The group table is configuration (`config.json`),
+  never a constant in the sources; a group that is not configured falls back to
+  `defaultGroup` with one warning instead of dropping the notice.
 - **Notices are not pruned, and a bound notice carries no payload.** `emit` stores `text`/`prompt` only for prompt-mode notices; a bound one keeps `{messageId, reply}` alone, because the state file is rewritten on every job change and the body already exists elsewhere.
 
 ## Tests
@@ -25,6 +28,10 @@ reused in PR notes; never renumber them.
 Assert the behaviour, not the existence. When a fix involves a number a user will
 see, assert that number. A case that would also pass on the broken code proves
 nothing.
+
+`test/fixtures/rpc-stub.mjs` is the in-process worker double for unit tests;
+`test/fixtures/rpc-hold.mjs` is the real child the e2e suites spawn. Both speak the
+RPC surface, because RPC is the only worker mode.
 
 `bun run e2e` runs `test/e2e/*.e2e.mjs`: real child processes, real state, event
 and event files, real command queue — only the IM delivery is faked. It is not
