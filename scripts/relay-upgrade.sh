@@ -24,7 +24,7 @@ notify() {
     echo "relay-upgrade: WARN bun not found, skipping notify" >&2
     return 0
   fi
-  if ! "$bun_bin" "$relay_root/src/cli.mjs" notice emit --platform "$platform" --title "$1" --text "$2"; then
+  if ! "$bun_bin" "$relay_root/src/cli.mjs" notice emit --platform "$platform" --to system --title "$1" --text "$2"; then
     echo "relay-upgrade: WARN notify failed" >&2
   fi
 }
