@@ -10,6 +10,7 @@ import { renderPrompt } from "../src/shared/prompt.mjs";
 import { pruneOldFiles } from "../src/shared/retention.mjs";
 import { readJson, writeJsonAtomic } from "../src/shared/json.mjs";
 import { createPrompts } from "../src/runtime/prompts.mjs";
+import { workerFromChild } from "./fixtures/rpc-stub.mjs";
 import { oneLine, stallStuckText } from "../src/runtime/core.mjs";
 import { hashOf } from "../src/jobs/delivery.mjs";
 
@@ -100,12 +101,24 @@ function harness({ spawn, replies = [], adapterOverrides = {}, state = emptyStat
     ...adapterOverrides,
   };
   const logs = [];
+  const spawned = [];
+  const spawnFn = spawn ?? (() => fakeChild({ stdout: "ok" }));
+  const stubMode = adapterOverrides.worker !== "pi";
+  const workerDeps = stubMode
+    ? {
+        workerFactory: (options = {}) => {
+          const worker = workerFromChild(spawnFn(), options);
+          spawned.push(worker);
+          return worker;
+        },
+      }
+    : { spawn: spawnFn };
   const core = createCore({
     adapter,
     config,
-    deps: { spawn: spawn ?? (() => fakeChild({ stdout: "ok" })), log: (level, ...parts) => logs.push([level, ...parts].join(" ")), ...deps },
+    deps: { ...workerDeps, log: (level, ...parts) => logs.push([level, ...parts].join(" ")), ...deps },
   });
-  return { core, adapter, replies, logs, dir, stateFile, sessionsDir, config };
+  return { core, adapter, replies, logs, dir, stateFile, sessionsDir, config, prompts: () => spawned.flatMap((worker) => worker.prompts) };
 }
 
 function inbound(overrides = {}) {
@@ -115,19 +128,14 @@ function inbound(overrides = {}) {
 const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
 
 test("TC-1 first turn injects the rendered prompt template", async () => {
-  const captured = [];
-  const { core } = harness({
-    adapterOverrides: { buildWorker: ({ prompt, full }) => (captured.push({ prompt, full }), { bin: "/bin/true", args: [] }) },
-  });
+  const { core, prompts } = harness();
   await core.handle(inbound({ text: "第一条" }));
   await tick();
-  assert.equal(captured.length, 1);
-  assert.equal(captured[0].full, true);
-  assert.match(captured[0].prompt, /COMMON user=/);
-  assert.match(captured[0].prompt, /REPLY/);
-  assert.doesNotMatch(captured[0].prompt, /\{\{/);
+  assert.equal(prompts().length, 1);
+  assert.match(prompts()[0], /COMMON user=/);
+  assert.match(prompts()[0], /REPLY/);
+  assert.doesNotMatch(prompts()[0], /\{\{/);
 });
-
 test("TC-2b an empty first-turn prompt fails the job instead of spawning a blind worker", async () => {
   let spawned = 0;
   const built = harness({ spawn: () => (spawned += 1, fakeChild({ stdout: "ok" })) });
@@ -142,17 +150,11 @@ test("TC-2b an empty first-turn prompt fails the job instead of spawning a blind
 });
 
 test("TC-2 a message with an existing session sends only the raw text", async () => {
-  const captured = [];
-  const { core } = harness({
-    sessions: ["fs-th-abc"],
-    adapterOverrides: { buildWorker: ({ prompt, full }) => (captured.push({ prompt, full }), { bin: "/bin/true", args: [] }) },
-  });
+  const { core, prompts } = harness({ sessions: ["fs-th-abc"] });
   await core.handle(inbound({ text: "续上" }));
   await tick();
-  assert.equal(captured[0].full, false);
-  assert.equal(captured[0].prompt, "续上");
+  assert.equal(prompts()[0], "续上");
 });
-
 test("TC-3 duplicate delivery is dropped without touching state or spawning", async () => {
   let spawned = 0;
   const { core, replies } = harness({ spawn: () => (spawned++, fakeChild({ stdout: "ok" })) });
@@ -232,47 +234,6 @@ test("TC-7 log files older than 72h are pruned, fresh ones kept", () => {
   const removed = pruneOldFiles(dir, 72 * 3_600_000);
   assert.deepEqual(removed, ["old.jsonl"]);
   assert.deepEqual(readdirSync(dir), ["fresh.jsonl"]);
-});
-
-test("TC-5 a worker over an explicitly configured timeout is killed as a process group", async () => {
-  const { spawn } = await import("node:child_process");
-  const replies = [];
-  const started = Date.now();
-  const { core } = harness({
-    spawn,
-    replies,
-    adapterOverrides: {
-      timeoutMs: 300,
-      chunkLimit: 500,
-      buildWorker: () => ({ bin: process.execPath, args: ["-e", "setTimeout(() => {}, 60000)"] }),
-    },
-  });
-  await core.handle(inbound());
-  while (!replies.length && Date.now() - started < 5000) await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.ok(Date.now() - started < 5000, "timeout path took too long");
-  assert.equal(replies.length, 1);
-  assert.match(replies[0].text, /已终止|INTERRUPTED/);
-});
-
-test("TC-44 without a configured timeout a long worker is left to finish", async () => {
-  const { spawn } = await import("node:child_process");
-  const replies = [];
-  const started = Date.now();
-  const { core } = harness({
-    spawn,
-    replies,
-    adapterOverrides: {
-      timeoutMs: 0,
-      chunkLimit: 500,
-      buildWorker: () => ({ bin: process.execPath, args: ["-e", "setTimeout(() => console.log('finished'), 400)"] }),
-    },
-  });
-  await core.handle(inbound());
-  while (!replies.length && Date.now() - started < 5000) await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.ok(Date.now() - started >= 400, "the worker was cut short");
-  assert.equal(replies.length, 1);
-  assert.doesNotMatch(replies[0].text, /已终止|超过/);
-  assert.match(replies[0].text, /finished/);
 });
 
 test("reply failures are logged and do not throw", async () => {
@@ -378,7 +339,6 @@ test("TC-20 a queued job walks queued → running → answered → done", async 
   assert.equal(await core.handle(inbound()), "accepted");
   const job = Object.values(core.state.jobs)[0];
   assert.equal(job.status, "running");
-  assert.equal(typeof job.lease.pid, "number");
   await tick();
   assert.equal(observed.length, 1);
   assert.equal(observed[0].status, "answered", "the answer is committed before it is shown");
@@ -1115,63 +1075,24 @@ test("TC-ST15 a stall cancel drops a queued turn and says so", async () => {
   assert.match(replies[0].text, /已取消排队中的这一轮/);
 });
 
-test("TC-V6 killed worker tells the user to continue instead of rerunning", async () => {
-  const { spawn } = await import("node:child_process");
-  const replies = [];
-  const started = Date.now();
-  const { core } = harness({
-    spawn,
-    replies,
-    adapterOverrides: {
-      timeoutMs: 300,
-      chunkLimit: 500,
-      buildWorker: () => ({ bin: process.execPath, args: ["-e", "setTimeout(() => {}, 60000)"] }),
-    },
-  });
-  await core.handle(inbound());
-  while (!replies.length && Date.now() - started < 5000) await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.equal(replies.length, 1);
-  assert.match(replies[0].text, /回复「继续」/);
-  assert.doesNotMatch(replies[0].text, /\/重跑/);
-});
-
 test("TC-40 attachments become @refs ahead of the prompt", async () => {
-  const captured = [];
-  const { core } = harness({
-    adapterOverrides: { worker: "pi" },
-    spawn: (bin, args) => {
-      captured.push({ bin, args });
-      return fakeChild({ stdout: "ok" });
-    },
-  });
+  const { core, prompts } = harness();
   await core.handle(
     inbound({ text: "看图", attachments: [{ kind: "image", path: "/tmp/a.jpg" }, { kind: "image", path: "/tmp/b.png" }] }),
   );
   await tick();
-  assert.equal(captured.length, 1);
-  const args = captured[0].args;
-  const dash = args.indexOf("--");
-  assert.ok(dash > 0);
-  assert.deepEqual(args.slice(dash + 1, dash + 3), ["@/tmp/a.jpg", "@/tmp/b.png"]);
-  assert.match(args[args.length - 1], /看图/);
+  const prompt = prompts()[0];
+  assert.match(prompt, /\/tmp\/a\.jpg/);
+  assert.match(prompt, /\/tmp\/b\.png/);
+  assert.match(prompt, /看图/);
 });
-
-test("TC-41 no attachments keeps the argv shape unchanged", async () => {
-  const captured = [];
-  const { core } = harness({
-    adapterOverrides: { worker: "pi" },
-    spawn: (bin, args) => {
-      captured.push(args);
-      return fakeChild({ stdout: "ok" });
-    },
-  });
+test("TC-41 no attachments adds no @refs to the prompt", async () => {
+  const { core, prompts } = harness();
   await core.handle(inbound({ text: "hi" }));
   await tick();
-  const args = captured[0];
-  assert.equal(args.filter((arg) => arg.startsWith("@")).length, 0);
-  assert.equal(args[args.length - 2], "--");
+  assert.doesNotMatch(prompts()[0], /@\//);
+  assert.match(prompts()[0], /hi/);
 });
-
 test("TC-BOOT a new boot id posts one boot notice and records it", async () => {
   const { core, replies } = harness({ deps: { readBootId: () => "b1" } });
   assert.equal(await core.onReady(), true);
@@ -1321,7 +1242,6 @@ test("TC-ST3R a resume command is no longer an action the relay understands", as
 });
 
 test("TC-ST4 replying to a stall notice opens a notice-scoped conversation", async () => {
-  const prompts = [];
   const state = emptyState();
   state.notices["ntc-1"] = {
     id: "ntc-1",
@@ -1330,40 +1250,22 @@ test("TC-ST4 replying to a stall notice opens a notice-scoped conversation", asy
     text: "任务：修一下\njob：job-7（name `demo`）",
     sentAt: new Date().toISOString(),
   };
-  const { core } = harness({
-    state,
-    spawn: () => fakeChild({ stdout: "ok" }),
-    adapterOverrides: {
-      buildWorker: ({ prompt }) => {
-        prompts.push(prompt);
-        return { bin: process.execPath, args: ["-e", "0"] };
-      },
-    },
-  });
+  const { core, prompts } = harness({ state, spawn: () => fakeChild({ stdout: "ok" }) });
   await core.handle(inbound({ text: "杀掉", dedupeId: "m-reply", replyIds: ["m-notice"] }));
   await new Promise((resolve) => setTimeout(resolve, 30));
-  assert.match(prompts[0], /NOTICE id=ntc-1/);
-  assert.match(prompts[0], /杀掉/);
-  assert.doesNotMatch(prompts[0], /任务疑似卡住/);
+  assert.match(prompts()[0], /NOTICE id=ntc-1/);
+  assert.match(prompts()[0], /杀掉/);
+  assert.doesNotMatch(prompts()[0], /任务疑似卡住/);
   const job = Object.values(core.state.jobs).find((item) => item.noticeId === "ntc-1");
   assert.equal(job.key, "notice-ntc-1");
 });
 
 test("TC-ST5 an ordinary first message still uses the thread template", async () => {
-  const prompts = [];
-  const { core } = harness({
-    spawn: () => fakeChild({ stdout: "ok" }),
-    adapterOverrides: {
-      buildWorker: ({ prompt }) => {
-        prompts.push(prompt);
-        return { bin: process.execPath, args: ["-e", "0"] };
-      },
-    },
-  });
+  const { core, prompts } = harness();
   await core.handle(inbound({ text: "看下这个 bug" }));
   await new Promise((resolve) => setTimeout(resolve, 30));
-  assert.match(prompts[0], /COMMON user=/);
-  assert.doesNotMatch(prompts[0], /STALL-TEMPLATE/);
+  assert.match(prompts()[0], /COMMON user=/);
+  assert.doesNotMatch(prompts()[0], /STALL-TEMPLATE/);
 });
 
 const isoAt = (ms) => new Date(ms).toISOString();
@@ -1625,33 +1527,23 @@ test("TC-ST20 a finished job clears its progress only after the reaction is done
 });
 
 test("TC-42 the first turn carries no stall section and no job list", async () => {
-  const captured = [];
-  const { core } = harness({
-    adapterOverrides: { buildWorker: ({ prompt, full }) => (captured.push({ prompt, full }), { bin: "/bin/true", args: [] }) },
-  });
+  const { core, prompts } = harness();
   await core.handle(inbound({ text: "第一条" }));
   await tick();
-  assert.doesNotMatch(captured[0].prompt, /处置卡住的 job/);
-  assert.doesNotMatch(captured[0].prompt, /个 job 在跑/);
-  assert.match(captured[0].prompt, /COMMON/);
+  assert.doesNotMatch(prompts()[0], /处置卡住的 job/);
+  assert.doesNotMatch(prompts()[0], /个 job 在跑/);
+  assert.match(prompts()[0], /COMMON/);
 });
-
 test("TC-43 two conversations each get their own task block and no job list", async () => {
-  const captured = [];
-  const pending = controlledChild();
-  const { core } = harness({
-    spawn: () => pending,
-    adapterOverrides: { buildWorker: ({ prompt, full }) => (captured.push({ prompt, full }), { bin: "/bin/true", args: [] }) },
-  });
+  const { core, prompts } = harness({ spawn: () => controlledChild() });
   await core.handle(inbound({ key: "th-a", session: "fs-th-a", text: "第一条" }));
   await tick();
   await core.handle(inbound({ key: "th-b", session: "fs-th-b", dedupeId: "m2", text: "第二条" }));
   await tick();
-  assert.match(captured[0].prompt, /COMMON user=第一条/);
-  assert.match(captured[1].prompt, /COMMON user=第二条/);
-  assert.doesNotMatch(captured[1].prompt, /个 job 在跑/);
+  assert.match(prompts()[0], /COMMON user=第一条/);
+  assert.match(prompts()[1], /COMMON user=第二条/);
+  assert.doesNotMatch(prompts()[1], /个 job 在跑/);
 });
-
 test("TC-29 a reply with one image posts the text first, then the media, and records both", async () => {
   const delivered = [];
   const posted = [];
@@ -2105,58 +1997,6 @@ test("TC-ST23 a notice stays at the channel top so its reply can reach the stuck
   assert.equal(Object.values(built.core.state.convs).some((entry) => entry.noticeId === stored.id), true);
 });
 
-test("TC-ST24 three minutes after the notice a round with no tool open is terminated when the deadline is armed", async () => {
-  const { core, replies, dir, sessionsDir, clock, job } = await runningJob({ spawn: closingSpawn(), adapterOverrides: { chunkLimit: 1000 }, deps: { timings: { stallActionMs: 3 * 60_000 } } });
-  const leasedAt = Number(job.lease.startedAt);
-  clock.now = leasedAt + 20 * 60_000;
-  const silencedAt = clock.now - 12 * 60_000;
-  writeSession(sessionsDir, "fs-th-abc", [sessionAssistant(silencedAt - 60_000, [{ id: "c1" }]), sessionToolResult(silencedAt, "c1")]);
-  await core.checkStall(job);
-  assert.equal(job.stallReason, "silent");
-  clock.now = Date.parse(job.stallNotifiedAt) + 2 * 60_000;
-  await core.checkStallAction(job);
-  assert.equal(job.autoTerminated, undefined);
-  clock.now = Date.parse(job.stallNotifiedAt) + 3 * 60_000 + 1_000;
-  await core.checkStallAction(job);
-  await tick();
-  const text = replies.map((reply) => reply.text).join("\n");
-  assert.match(text, /已按默认处置终止/);
-  assert.match(text, /计入 8 分钟/);
-  assert.ok(job.autoTerminated);
-  assert.equal(job.stallCancelled, true);
-  assert.equal(job.cutoffAt, isoAt(silencedAt));
-  const logDir = join(dir, "logs", "fake");
-  const events = readdirSync(logDir).flatMap((name) => readFileSync(join(logDir, name), "utf8").trim().split("\n")).map((line) => JSON.parse(line));
-  assert.ok(events.some((event) => event.event === "stall-timeout" && event.job === job.id));
-});
-
-test("TC-ST25 a tool still open keeps the relay from terminating: the round waits for the budget instead", async () => {
-  const { core, replies, dir, sessionsDir, clock, job } = await runningJob({ spawn: closingSpawn(), adapterOverrides: { chunkLimit: 1000 }, deps: { timings: { stallActionMs: 3 * 60_000 } } });
-  const toolAt = clock.now - 12 * 60_000;
-  writeSession(sessionsDir, "fs-th-abc", [sessionAssistant(toolAt, [{ id: "c1" }])]);
-  await core.checkStall(job);
-  clock.now = Date.parse(job.stallNotifiedAt) + 4 * 60_000;
-  assert.equal(await core.checkStallAction(job), null);
-  await tick();
-  assert.doesNotMatch(replies.map((reply) => reply.text).join("\n"), /已按默认处置终止/);
-  assert.equal(job.autoTerminated, undefined);
-  assert.equal(job.stallActionSkipped, "tool-open");
-  const logDir = join(dir, "logs", "fake");
-  const events = readdirSync(logDir).flatMap((name) => readFileSync(join(logDir, name), "utf8").trim().split("\n")).map((line) => JSON.parse(line));
-  assert.ok(events.some((event) => event.event === "stall-timeout-skipped"));
-});
-
-test("TC-ST26 a reply that already took the key over cancels the automatic termination", async () => {
-  const { core, sessionsDir, clock, job } = await runningJob({ spawn: closingSpawn(), deps: { timings: { stallActionMs: 3 * 60_000 } } });
-  writeSession(sessionsDir, "fs-th-abc", [sessionAssistant(clock.now - 12 * 60_000, [{ id: "c1" }])]);
-  await core.checkStall(job);
-  core.state.convs[job.key].activeJob = "job-someone-else";
-  clock.now = Date.parse(job.stallNotifiedAt) + 5 * 60_000;
-  await core.checkStallAction(job);
-  assert.equal(job.autoTerminated, undefined);
-  assert.ok(job.stallActionAt);
-});
-
 test("TC-ST27 the round budget warns at three quarters and terminates at the cap", async () => {
   const { core, replies, sessionsDir, clock, job } = await runningJob({ spawn: closingSpawn(), adapterOverrides: { chunkLimit: 1000 } });
   const startedAt = Number(job.startedAt ?? clock.now);
@@ -2233,7 +2073,7 @@ test("TC-ST30 an unanswered stall notice is no longer a fuse: the round keeps ru
   await core.checkStall(job);
   assert.ok(job.stallNotifiedAt);
   clock.now = Date.parse(job.stallNotifiedAt) + 3 * 3_600_000;
-  assert.equal(await core.checkStallAction(job), null);
+  await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(job.autoTerminated, undefined);
   assert.equal(job.status, "running");
 });
@@ -2290,25 +2130,6 @@ test("TC-ST33 six hours in, a stuck loop round is parked with its session kept, 
   assert.equal(next.session, job.session);
   assert.equal(next.key, job.key);
   assert.match(next.inbound.text, /先只看 Slack/);
-});
-
-test("TC-WK1 a print worker learns its conversation key from AGENT_RELAY_KEY", async () => {
-  const seen = [];
-  const previous = process.env.AGENT_RELAY_PLATFORM;
-  process.env.AGENT_RELAY_PLATFORM = "fake";
-  try {
-    const { core } = harness({
-      spawn: (bin, args, options) => (seen.push(options?.env ?? {}), fakeChild({ stdout: "ok" })),
-    });
-    await core.handle(inbound());
-    await tick();
-  } finally {
-    if (previous === undefined) delete process.env.AGENT_RELAY_PLATFORM;
-    else process.env.AGENT_RELAY_PLATFORM = previous;
-  }
-  assert.equal(seen.length, 1);
-  assert.equal(seen[0].AGENT_RELAY_KEY, "th-abc");
-  assert.equal(seen[0].AGENT_RELAY_PLATFORM, "fake");
 });
 
 test("TC-WK2 an rpc worker learns its conversation key from AGENT_RELAY_KEY", async () => {

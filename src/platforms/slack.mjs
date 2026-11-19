@@ -595,12 +595,8 @@ export function createPlatform({ config, log: baseLog }) {
     surface: "本 thread",
     allowedUser,
     chunkLimit: CHUNK_LIMIT,
-    timeoutMs: 0,
     maxWorkers: config.options.relay.queue.maxWorkers,
     queueDepth: config.options.relay.queue.depth,
-    worker: "pi",
-    workerMode: "rpc",
-    steer: "on",
     piBin: config.options.relay.worker.bin,
     sessionFor,
 

@@ -1,11 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import { spawn as spawnProcess } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { runPrintWorker } from "./worker-print.mjs";
 import { createRpcWorker, expandAttachments } from "./worker-rpc.mjs";
 import { join } from "node:path";
 import { appendDailyJsonl, createLog } from "../shared/log.mjs";
-import { relayEnv } from "../shared/env.mjs";
+import { DEFAULTS } from "../config.mjs";
 import { isoAt, localStamp } from "../shared/time.mjs";
 import { pruneOldFiles } from "../shared/retention.mjs";
 import { ensurePrivateDir } from "../shared/fs.mjs";
@@ -27,31 +26,14 @@ import { LOOP_ROUNDS_PER_HOUR, loopLateMs, roundSkipReason, roundsInLastHour } f
 import { roundKeyFor, roundTitle, truncateOutput } from "../loops/round.mjs";
 import { appendRound, findRound, listRounds, pruneHistory } from "../loops/history.mjs";
 
-const STALL_MS = relayEnv("STALL_MS", 10 * 60_000);
-const TOOL_STALL_MS = relayEnv("TOOL_STALL_MS", 10 * 60_000);
-const STALL_ACTION_MS = relayEnv("STALL_ACTION_MS", 0);
-const ROUND_MAX_MS = relayEnv("ROUND_MAX_MS", 90 * 60_000);
-const LOOP_NOTICE_MS = relayEnv("LOOP_NOTICE_MS", 45 * 60_000);
-const LOOP_RENOTICE_MS = relayEnv("LOOP_RENOTICE_MS", 2 * 3_600_000);
-const LOOP_NOTICE_MAX = relayEnv("LOOP_NOTICE_MAX", 3);
-const LOOP_PARK_MS = relayEnv("LOOP_PARK_MS", 6 * 3_600_000);
-const KEY_WINDOW_MS = relayEnv("KEY_WINDOW_MS", 6 * 3_600_000);
+const RUNAWAY_PER_HOUR = 12;
+const RPC_IDLE_MS = 10 * 60_000;
+const PROBE_TIMEOUT_MS = 2_000;
+const DEFER_RETRY_MS = 2_000;
+const DEFER_MAX_ATTEMPTS = 3;
 
-export const DEFAULT_TIMINGS = {
-  stallMs: STALL_MS,
-  toolStallMs: TOOL_STALL_MS,
-  stallActionMs: STALL_ACTION_MS,
-  roundMaxMs: ROUND_MAX_MS,
-  loopNoticeMs: LOOP_NOTICE_MS,
-  loopRenoticeMs: LOOP_RENOTICE_MS,
-  loopNoticeMax: LOOP_NOTICE_MAX,
-  loopParkMs: LOOP_PARK_MS,
-};
-const KEY_WINDOW_MAX_MS = relayEnv("KEY_WINDOW_MAX_MS", 180 * 60_000);
-const BUDGET_GRACE_MS = relayEnv("BUDGET_GRACE_MS", 10 * 60_000);
 const BUDGET_OVERRIDE_CAP = 2;
 const BUDGET_NOTICE_RATIO = 0.75;
-const STALL_CHECK_MS = relayEnv("STALL_CHECK_MS", 60_000);
 const RETENTION_MS = 72 * 3_600_000;
 const SEEN_RETENTION_MS = 72 * 3_600_000;
 const MAX_SEEN = 5000;
@@ -78,12 +60,7 @@ export function stallStuckText({ silenceMs = 0, reason = "silent", tool = null }
 const STATUS_TEXT = { done: "完成", failed: "失败", retrying: "重试中", cancelled: "取消", interrupted: "被打断", queued: "排队", scheduled: "排定中" };
 const PROMPT_MAX_BYTES = 8 * 1024;
 const DEFAULT_GRACE_MS = 6 * 3_600_000;
-const RUNAWAY_PER_HOUR = relayEnv("RUNAWAY_PER_HOUR", 12);
 const REAP_POLL_MS = 50;
-const RPC_IDLE_MS = relayEnv("RPC_IDLE_MS", 10 * 60_000);
-const PROBE_TIMEOUT_MS = relayEnv("PROBE_TIMEOUT_MS", 2_000);
-const DEFER_RETRY_MS = relayEnv("DEFER_RETRY_MS", 2_000);
-const DEFER_MAX_ATTEMPTS = relayEnv("DEFER_MAX_ATTEMPTS", 3);
 const MAX_DELIVERY_ATTEMPTS = 3;
 const QUIET_WORD = "NOOP";
 const QUIET_DECORATION = /[`*_~]/g;
@@ -96,6 +73,7 @@ export function createCore({ adapter, config, deps = {} }) {
   const now = deps.now ?? (() => Date.now());
   const instanceId = deps.instanceId ?? randomUUID();
   const spawn = deps.spawn ?? spawnProcess;
+  const workerFactory = deps.workerFactory ?? createRpcWorker;
   const readStartTicks = deps.readStartTicks ?? readProcStartTicks;
   const readBootIdImpl = deps.readBootId ?? readBootId;
   const kill = deps.kill ?? ((target, signal) => process.kill(target, signal));
@@ -110,7 +88,21 @@ export function createCore({ adapter, config, deps = {} }) {
   });
   const log = deps.log ?? createLog();
   const stallGraceMs = deps.stallGraceMs ?? 5_000;
-  const timings = { ...DEFAULT_TIMINGS, ...(deps.timings ?? {}) };
+  const opts = config.options?.relay ?? DEFAULTS.relay;
+  const timingDefaults = {
+    stallMs: opts.stall.silenceMs,
+    toolStallMs: opts.stall.toolMs,
+    roundMaxMs: opts.turn.roundMaxMs,
+    loopNoticeMs: opts.loop.noticeMs,
+    loopRenoticeMs: opts.loop.renoticeMs,
+    loopNoticeMax: opts.loop.noticeMax,
+    loopParkMs: opts.loop.parkMs,
+  };
+  const timings = { ...timingDefaults, ...(deps.timings ?? {}) };
+  const keyWindowMs = opts.budget.keyWindowMs;
+  const keyWindowMaxMs = opts.budget.keyWindowMaxMs;
+  const budgetGraceMs = opts.budget.graceMs;
+  const stallCheckMs = opts.stall.checkMs;
   const deliveryBackoff = Number.isFinite(deps.deliveryRetryMs)
     ? DELIVERY_BACKOFF_MS.map(() => deps.deliveryRetryMs)
     : Array.isArray(deps.deliveryBackoffMs)
@@ -216,7 +208,6 @@ export function createCore({ adapter, config, deps = {} }) {
           identity: identityLines(job),
           lastProgress: fields.local,
           silenceMinutes: Math.max(1, Math.round(silenceMs / 60_000)),
-          actionMinutes: Math.round(timings.stallActionMs / 60_000),
           kind: kindOf(job),
           roundCapMinutes: Math.round(timings.roundMaxMs / 60_000),
           parkMinutes: Math.round(timings.loopParkMs / 60_000),
@@ -256,36 +247,6 @@ export function createCore({ adapter, config, deps = {} }) {
   function repliedSince(job) {
     const active = state.convs?.[job.key]?.activeJob;
     return Boolean(active) && active !== job.id;
-  }
-
-  async function checkStallAction(job) {
-    if (job.status !== "running" || !job.stallNotifiedAt || job.stallActionAt) return null;
-    if (!(timings.stallActionMs > 0)) return null;
-    const waited = now() - Date.parse(job.stallNotifiedAt);
-    if (!Number.isFinite(waited) || waited < timings.stallActionMs) return null;
-    if (repliedSince(job)) {
-      job.stallActionAt = isoNow();
-      save();
-      return null;
-    }
-    const { tool } = progress(job, job.session);
-    if (tool) {
-      job.stallActionAt = isoNow();
-      job.stallActionSkipped = "tool-open";
-      save();
-      appendLog({ event: "stall-timeout-skipped", job: job.id, key: job.key, tool: tool.name ?? null });
-      return null;
-    }
-    const at = Date.parse(job.lastActivityAt ?? "") || Date.parse(job.stallNotifiedAt ?? "") || now();
-    const minutes = Math.max(0, Math.round((at - roundStartedAt(job)) / 60_000));
-    job.stallActionAt = isoNow();
-    job.stallCancelled = true;
-    job.autoTerminated = isoNow();
-    job.cutoffAt = isoAt(at);
-    save();
-    appendLog({ event: "stall-timeout", job: job.id, key: job.key, session: job.session, waitedMs: waited, minutes });
-    await terminate(job.key, prompts.autoTerminated({ minutes, lastProgress: localStamp(at) }));
-    return "terminated";
   }
 
   async function checkLoopHealth(job) {
@@ -373,9 +334,9 @@ export function createCore({ adapter, config, deps = {} }) {
     const { tool } = progress(job, job.session);
     if (tool && !job.budgetGracedAt) {
       job.budgetGracedAt = isoNow();
-      job.budgetEndsAt = isoAt(now() + BUDGET_GRACE_MS);
+      job.budgetEndsAt = isoAt(now() + budgetGraceMs);
       save();
-      appendLog({ event: "budget-grace", job: job.id, key: job.key, tool: tool.name ?? null, graceMs: BUDGET_GRACE_MS });
+      appendLog({ event: "budget-grace", job: job.id, key: job.key, tool: tool.name ?? null, graceMs: budgetGraceMs });
       return null;
     }
     if (job.budgetGracedAt && now() < Date.parse(job.budgetEndsAt ?? "")) return null;
@@ -389,7 +350,7 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   function keyWindowSpentMs(key) {
-    const since = now() - KEY_WINDOW_MS;
+    const since = now() - keyWindowMs;
     let total = 0;
     for (const item of Object.values(state.jobs)) {
       if (item.key !== key || !isFinished(item)) continue;
@@ -695,11 +656,6 @@ export function createCore({ adapter, config, deps = {} }) {
     return kindOf(job) === "scheduled";
   }
 
-  function optInTimeoutMs() {
-    const configured = Number(adapter.timeoutMs ?? 0);
-    return Number.isFinite(configured) && configured > 0 ? configured : null;
-  }
-
   function scheduledBrief(job) {
     const file = String(job.inbound?.promptFile ?? "").trim();
     if (file) {
@@ -769,18 +725,13 @@ export function createCore({ adapter, config, deps = {} }) {
     return run(built);
   }
 
-  function workerMode() {
-    return adapter.workerMode === "rpc" ? "rpc" : "print";
-  }
-
   function armStallTimer(job, key) {
     const timer = setInterval(() => {
       checkStall(job)
-        .then(() => checkStallAction(job))
         .then(() => checkBudget(job))
         .then(() => checkLoopHealth(job))
         .catch((error) => log("warn", "stall", String(error?.message ?? error)));
-    }, STALL_CHECK_MS);
+    }, stallCheckMs);
     timer.unref?.();
     stallTimers.set(key, timer);
   }
@@ -804,64 +755,8 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   function spawnWorker(job, entry, inbound, prompt, full) {
-    const refs = (inbound.attachments ?? []).map((attachment) => `@${attachment.path}`);
-    const args = adapter.worker === "stub" ? ["-e", `console.log("[stub] session=${entry.session} full=${full}")`] : ["--print", "--session-id", entry.session, "--", ...refs, prompt];
-    const bin = adapter.worker === "stub" ? process.execPath : adapter.piBin;
-    const command = adapter.buildWorker ? adapter.buildWorker({ prompt, full, session: entry.session }) : { bin, args };
-    const started = now();
-    const timeoutMs = optInTimeoutMs();
-    const mode = workerMode();
-    const env = { ...process.env, AGENT_RELAY_KEY: inbound.key, AGENT_RELAY_SELF_CHAIN: String(job.chain ?? 0) };
-    appendLog({ event: "dispatch", job: job.id, key: inbound.key, session: entry.session, full, mode });
-    if (mode === "rpc" && adapter.worker !== "stub") return runRpcJob(job, entry, inbound, prompt, full);
-
-    return new Promise((resolve) => {
-      const settle = (result) => resolve(finishJob(job, entry, inbound, { started, timeoutMs, ...result }));
-      const onSpawn = (handle) => {
-        children.set(inbound.key, handle);
-        job.lease = { pid: handle.pid ?? null, startTicks: handle.pid ? readStartTicks(handle.pid) : null, startedAt: now() };
-        job.startedAt = started;
-        job.updatedAt = isoNow();
-        save();
-        armStallTimer(job, inbound.key);
-        startProgress(job);
-      };
-      runPrintWorker({
-        config,
-        command,
-        env,
-        timeoutMs,
-        onSpawn,
-        onTimeout: () => {
-          terminate(inbound.key, "").catch((error) => log("warn", "timeout-stop", String(error?.message ?? error)));
-        },
-        onClose: settle,
-        deps: { spawn },
-      });
-    });
-  }
-
-  async function finishJob(job, entry, inbound, { code, killed, stdout, stderr, started, timeoutMs }) {
-    const body = String(stdout ?? "").trim();
-    const note = notes.get(inbound.key);
-    notes.delete(inbound.key);
-    if (isScheduled(job) && !note && !killed && code === 0 && !body) {
-      job.answer = null;
-      job.status = "done";
-      job.lease = null;
-      job.updatedAt = isoNow();
-      save();
-      appendLog({ event: "job-empty", job: job.id, key: inbound.key });
-      runtimeInbounds.delete(job.id);
-      return;
-    }
-    const text = note
-      ? note
-      : killed
-        ? `已终止：本轮超过 ${Math.round(timeoutMs / 60_000)} 分钟未结束。回复「继续」可以接着做，前面已完成的改动都在。\n\n${body.slice(-1500)}`.trim()
-        : body || `[无输出] exit=${code}\n${String(stderr ?? "").trim().split("\n").slice(-10).join("\n")}`;
-    const status = note ? "cancelled" : killed || code !== 0 ? "failed" : "answered";
-    await applyWorkerResult(job, entry, inbound, { text, status, started, mode: "print", exit: code, killed });
+    appendLog({ event: "dispatch", job: job.id, key: inbound.key, session: entry.session, full, mode: "rpc" });
+    return runRpcJob(job, entry, inbound, prompt, full);
   }
 
   function isAnswerSegment(reason, text) {
@@ -990,8 +885,8 @@ export function createCore({ adapter, config, deps = {} }) {
     let worker = workers.get(key);
     if (worker && !worker.exited()) return worker;
     if (worker) workers.delete(key);
-    worker = createRpcWorker({
-      bin: adapter.worker === "stub" ? process.execPath : adapter.piBin,
+    worker = workerFactory({
+      bin: adapter.piBin,
       session,
       cwd: config.cwd,
       env: { ...process.env, AGENT_RELAY_KEY: key, AGENT_RELAY_SELF_CHAIN: String(chain ?? 0) },
@@ -999,6 +894,7 @@ export function createCore({ adapter, config, deps = {} }) {
       deps: { spawn },
     });
     workers.set(key, worker);
+    children.set(key, worker);
     worker.onEvent((record) => {
       if (record?.type !== "agent_settled") return;
       if (!releaseWaiter(key)) return;
@@ -1016,7 +912,6 @@ export function createCore({ adapter, config, deps = {} }) {
   function runRpcJob(job, entry, inbound, prompt, full) {
     const key = inbound.key;
     const started = now();
-    const timeoutMs = optInTimeoutMs();
     return (async () => {
       let worker;
       try {
@@ -1075,21 +970,16 @@ export function createCore({ adapter, config, deps = {} }) {
       children.set(key, worker);
       job.lease = { pid: worker.pid ?? null, startTicks: worker.pid ? readStartTicks(worker.pid) : null, startedAt: now() };
       job.startedAt = started;
-      job.activity = { at: now(), open: null };
       job.updatedAt = isoNow();
       save();
       armStallTimer(job, key);
       startProgress(job);
-      const timer = timeoutMs === null ? null : setTimeout(() => {
-        terminate(key, "").catch((error) => log("warn", "timeout-stop", String(error?.message ?? error)));
-      }, timeoutMs);
 
       let disposition = "started";
       try {
         disposition = await worker.prompt(expandAttachments({ prompt, attachments: inbound.attachments }));
       } catch (error) {
         if (isBusyError(error)) return deferJob(job, started);
-        if (timer) clearTimeout(timer);
         offEvent();
         offExit();
         scheduleIdleClose(key);
@@ -1104,12 +994,10 @@ export function createCore({ adapter, config, deps = {} }) {
       if (disposition === "busy") {
         offEvent();
         offExit();
-        if (timer) clearTimeout(timer);
         return deferJob(job, started);
       }
       const outcome = disposition === "handled" ? { handled: true } : await settled;
       await run.sending;
-      if (timer) clearTimeout(timer);
       offEvent();
       offExit();
       scheduleIdleClose(key);
@@ -1384,18 +1272,18 @@ export function createCore({ adapter, config, deps = {} }) {
   function startJob(job) {
     const entry = state.convs[job.key] ?? { session: job.session, rootText: job.inbound.rootText, lastMsgTs: null, messageId: null, activeJob: null };
     entry.chatId = job.inbound.chatId ?? entry.chatId ?? null;
-    if (KEY_WINDOW_MAX_MS > 0) {
+    if (keyWindowMaxMs > 0) {
       const spent = keyWindowSpentMs(job.key);
-      if (spent >= KEY_WINDOW_MAX_MS) {
+      if (spent >= keyWindowMaxMs) {
         job.status = "failed";
         job.error = "key-budget";
         job.updatedAt = isoNow();
         save();
-        appendLog({ event: "key-budget-rejected", job: job.id, key: job.key, spentMs: spent, capMs: KEY_WINDOW_MAX_MS });
+        appendLog({ event: "key-budget-rejected", job: job.id, key: job.key, spentMs: spent, capMs: keyWindowMaxMs });
         replyToJob(job, prompts.keyWindowRejected({
-          minutes: Math.round(KEY_WINDOW_MAX_MS / 60_000),
+          minutes: Math.round(keyWindowMaxMs / 60_000),
           spent: Math.round(spent / 60_000),
-          window: Math.round(KEY_WINDOW_MS / 3_600_000),
+          window: Math.round(keyWindowMs / 3_600_000),
         })).catch((error) => log("warn", "key-budget-reply", String(error?.message ?? error)));
         return;
       }
@@ -2115,13 +2003,7 @@ export function createCore({ adapter, config, deps = {} }) {
     return "accepted";
   }
 
-  function adapterSteerEnabled() {
-    return adapter.steer !== "off" && adapter.steer !== false;
-  }
-
   async function steerTarget(inbound) {
-    if (workerMode() !== "rpc" || adapter.worker === "stub") return null;
-    if (!adapterSteerEnabled()) return null;
     if (!allowsJoin(inbound)) return null;
     const worker = workers.get(inbound.key);
     if (!worker || worker.exited()) return null;
@@ -2316,7 +2198,6 @@ export function createCore({ adapter, config, deps = {} }) {
     restartJob,
     drainCommands,
     checkStall,
-    checkStallAction,
     checkLoopHealth,
     checkBudget,
     budgetOf,

@@ -38,7 +38,6 @@ test("TC-P1 the prompt tree is six numbered sections and the messages the relay 
   ]);
   const messages = readdirSync(join(PROMPTS, "messages")).sort();
   assert.deepEqual(messages, [
-    "auto-terminated.md",
     "budget-notice.md",
     "budget-terminated.md",
     "empty-prompt.md",

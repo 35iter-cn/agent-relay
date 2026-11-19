@@ -5,6 +5,7 @@ import { dirname, join } from "node:path";
 import { tmpdir } from "node:os";
 
 const { createCore } = await import("../../src/runtime/core.mjs");
+const { e2eWorker } = await import("../fixtures/rpc-e2e.mjs");
 const { emptyState } = await import("../../src/state/schema.mjs");
 const { writeJsonAtomic } = await import("../../src/shared/json.mjs");
 const { handleLoopCommand } = await import("../../src/cli.mjs");
@@ -63,16 +64,12 @@ const adapter = {
     appendFileSync(repliesPath, `${JSON.stringify({ key: "notice", text })}\n`);
     return { messageId: `notice-${Date.now()}` };
   },
-  buildWorker: ({ prompt }) => {
-    dispatched.push(prompt);
-    return { bin: "bash", args: ["-c", "echo 这一轮做完了"] };
-  },
 };
 
 writeJsonAtomic(config.stateFile(adapter.name), emptyState());
 mkdirSync(config.commandDir(adapter.name), { recursive: true });
 
-const core = createCore({ adapter, config, deps: { log: () => {}, spawn: (bin, args, options) => spawn(bin, args, options) } });
+const core = createCore({ adapter, config, deps: { log: () => {}, workerFactory: e2eWorker({ answer: "这一轮做完了", dispatched }) } });
 
 const failures = [];
 const check = (name, ok, detail = "") => {
@@ -135,3 +132,4 @@ if (failures.length) {
   process.exit(1);
 }
 process.stdout.write("ok\n");
+process.exit(0);

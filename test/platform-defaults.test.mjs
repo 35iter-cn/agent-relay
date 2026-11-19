@@ -30,14 +30,3 @@ const factories = [
   ["feishu", feishu],
 ];
 
-test("TC-RPC11 every platform defaults to the rpc worker with steer on", () => {
-  delete process.env.AGENT_RELAY_WORKER_MODE;
-  delete process.env.RELAY_WORKER_MODE;
-  delete process.env.AGENT_RELAY_STEER;
-  delete process.env.RELAY_STEER;
-  for (const [name, create] of factories) {
-    const adapter = create({ config, log: () => {} });
-    assert.equal(adapter.workerMode, "rpc", `${name} workerMode`);
-    assert.equal(adapter.steer, "on", `${name} steer`);
-  }
-});
