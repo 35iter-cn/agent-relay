@@ -95,8 +95,8 @@ function harness({ spawn, replies = [], adapterOverrides = {}, state = emptyStat
     piBin: "/bin/true",
     replyRules: "RULES",
     sessionFor: (key) => `fs-${key}`,
-    reply: async (inbound, text) => (replies.push({ key: inbound.key, text }), { messageId: `m-${replies.length}` }),
-    postNotice: async (text, options = {}) => (replies.push({ key: "notice", text, thread: options.thread ?? null }), { messageId: `notice-${replies.length}` }),
+    reply: async (inbound, text) => (replies.push({ key: inbound.key, text, chatId: inbound.chatId }), { messageId: `m-${replies.length}` }),
+    postNotice: async (text, options = {}) => (replies.push({ key: "notice", text, thread: options.thread ?? null, group: options.group ?? "", chatId: options.chatId ?? null }), { messageId: `notice-${replies.length}` }),
     ...adapterOverrides,
   };
   const logs = [];
@@ -1434,6 +1434,26 @@ test("TC-ST6 an unclosed tool call over the threshold notifies once with the too
   assert.equal(job.stallReason, "tool");
   assert.equal(job.stallTool, "bash");
   assert.equal(job.stallRunningMs, 12 * 60_000);
+});
+
+test("TC-GR3 relay-raised notices carry the system group, never the default one", async () => {
+  const { core, replies, sessionsDir, clock, job } = await runningJob();
+  writeSession(sessionsDir, "fs-th-abc", [sessionAssistant(clock.now - 12 * 60_000, [])]);
+  await core.checkStall(job);
+  const notice = replies.find((item) => item.key === "notice");
+  assert.ok(notice, "a stall notice was posted");
+  assert.equal(notice.group, "system");
+});
+
+test("TC-GR4 a conversation with no inbound channel replies through its recorded chatId", async () => {
+  const { core, replies } = harness({
+    state: { convs: { "wake-key": { session: "fs-wake-key", rootText: "", lastMsgTs: null, messageId: "m-1", chatId: "CSYS", activeJob: null } } },
+  });
+  await core.handle({ key: "wake-key", session: "fs-wake-key", dedupeId: "wake-9", authorId: "u-ok", text: "接着做", chatId: null });
+  await tick();
+  const reply = replies.find((item) => item.key === "wake-key");
+  assert.ok(reply, "the wake was answered");
+  assert.equal(reply.chatId, "CSYS");
 });
 
 test("TC-ST7 a tool argument no longer buys patience: the relay tells no tool from another", async () => {

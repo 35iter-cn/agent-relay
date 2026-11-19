@@ -135,6 +135,48 @@ test("TC-LR1 a due loop starts a round in a fresh session and posts it to the ch
   assert.equal(core.state.loops["loop-fake-1"].lastMessageId, replies[0].messageId);
 });
 
+test("TC-GR1 a loop round goes to the loop group and records the channel it landed in", async () => {
+  const seen = [];
+  const { core } = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    adapterOverrides: {
+      postNotice: async (_text, options = {}) => {
+        seen.push(options);
+        return { messageId: `n-${seen.length}`, chatId: "CLOOP" };
+      },
+    },
+  });
+  await core.startDueLoops();
+  await settle();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].group, "loop");
+  assert.equal(core.state.convs["loop-fake-1-r1"].chatId, "CLOOP");
+});
+
+test("TC-GR2 a reply to the round returns to the group recorded on the conversation", async () => {
+  const seen = [];
+  const { core, replies } = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    adapterOverrides: {
+      postNotice: async (_text, options = {}) => {
+        seen.push(options);
+        return { messageId: `n-${seen.length}`, chatId: "CLOOP" };
+      },
+      reply: async (ctx, text) => {
+        replies.push({ key: ctx.key, text, chatId: ctx.chatId });
+        return { messageId: `m-${replies.length}` };
+      },
+    },
+  });
+  await core.startDueLoops();
+  await settle();
+  await core.handle({ key: "loop-fake-1-r1", session: "fs-loop-fake-1-r1", dedupeId: "wake-1", authorId: "u-ok", text: "继续", chatId: null });
+  await settle();
+  const reply = replies.find((item) => item.key === "loop-fake-1-r1");
+  assert.ok(reply, "the wake was answered");
+  assert.equal(reply.chatId, "CLOOP");
+});
+
 test("TC-LR2 the round prompt carries the loop prompt and never the previous output", async () => {
   const captured = [];
   const { core, adapter } = harness({
@@ -345,6 +387,48 @@ test("TC-LR13 an empty round is quiet too, and a NOOP line after a body still po
   assert.equal(loud.core.state.loops["loop-fake-1"].lastOutcome, "ok");
 });
 
+test("TC-GR1 a loop round goes to the loop group and records the channel it landed in", async () => {
+  const seen = [];
+  const { core } = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    adapterOverrides: {
+      postNotice: async (_text, options = {}) => {
+        seen.push(options);
+        return { messageId: `n-${seen.length}`, chatId: "CLOOP" };
+      },
+    },
+  });
+  await core.startDueLoops();
+  await settle();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].group, "loop");
+  assert.equal(core.state.convs["loop-fake-1-r1"].chatId, "CLOOP");
+});
+
+test("TC-GR2 a reply to the round returns to the group recorded on the conversation", async () => {
+  const seen = [];
+  const { core, replies } = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    adapterOverrides: {
+      postNotice: async (_text, options = {}) => {
+        seen.push(options);
+        return { messageId: `n-${seen.length}`, chatId: "CLOOP" };
+      },
+      reply: async (ctx, text) => {
+        replies.push({ key: ctx.key, text, chatId: ctx.chatId });
+        return { messageId: `m-${replies.length}` };
+      },
+    },
+  });
+  await core.startDueLoops();
+  await settle();
+  await core.handle({ key: "loop-fake-1-r1", session: "fs-loop-fake-1-r1", dedupeId: "wake-1", authorId: "u-ok", text: "继续", chatId: null });
+  await settle();
+  const reply = replies.find((item) => item.key === "loop-fake-1-r1");
+  assert.ok(reply, "the wake was answered");
+  assert.equal(reply.chatId, "CLOOP");
+});
+
 test("TC-LR20 a body after a NOOP line is content, so the round still posts", async () => {
   const loud = harness({
     state: { loops: { "loop-fake-1": seededLoop() } },
@@ -354,6 +438,48 @@ test("TC-LR20 a body after a NOOP line is content, so the round still posts", as
   await settle();
   assert.equal(loud.replies.length, 1, `a trailing explanation is content: ${JSON.stringify(loud.replies)}`);
   assert.equal(loud.core.state.loops["loop-fake-1"].lastOutcome, "ok");
+});
+
+test("TC-GR1 a loop round goes to the loop group and records the channel it landed in", async () => {
+  const seen = [];
+  const { core } = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    adapterOverrides: {
+      postNotice: async (_text, options = {}) => {
+        seen.push(options);
+        return { messageId: `n-${seen.length}`, chatId: "CLOOP" };
+      },
+    },
+  });
+  await core.startDueLoops();
+  await settle();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].group, "loop");
+  assert.equal(core.state.convs["loop-fake-1-r1"].chatId, "CLOOP");
+});
+
+test("TC-GR2 a reply to the round returns to the group recorded on the conversation", async () => {
+  const seen = [];
+  const { core, replies } = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    adapterOverrides: {
+      postNotice: async (_text, options = {}) => {
+        seen.push(options);
+        return { messageId: `n-${seen.length}`, chatId: "CLOOP" };
+      },
+      reply: async (ctx, text) => {
+        replies.push({ key: ctx.key, text, chatId: ctx.chatId });
+        return { messageId: `m-${replies.length}` };
+      },
+    },
+  });
+  await core.startDueLoops();
+  await settle();
+  await core.handle({ key: "loop-fake-1-r1", session: "fs-loop-fake-1-r1", dedupeId: "wake-1", authorId: "u-ok", text: "继续", chatId: null });
+  await settle();
+  const reply = replies.find((item) => item.key === "loop-fake-1-r1");
+  assert.ok(reply, "the wake was answered");
+  assert.equal(reply.chatId, "CLOOP");
 });
 
 test("TC-LR21 a NOOP wrapped in whitespace stays quiet", async () => {
@@ -486,6 +612,48 @@ test("TC-LR19 an unreadable prompt file fails the round, posts nothing and count
   assert.equal(rounds[0].error, "prompt-unreadable");
 });
 
+test("TC-GR1 a loop round goes to the loop group and records the channel it landed in", async () => {
+  const seen = [];
+  const { core } = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    adapterOverrides: {
+      postNotice: async (_text, options = {}) => {
+        seen.push(options);
+        return { messageId: `n-${seen.length}`, chatId: "CLOOP" };
+      },
+    },
+  });
+  await core.startDueLoops();
+  await settle();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].group, "loop");
+  assert.equal(core.state.convs["loop-fake-1-r1"].chatId, "CLOOP");
+});
+
+test("TC-GR2 a reply to the round returns to the group recorded on the conversation", async () => {
+  const seen = [];
+  const { core, replies } = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    adapterOverrides: {
+      postNotice: async (_text, options = {}) => {
+        seen.push(options);
+        return { messageId: `n-${seen.length}`, chatId: "CLOOP" };
+      },
+      reply: async (ctx, text) => {
+        replies.push({ key: ctx.key, text, chatId: ctx.chatId });
+        return { messageId: `m-${replies.length}` };
+      },
+    },
+  });
+  await core.startDueLoops();
+  await settle();
+  await core.handle({ key: "loop-fake-1-r1", session: "fs-loop-fake-1-r1", dedupeId: "wake-1", authorId: "u-ok", text: "继续", chatId: null });
+  await settle();
+  const reply = replies.find((item) => item.key === "loop-fake-1-r1");
+  assert.ok(reply, "the wake was answered");
+  assert.equal(reply.chatId, "CLOOP");
+});
+
 test("TC-LR22 the delivered header names the loop by its title, and the header alone", async () => {
   const calls = [];
   const { core, replies } = harness({
@@ -502,6 +670,48 @@ test("TC-LR22 the delivered header names the loop by its title, and the header a
   await cleared.core.startDueLoops();
   await settle();
   assert.equal(cleared.replies[0].text, "📣📣📣 loop-fake-1 · 第 1 轮\n轮次输出", "no title falls back to the id");
+});
+
+test("TC-GR1 a loop round goes to the loop group and records the channel it landed in", async () => {
+  const seen = [];
+  const { core } = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    adapterOverrides: {
+      postNotice: async (_text, options = {}) => {
+        seen.push(options);
+        return { messageId: `n-${seen.length}`, chatId: "CLOOP" };
+      },
+    },
+  });
+  await core.startDueLoops();
+  await settle();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].group, "loop");
+  assert.equal(core.state.convs["loop-fake-1-r1"].chatId, "CLOOP");
+});
+
+test("TC-GR2 a reply to the round returns to the group recorded on the conversation", async () => {
+  const seen = [];
+  const { core, replies } = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    adapterOverrides: {
+      postNotice: async (_text, options = {}) => {
+        seen.push(options);
+        return { messageId: `n-${seen.length}`, chatId: "CLOOP" };
+      },
+      reply: async (ctx, text) => {
+        replies.push({ key: ctx.key, text, chatId: ctx.chatId });
+        return { messageId: `m-${replies.length}` };
+      },
+    },
+  });
+  await core.startDueLoops();
+  await settle();
+  await core.handle({ key: "loop-fake-1-r1", session: "fs-loop-fake-1-r1", dedupeId: "wake-1", authorId: "u-ok", text: "继续", chatId: null });
+  await settle();
+  const reply = replies.find((item) => item.key === "loop-fake-1-r1");
+  assert.ok(reply, "the wake was answered");
+  assert.equal(reply.chatId, "CLOOP");
 });
 
 test("TC-LR23 a loop stored without a cron expression is paused once at boot, never left silently dead", async () => {
@@ -522,6 +732,48 @@ test("TC-LR23 a loop stored without a cron expression is paused once at boot, ne
   assert.equal(again.length, 1, "a restart does not repeat the notice");
 });
 
+test("TC-GR1 a loop round goes to the loop group and records the channel it landed in", async () => {
+  const seen = [];
+  const { core } = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    adapterOverrides: {
+      postNotice: async (_text, options = {}) => {
+        seen.push(options);
+        return { messageId: `n-${seen.length}`, chatId: "CLOOP" };
+      },
+    },
+  });
+  await core.startDueLoops();
+  await settle();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].group, "loop");
+  assert.equal(core.state.convs["loop-fake-1-r1"].chatId, "CLOOP");
+});
+
+test("TC-GR2 a reply to the round returns to the group recorded on the conversation", async () => {
+  const seen = [];
+  const { core, replies } = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    adapterOverrides: {
+      postNotice: async (_text, options = {}) => {
+        seen.push(options);
+        return { messageId: `n-${seen.length}`, chatId: "CLOOP" };
+      },
+      reply: async (ctx, text) => {
+        replies.push({ key: ctx.key, text, chatId: ctx.chatId });
+        return { messageId: `m-${replies.length}` };
+      },
+    },
+  });
+  await core.startDueLoops();
+  await settle();
+  await core.handle({ key: "loop-fake-1-r1", session: "fs-loop-fake-1-r1", dedupeId: "wake-1", authorId: "u-ok", text: "继续", chatId: null });
+  await settle();
+  const reply = replies.find((item) => item.key === "loop-fake-1-r1");
+  assert.ok(reply, "the wake was answered");
+  assert.equal(reply.chatId, "CLOOP");
+});
+
 test("TC-LR24 prose that is not the bare word is content, so the round still posts", async () => {
   const { core, replies } = harness({
     state: { loops: { "loop-fake-1": seededLoop() } },
@@ -531,6 +783,48 @@ test("TC-LR24 prose that is not the bare word is content, so the round still pos
   await settle();
   assert.equal(replies.length, 1, `prose beside the word is content: ${JSON.stringify(replies)}`);
   assert.equal(core.state.loops["loop-fake-1"].lastOutcome, "ok");
+});
+
+test("TC-GR1 a loop round goes to the loop group and records the channel it landed in", async () => {
+  const seen = [];
+  const { core } = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    adapterOverrides: {
+      postNotice: async (_text, options = {}) => {
+        seen.push(options);
+        return { messageId: `n-${seen.length}`, chatId: "CLOOP" };
+      },
+    },
+  });
+  await core.startDueLoops();
+  await settle();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].group, "loop");
+  assert.equal(core.state.convs["loop-fake-1-r1"].chatId, "CLOOP");
+});
+
+test("TC-GR2 a reply to the round returns to the group recorded on the conversation", async () => {
+  const seen = [];
+  const { core, replies } = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    adapterOverrides: {
+      postNotice: async (_text, options = {}) => {
+        seen.push(options);
+        return { messageId: `n-${seen.length}`, chatId: "CLOOP" };
+      },
+      reply: async (ctx, text) => {
+        replies.push({ key: ctx.key, text, chatId: ctx.chatId });
+        return { messageId: `m-${replies.length}` };
+      },
+    },
+  });
+  await core.startDueLoops();
+  await settle();
+  await core.handle({ key: "loop-fake-1-r1", session: "fs-loop-fake-1-r1", dedupeId: "wake-1", authorId: "u-ok", text: "继续", chatId: null });
+  await settle();
+  const reply = replies.find((item) => item.key === "loop-fake-1-r1");
+  assert.ok(reply, "the wake was answered");
+  assert.equal(reply.chatId, "CLOOP");
 });
 
 test("TC-LR25 a NOOP the model dressed up still reads as one word, so the round stays quiet", async () => {
@@ -546,6 +840,48 @@ test("TC-LR25 a NOOP the model dressed up still reads as one word, so the round 
   }
 });
 
+test("TC-GR1 a loop round goes to the loop group and records the channel it landed in", async () => {
+  const seen = [];
+  const { core } = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    adapterOverrides: {
+      postNotice: async (_text, options = {}) => {
+        seen.push(options);
+        return { messageId: `n-${seen.length}`, chatId: "CLOOP" };
+      },
+    },
+  });
+  await core.startDueLoops();
+  await settle();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].group, "loop");
+  assert.equal(core.state.convs["loop-fake-1-r1"].chatId, "CLOOP");
+});
+
+test("TC-GR2 a reply to the round returns to the group recorded on the conversation", async () => {
+  const seen = [];
+  const { core, replies } = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    adapterOverrides: {
+      postNotice: async (_text, options = {}) => {
+        seen.push(options);
+        return { messageId: `n-${seen.length}`, chatId: "CLOOP" };
+      },
+      reply: async (ctx, text) => {
+        replies.push({ key: ctx.key, text, chatId: ctx.chatId });
+        return { messageId: `m-${replies.length}` };
+      },
+    },
+  });
+  await core.startDueLoops();
+  await settle();
+  await core.handle({ key: "loop-fake-1-r1", session: "fs-loop-fake-1-r1", dedupeId: "wake-1", authorId: "u-ok", text: "继续", chatId: null });
+  await settle();
+  const reply = replies.find((item) => item.key === "loop-fake-1-r1");
+  assert.ok(reply, "the wake was answered");
+  assert.equal(reply.chatId, "CLOOP");
+});
+
 test("TC-LR26 prose above the quiet word is delivered whole, the round is never silently swallowed", async () => {
   const { core, replies } = harness({
     state: { loops: { "loop-fake-1": seededLoop() } },
@@ -556,6 +892,48 @@ test("TC-LR26 prose above the quiet word is delivered whole, the round is never 
   assert.equal(replies.length, 1, `a body that is not the bare word is content: ${JSON.stringify(replies)}`);
   assert.match(replies[0].text, /台账 20 条/);
   assert.equal(core.state.loops["loop-fake-1"].lastOutcome, "ok");
+});
+
+test("TC-GR1 a loop round goes to the loop group and records the channel it landed in", async () => {
+  const seen = [];
+  const { core } = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    adapterOverrides: {
+      postNotice: async (_text, options = {}) => {
+        seen.push(options);
+        return { messageId: `n-${seen.length}`, chatId: "CLOOP" };
+      },
+    },
+  });
+  await core.startDueLoops();
+  await settle();
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].group, "loop");
+  assert.equal(core.state.convs["loop-fake-1-r1"].chatId, "CLOOP");
+});
+
+test("TC-GR2 a reply to the round returns to the group recorded on the conversation", async () => {
+  const seen = [];
+  const { core, replies } = harness({
+    state: { loops: { "loop-fake-1": seededLoop() } },
+    adapterOverrides: {
+      postNotice: async (_text, options = {}) => {
+        seen.push(options);
+        return { messageId: `n-${seen.length}`, chatId: "CLOOP" };
+      },
+      reply: async (ctx, text) => {
+        replies.push({ key: ctx.key, text, chatId: ctx.chatId });
+        return { messageId: `m-${replies.length}` };
+      },
+    },
+  });
+  await core.startDueLoops();
+  await settle();
+  await core.handle({ key: "loop-fake-1-r1", session: "fs-loop-fake-1-r1", dedupeId: "wake-1", authorId: "u-ok", text: "继续", chatId: null });
+  await settle();
+  const reply = replies.find((item) => item.key === "loop-fake-1-r1");
+  assert.ok(reply, "the wake was answered");
+  assert.equal(reply.chatId, "CLOOP");
 });
 
 test("TC-LR27 an empty run marker stays quiet and a marker line carries no delivery meaning any more", async () => {
