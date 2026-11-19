@@ -356,6 +356,11 @@ export async function handleJobCommand(rest, config, log, deps = {}) {
 export async function handleScheduleCommand(rest, config, log, deps = {}) {
   const dispatch = deps.sendCommand ?? sendCommand;
   const first = rest[0];
+  if (first === "--help" || first === "-h") {
+    process.stdout.write(scheduleHelp());
+    process.exitCode = 0;
+    return;
+  }
   const verb = first && !first.startsWith("--") ? first : "create";
   const args = verb === "create" ? rest : rest.slice(1);
   const { flags, rest: positional } = parseFlags(args);
