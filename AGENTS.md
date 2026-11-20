@@ -54,13 +54,14 @@ Code changes do nothing until the daemon restarts:
 
 ```bash
 git -C ~/code/agent-relay pull --ff-only
-agent-relay-upgrade <feishu|slack>
+agent-relay restart
 ```
 
-The script waits for in-flight jobs to drain, then restarts the unit and verifies
-a changed `MainPID`. It is safe to start from inside a relay session — it detaches
-itself with `systemd-run`. Restarting `slack` kills the session that ran the
-upgrade; that is expected, so make sure the reply goes out first.
+`agent-relay restart` sends one request to every platform; each daemon restarts once
+it has nothing queued or running, and the new instance's boot notice closes the
+request. `--wait 0` waits with no deadline, and a second request replaces the first.
+Restarting kills the sessions running on that platform — expected, so make sure the
+reply goes out first, or let the daemon wait for the turn to end.
 
 ## Where things live
 

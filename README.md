@@ -300,6 +300,8 @@ you want to change, under `relay`:
 | `stall.silenceMs` / `stall.toolMs` / `stall.checkMs` | 10m / 10m / 1m | stall thresholds and watchdog cadence |
 | `budget.keyWindowMs` / `keyWindowMaxMs` / `graceMs` | 6h / 3h / 10m | per-conversation budget window, cap and tool grace |
 | `loop.noticeMs` / `renoticeMs` / `noticeMax` / `parkMs` | 45m / 2h / 3 / 6h | a loop round's running notice, reminder, count and park |
+| `restart.waitMs` / `settleMs` / `healthMs` | 1h / 15s / 60s | default wait for an idle platform, quiet window, and how long the executor waits for a new `MainPID` |
+| `restart.unit` | `agent-relay@%p` | the systemd unit a restart drives, `%p` being the platform |
 
 A removed key (`worker.mode`, `worker.steer`, `turn.timeoutMs`, `stall.actionMs`) is
 refused at startup with its name: those behaviours are now the only behaviour. A
@@ -322,35 +324,38 @@ other's state. A stale pid file is reclaimed automatically.
 
 ## Upgrade
 
-Restart a running instance without killing the job that is doing the restart:
+Restart a running instance without killing the jobs that are still working:
 
 ```bash
 git -C ~/code/agent-relay pull --ff-only
 bun scripts/install.mjs
-agent-relay-upgrade feishu
+agent-relay restart
 ```
 
-`scripts/relay-upgrade.sh` (linked as `agent-relay-upgrade`) does four things:
+`agent-relay restart` takes no platform: it sends one request to every configured
+platform, and each daemon restarts itself once it has nothing `queued` or `running`
+and nothing whose `updatedAt` is inside the settle window (15s by default). The
+settle window exists because `applyWorkerResult()` saves the new status *before*
+awaiting the delivery: a job that finished mid-check is still a reply on its way
+out.
 
-1. when it runs inside the relay service's own cgroup, it re-executes itself
-   under `systemd-run --user --unit relay-upgrade-<platform>` so the restart
-   cannot kill the caller half-way;
-2. waits until the relay is quiet — nothing `queued` or `running`, and nothing whose
-   `updatedAt` is inside the last `RELAY_UPGRADE_SETTLE` seconds (default 15) — for at
-   most `RELAY_UPGRADE_WAIT` seconds, default 1800, `0` meaning no limit; on timeout it
-   exits 3 and leaves the relay untouched. A quiet reading is re-checked
-   `RELAY_UPGRADE_SETTLE` seconds later, because `applyWorkerResult()` saves the new
-   status *before* awaiting the delivery: a job that finished mid-check is still a reply
-   on its way out, and `recover()` resending missed chunks is a backstop, not a licence
-   to restart into it. An unreadable or unparsable state file exits 5 instead of
-   restarting blind;
-3. restarts `agent-relay@<platform>` and, 10 seconds later, requires both
-   `is-active` and a changed `MainPID`;
-4. posts a notice with the outcome, on failure together with the last 30 journal
-   lines on stderr.
+The wait is bounded by `relay.restart.waitMs` (1h by default); `--wait 0` waits with
+no deadline, `--wait 30m` says how long to try. A request that never finds an idle
+platform expires and restarts nothing. A second request replaces the first — one slot
+per platform, `seq` grows, the deadline restarts, and a request that arrives while a
+restart is already in flight becomes the next one.
 
-It stays bash on purpose: the cgroup probe reads `/proc/self/cgroup` and the
-restart uses `systemd-run`, both native to a shell.
+The daemon that takes the request does not perform the restart itself: it spawns a
+one-shot `relay-restart-<platform>` unit that runs `agent-relay restart --execute`,
+which restarts `agent-relay@<platform>` and requires both `is-active` and a changed
+`MainPID` within `relay.restart.healthMs` (60s). Success is silent — the new
+instance's boot notice carries the last line (`restart of request N completed
+(waited …, … rounds finished)`). Failure posts `Restart failed` to the system group.
+Everything the restart says is in the system group; the copy lives in
+`src/prompts/messages/restart-*.md`.
+
+`agent-relay-upgrade` and `scripts/relay-upgrade.sh` are gone as of this verb: one
+entry point, no shim.
 
 ## Privacy and retention
 
