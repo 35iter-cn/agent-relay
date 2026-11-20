@@ -255,13 +255,24 @@ export function resolveThread(key) {
   return MESSAGE_TS.test(value) ? value : null;
 }
 
-export function acceptsEvent(event, { channels = null, allowedUser = null, botUser = null } = {}) {
+export const CHANNEL_ID = /^[A-Z0-9]{8,}$/;
+
+// `slack.listen.deny` is the only channel-level refusal left, so a typo in it
+// silently leaves a channel the person meant to mute wide open: refuse to start.
+export function denyProblem(list) {
+  if (list === undefined || list === null) return null;
+  if (!Array.isArray(list)) return "expected an array of channel ids";
+  const bad = list.find((id) => typeof id !== "string" || !CHANNEL_ID.test(id));
+  return bad === undefined ? null : `not a channel id: ${JSON.stringify(bad)}`;
+}
+
+export function acceptsEvent(event, { denied = null, allowedUser = null, botUser = null } = {}) {
   if (!event) return { ok: false, why: "empty" };
-  if (!channels?.size || !allowedUser) return { ok: false, why: "unconfigured" };
-  if (!channels.has(event.channel)) return { ok: false, why: "channel" };
+  if (!allowedUser) return { ok: false, why: "unconfigured" };
   if (event.user === botUser) return { ok: false, why: "bot" };
   if (event.bot_id && event.user !== allowedUser) return { ok: false, why: "bot" };
   if (event.user !== allowedUser) return { ok: false, why: "author" };
+  if (denied?.has(event.channel)) return { ok: false, why: "deny" };
   if (event.subtype && !PASSING_SUBTYPES.includes(event.subtype)) return { ok: false, why: "subtype" };
   if (!stripMentions(event.text) && !event.files?.length) return { ok: false, why: "empty-text" };
   return { ok: true, thread: event.thread_ts ?? event.ts, channel: event.channel };
@@ -369,7 +380,8 @@ export function createPlatform({ config, log: baseLog }) {
   const allowedUser = section?.allowedUser ?? null;
   const botUser = section?.botUser ?? null;
   const botToken = section?.botToken ?? null;
-  const channels = new Set(Object.values(section?.groups ?? {}));
+  const denyList = section?.listen?.deny ?? [];
+  const denied = new Set(denyList);
   const progressEmoji = PROGRESS_EMOJI;
   const log = baseLog;
   const typing = { timer: null, cursor: 0, busy: false, keys: new Set() };
@@ -618,13 +630,18 @@ export function createPlatform({ config, log: baseLog }) {
         log("error", "missing-config", config.configFile, !appToken ? "slack.appToken" : !botToken ? "slack.botToken" : !channel ? `slack.groups.${section.defaultGroup ?? "main"}` : "slack.allowedUser");
         process.exit(1);
       }
+      const denyProblemText = denyProblem(section.listen?.deny);
+      if (denyProblemText) {
+        log("error", "bad-listen", config.configFile, `slack.listen.deny: ${denyProblemText}`);
+        process.exit(1);
+      }
       try {
         cookies = readCookies();
       } catch (error) {
         log("error", "missing-cookies", config.configFile, String(error));
       }
       const handle = async (event) => {
-        const verdict = acceptsEvent(event, { channels, allowedUser, botUser });
+        const verdict = acceptsEvent(event, { denied, allowedUser, botUser });
         if (!verdict.ok) return log("ignore", verdict.why, event?.ts ?? "");
         const thread = verdict.thread;
         const stripped = stripMentions(event.text ?? "");

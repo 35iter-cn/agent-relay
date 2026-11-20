@@ -3,12 +3,12 @@ import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import assert from "node:assert/strict";
-import { stripMentions, sessionFor, acceptsEvent, heartbeatVerdict, refreshDelayMs, alertAllowed, pruneThreads, decideProgressMode, createRuntime, createPlatform, createAttachmentDownloader, createMediaUploader, composeText, shouldAlertFiles, createReplyLocator, FILES_ALERT, MEDIA_ALERT } from "../src/platforms/slack.mjs";
+import { stripMentions, sessionFor, acceptsEvent, denyProblem, heartbeatVerdict, refreshDelayMs, alertAllowed, pruneThreads, decideProgressMode, createRuntime, createPlatform, createAttachmentDownloader, createMediaUploader, composeText, shouldAlertFiles, createReplyLocator, FILES_ALERT, MEDIA_ALERT } from "../src/platforms/slack.mjs";
 import { uploadDirFor } from "../src/platforms/shared/uploads.mjs";
 import { DEFAULTS } from "../src/config.mjs";
 import { planParts } from "../src/jobs/delivery.mjs";
 
-const TEST_SCOPE = { channels: new Set(["CTEST"]), allowedUser: "UTEST", botUser: "UBOT" };
+const TEST_SCOPE = { denied: new Set(["CDENY0001"]), allowedUser: "UTEST", botUser: "UBOT" };
 
 const base = { channel: "CTEST", ts: "1792558469.808939", text: "帮我扫一下 <@UTEST>", user: TEST_SCOPE.allowedUser };
 
@@ -39,13 +39,32 @@ test("TC-10c a message the user sent through an app's user token keeps its autho
   assert.deepEqual(acceptsEvent({ ...base, bot_id: "B123" }, TEST_SCOPE), { ok: true, thread: base.ts, channel: "CTEST" });
 });
 
-test("TC-10 only the allowed author in the configured channel is accepted", () => {
-  assert.deepEqual(acceptsEvent({ ...base, user: "U-stranger" }, TEST_SCOPE), { ok: false, why: "author" });
-  assert.deepEqual(acceptsEvent({ ...base, channel: "C-other" }, TEST_SCOPE), { ok: false, why: "channel" });
-  assert.deepEqual(acceptsEvent({ ...base, text: "   " }, TEST_SCOPE), { ok: false, why: "empty-text" });
-  assert.deepEqual(acceptsEvent(null, TEST_SCOPE), { ok: false, why: "empty" });
-  assert.deepEqual(acceptsEvent(base, {}), { ok: false, why: "unconfigured" });
-  assert.deepEqual(acceptsEvent(base, { channels: TEST_SCOPE.channels }), { ok: false, why: "unconfigured" });
+test("TC-10 every refusal has its own reason, and a channel nobody listed is accepted", () => {
+  const cases = [
+    [null, TEST_SCOPE, "empty"],
+    [base, {}, "unconfigured"],
+    [base, { denied: TEST_SCOPE.denied }, "unconfigured"],
+    [{ ...base, user: TEST_SCOPE.botUser }, TEST_SCOPE, "bot"],
+    [{ ...base, user: "U-stranger" }, TEST_SCOPE, "author"],
+    [{ ...base, channel: "CDENY0001" }, TEST_SCOPE, "deny"],
+    [{ ...base, subtype: "channel_join" }, TEST_SCOPE, "subtype"],
+    [{ ...base, text: "   " }, TEST_SCOPE, "empty-text"],
+  ];
+  for (const [event, scope, why] of cases) {
+    assert.deepEqual(acceptsEvent(event, scope), { ok: false, why }, `expected ${why}`);
+  }
+  // A channel that appears in no configuration is accepted: the deny list is the
+  // only channel-level refusal, and it names the channel that has to be there.
+  assert.deepEqual(acceptsEvent({ ...base, channel: "CNEVERSEEN" }, TEST_SCOPE), { ok: true, thread: base.ts, channel: "CNEVERSEEN" });
+});
+
+test("TC-10d a deny entry that is not a channel id is refused at startup", () => {
+  assert.equal(denyProblem(undefined), null);
+  assert.equal(denyProblem([]), null);
+  assert.equal(denyProblem(["CGROUP0001"]), null);
+  assert.match(denyProblem("CGROUP0001"), /array/);
+  assert.match(denyProblem(["nope"]), /nope/);
+  assert.match(denyProblem([42]), /42/);
 });
 
 test("thread replies join the parent thread, top-level messages start one", () => {
@@ -56,12 +75,12 @@ test("thread replies join the parent thread, top-level messages start one", () =
   assert.equal(top.thread, base.ts);
 });
 
-test("TC-10d every configured group channel is accepted and reports its own channel", () => {
-  const scope = { channels: new Set(["CTEST", "CLOOP"]), allowedUser: "UTEST", botUser: "UBOT" };
-  const inLoop = acceptsEvent({ ...base, channel: "CLOOP" }, scope);
-  assert.equal(inLoop.ok, true);
-  assert.equal(inLoop.channel, "CLOOP");
-  assert.deepEqual(acceptsEvent({ ...base, channel: "C-other" }, scope), { ok: false, why: "channel" });
+test("TC-10e the verdict carries the message's own channel, whichever it is", () => {
+  for (const channel of ["CGROUP0001", "CLOOP00001", "CNEVERSEEN"]) {
+    const verdict = acceptsEvent({ ...base, channel }, TEST_SCOPE);
+    assert.equal(verdict.ok, true);
+    assert.equal(verdict.channel, channel);
+  }
 });
 
 test("subtypes that carry real content are accepted, others ignored", () => {
