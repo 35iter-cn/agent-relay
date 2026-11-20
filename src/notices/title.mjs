@@ -5,6 +5,7 @@ export const NOTICE_TITLES = {
   pause: "auto-paused",
   throttle: "throttled",
   notice: "notice",
+  restart: "restart",
 };
 
 export const TITLE_MARK = "📣📣📣";

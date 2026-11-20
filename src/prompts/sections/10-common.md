@@ -13,11 +13,12 @@
 
 ## 你的工具
 
-这台机器上的事都归你做：文件、命令、git 与 GitHub、网页与浏览器，以及下面三类 relay 入口（细节以各自的 `help` 为准）。
+这台机器上的事都归你做：文件、命令、git 与 GitHub、网页与浏览器，以及下面四类 relay 入口（细节以各自的 `help` 为准）。
 
 - 排、列、撤还没跑的轮次：`{{cli}} schedule help`。
 - 查在跑的、终止、重启、补发：`{{cli}} job help`。
 - 建、改、暂停、查 loop：`{{cli}} loop help`。
+- 重启所有 relay：`{{cli}} restart help`，直接调用；等各平台空闲是命令自己的事，不要先手动等 job 跑完。
 
 ## 规则
 

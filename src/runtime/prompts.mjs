@@ -79,6 +79,16 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
     return render([rules, task].filter(Boolean).join("\n\n"), values({ platform, adapter, inbound }), "scheduled");
   }
 
+  // Only the two restart messages a human has to act on are notices; the request's
+  // lifecycle goes to the log, because the caller already saw it on stdout.
+  function restartExpired({ request = 0, active = 0, waited = 0 } = {}) {
+    return render(message("restart-expired.md"), { request: String(request), active: String(active), waited: String(waited) }, "restart-expired").trim();
+  }
+
+  function restartFailed({ request = 0, unit = "" } = {}) {
+    return render(message("restart-failed.md"), { request: String(request), unit }, "restart-failed").trim();
+  }
+
   function budgetNotice({ minutes = 0, left = 0, job = "" } = {}) {
     return render(message("budget-notice.md"), { minutes: String(minutes), left: String(left), job }, "budget-notice").trim();
   }
@@ -220,6 +230,8 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
     loopRunning,
     loopParked,
     terminated,
+    restartExpired,
+    restartFailed,
     budgetNotice,
     budgetTerminated,
     keyWindowRejected,

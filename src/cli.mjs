@@ -17,6 +17,8 @@ import { loopHelp } from "./loops/help.mjs";
 import { jobHelp, scheduleHelp } from "./jobs/help.mjs";
 import { findRound, listRounds } from "./loops/history.mjs";
 import { withTitle } from "./notices/title.mjs";
+import { restartHelp } from "./restart/help.mjs";
+import { createSystemctl, executeRestart, spawnDetachedRestart } from "./restart/execute.mjs";
 
 export const LOOP_ACTIONS = new Set(["create", "list", "show", "update", "pause", "resume", "delete", "run", "log", "show-run", "doctor"]);
 export const JOB_ACTIONS = new Set(["cancel", "list", "redeliver", "restart"]);
@@ -34,6 +36,7 @@ export function usage(stream = process.stderr) {
       "  agent-relay schedule --platform <p> --key <k> --name <n> [--in <dur> | --at <iso>] [--grace <dur>] [--join]  (prompt on stdin)",
       "  agent-relay schedule list|cancel|help …",
       "  agent-relay job help | agent-relay job list|cancel|restart|redeliver …",
+      "  agent-relay restart [--wait <dur>|0] [--reason <text>] | agent-relay restart status|cancel|help",
       "  agent-relay loop help | agent-relay loop create|list|show|update|pause|resume|delete|run|log|show-run …",
     ].join("\n") + "\n",
   );
@@ -302,6 +305,191 @@ export function doctorLoopRows(config, platforms) {
   return rows.sort((a, b) => String(a.id).localeCompare(String(b.id)));
 }
 
+export function restartUnitFor(config, platform) {
+  const unit = config.options?.relay?.restart?.unit ?? "agent-relay@%p";
+  return String(unit).replace("%p", platform);
+}
+
+export function readRestartSlot(config, platform) {
+  const state = readJson(config.stateFile(platform));
+  return state?.restart ?? null;
+}
+
+// Every platform, one request each. A platform that cannot take one is reported and
+// the others still go: a fan-out has no rollback.
+export async function requestRestartAll(config, flags, deps = {}) {
+  const dispatch = deps.sendCommand ?? sendCommand;
+  const paths = deps.PLATFORMS ?? PLATFORMS;
+  const fallbackWait = config.options?.relay?.restart?.waitMs ?? 3_600_000;
+  let ask = fallbackWait;
+  if (flags.wait === "0") ask = 0;
+  else if (flags.wait !== undefined) {
+    ask = durationMs(flags.wait, null);
+    if (ask === null || !Number.isFinite(ask)) {
+      process.stderr.write("refused: wait-invalid\n");
+      process.exitCode = 3;
+      return { refused: "wait-invalid" };
+    }
+  }
+  const by = process.env.AGENT_RELAY_KEY ?? "";
+  const lines = [];
+  let code = 0;
+  for (const platform of paths) {
+    let sent = null;
+    try {
+      sent = await dispatch(config, platform, { op: "restart", waitMs: ask, reason: String(flags.reason ?? ""), by });
+    } catch (error) {
+      sent = { delivered: false };
+    }
+    if (sent?.result?.refused === "unknown-command") {
+      // The daemon predates this verb (it is the one being upgraded): nothing to queue.
+      const line = await restartDirectOrSkip(config, platform, deps, "daemon too old for this verb");
+      lines.push(`${platform}: ${line}`);
+      code = Math.max(code, 1);
+      continue;
+    }
+    if (sent?.result?.refused) {
+      lines.push(`${platform}: refused: ${sent.result.refused}`);
+      code = Math.max(code, 3);
+      continue;
+    }
+    if (!sent?.delivered) {
+      const line = await restartDirectOrSkip(config, platform, deps);
+      lines.push(`${platform}: ${line}`);
+      code = Math.max(code, 1);
+      continue;
+    }
+    const { request, superseded } = sent.result;
+    lines.push(superseded ? `${platform}: superseded (request ${request} replaced ${superseded})` : `${platform}: queued (request ${request})`);
+  }
+  process.stdout.write(`${lines.join("\n")}\n`);
+  process.exitCode = code;
+  return { lines };
+}
+
+// No daemon answered: nothing is running that we could wait for, so restart the unit —
+// detached, through the same executor, because this is exactly the first upgrade and the
+// unit we restart may be the one this command is running on.
+async function restartDirectOrSkip(config, platform, deps = {}, reason = "daemon not running") {
+  const systemctl = deps.systemctl ?? createSystemctl();
+  const unit = restartUnitFor(config, platform);
+  const active = await systemctl("is-active", unit).catch(() => "");
+  if (active !== "active") return `${reason}; unit not active, skipped`;
+  const spawned = spawnDetachedRestart({
+    platform,
+    unit,
+    request: 0,
+    spawn: deps.spawn,
+    log: deps.log ?? (() => {}),
+  });
+  return spawned ? `${reason}; restarted directly (detached)` : `${reason}; could not start the restart unit`;
+}
+
+export async function handleRestartCommand(rest, config, log, deps = {}) {
+  const first = String(rest[0] ?? "");
+  const bare = first.startsWith("-");
+  const { flags, rest: positional } = parseFlags(bare ? rest : rest.slice(1));
+  const verb = bare || !first ? "restart" : first;
+  if (verb === "help" || verb === "-h" || flags.help) {
+    const text = restartHelp(verb === "help" ? String(positional[0] ?? "") : "");
+    if (!text) {
+      process.stderr.write("refused: unknown-verb\n");
+      process.exitCode = 3;
+      return;
+    }
+    process.stdout.write(text);
+    process.exitCode = 0;
+    return;
+  }
+  if (flags.execute) {
+    const platform = typeof flags.platform === "string" ? flags.platform : "";
+    const unit = typeof flags.unit === "string" && flags.unit ? flags.unit : "";
+    const request = Number(flags.request ?? 0) || 0;
+    if (!unit) {
+      process.stderr.write("refused: no-unit\n");
+      process.exitCode = 3;
+      return;
+    }
+    const systemctl = deps.systemctl ?? createSystemctl();
+    const result = await executeRestart({
+      unit,
+      request,
+      systemctl,
+      healthMs: config.options?.relay?.restart?.healthMs ?? 60_000,
+      sleep: deps.sleep,
+    });
+    if (result.code === 0) {
+      process.stdout.write(`restart ok (request ${request}, pid ${result.before} -> ${result.pid})\n`);
+      process.exitCode = 0;
+      return;
+    }
+    const { createPrompts } = await import("./runtime/prompts.mjs");
+    const prompts = deps.prompts ?? createPrompts({ dir: config.promptsDir, userDir: config.userPromptsDir, log });
+    if (platform) {
+      await emitNotice(config, platform, prompts.restartFailed({ request, unit }), "", log, null, "restart", "system").catch((error) => log("warn", "restart-failed-notice", String(error?.message ?? error)));
+    }
+    process.stderr.write(`restart failed (request ${request}): ${unit} is not active or MainPID did not change\n`);
+    process.exitCode = 1;
+    return;
+  }
+  if (verb === "status") {
+    const paths = deps.PLATFORMS ?? PLATFORMS;
+    const lines = [];
+    for (const platform of paths) {
+      const slot = readRestartSlot(config, platform);
+      if (!slot) {
+        lines.push(`${platform}: nothing pending`);
+        continue;
+      }
+      const waited = slot.requestedAt ? Math.max(0, Math.round((Date.now() - Date.parse(slot.requestedAt)) / 60_000)) : 0;
+      const deadline = slot.deadlineAt ? `deadline ${localStamp(Date.parse(slot.deadlineAt))}` : "no deadline";
+      if (slot.status === "pending") lines.push(`${platform}: request ${slot.seq} pending, ${waited} min waited, ${deadline}`);
+      else if (slot.status === "stopping") lines.push(`${platform}: request ${slot.seq} stopping, ${Math.round((Number(slot.waitedMs) || 0) / 60_000)} min waited`);
+      else if (slot.status === "done") lines.push(`${platform}: request ${slot.seq} done, ${Math.round((Number(slot.waitedMs) || 0) / 60_000)} min waited, ${Number(slot.finishedJobs) || 0} round(s) finished`);
+      else lines.push(`${platform}: request ${slot.seq} ${slot.status}`);
+    }
+    process.stdout.write(`${lines.join("\n")}\n`);
+    return;
+  }
+  if (verb === "cancel") {
+    const dispatch = deps.sendCommand ?? sendCommand;
+    const paths = deps.PLATFORMS ?? PLATFORMS;
+    const lines = [];
+    let code = 0;
+    for (const platform of paths) {
+      let sent = null;
+      try {
+        sent = await dispatch(config, platform, { op: "restart-cancel", by: process.env.AGENT_RELAY_KEY ?? "" });
+      } catch (error) {
+        sent = { delivered: false };
+      }
+      if (sent?.result?.refused === "unknown-command") {
+        lines.push(`${platform}: old daemon; nothing to cancel`);
+        code = Math.max(code, 1);
+      } else if (sent?.result?.refused === "nothing-pending") {
+        lines.push(`${platform}: nothing pending`);
+      } else if (sent?.result?.refused) {
+        lines.push(`${platform}: refused: ${sent.result.refused}`);
+        code = Math.max(code, 3);
+      } else if (sent?.delivered) {
+        lines.push(`${platform}: cancelled (request ${sent.result.request ?? "-"})`);
+      } else {
+        lines.push(`${platform}: daemon not running; nothing to cancel`);
+        code = Math.max(code, 1);
+      }
+    }
+    process.stdout.write(`${lines.join("\n")}\n`);
+    process.exitCode = code;
+    return;
+  }
+  if (verb !== "restart") {
+    process.stderr.write("refused: unknown-verb\n");
+    process.exitCode = 3;
+    return;
+  }
+  await requestRestartAll(config, flags, deps);
+}
+
 export async function handleJobCommand(rest, config, log, deps = {}) {
   const dispatch = deps.sendCommand ?? sendCommand;
   const { verb, flags, positional } = jobArgs(rest);
@@ -442,6 +630,7 @@ async function serve(platform, config, log) {
   setInterval(() => core.pruneLogs(), 86_400_000).unref();
   const tick = () =>
     core.drainCommands()
+      .then(() => core.checkRestart())
       .then(() => core.startDueJobs())
       .then(() => core.startDueDeliveries())
       .then(() => core.startDueLoops())
@@ -737,6 +926,10 @@ export async function main(argv = process.argv.slice(2)) {
   }
   if (mode === "job") {
     await handleJobCommand(rest, config, log);
+    return;
+  }
+  if (mode === "restart") {
+    await handleRestartCommand(rest, config, log);
     return;
   }
   if (mode === "loop") {
