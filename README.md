@@ -310,6 +310,7 @@ you want to change, under `relay`:
 | `budget.keyWindowMs` / `keyWindowMaxMs` / `graceMs` | 6h / 3h / 10m | per-conversation budget window, cap and tool grace |
 | `loop.noticeMs` / `renoticeMs` / `noticeMax` / `parkMs` | 45m / 2h / 3 / 6h | a loop round's running notice, reminder, count and park |
 | `restart.waitMs` / `settleMs` / `healthMs` | 1h / 15s / 60s | default wait for an idle platform, quiet window, and how long the executor waits for a new `MainPID` |
+| `restart.spawnMs` | 15s | how long `systemd-run` gets to register the one-shot restart unit before the spawn counts as failed |
 | `restart.unit` | `agent-relay@%p` | the systemd unit a restart drives, `%p` being the platform |
 
 A removed key (`worker.mode`, `worker.steer`, `turn.timeoutMs`, `stall.actionMs`) is
@@ -360,6 +361,15 @@ which restarts `agent-relay@<platform>` and requires both `is-active` and a chan
 `MainPID` within `relay.restart.healthMs` (60s). Success is silent — the new
 instance's boot notice carries the last line (`restart of request N completed
 (waited …, … rounds finished)`). Failure posts `Restart failed` to the system group.
+
+Spawning that unit is confirmed, not assumed. `systemd-run` runs with `--no-block`
+and its own exit is awaited, bounded by `relay.restart.spawnMs` (15s): exit 0 means
+systemd owns the job, anything else is reported as `could not start the restart
+unit` rather than printed as a restart that did not happen. The distinction is not
+academic — the caller can be a transient unit that exits immediately, and its cgroup
+takes an unanswered bus request with it. The daemon waits for the same exit and
+falls back to `systemctl --user restart` when the one-shot unit could not be
+registered.
 Everything the restart says is in the system group; the copy lives in
 `src/prompts/messages/restart-*.md`.
 

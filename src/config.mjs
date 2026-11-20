@@ -20,7 +20,7 @@ export const DEFAULTS = {
     stall: { silenceMs: 10 * 60_000, toolMs: 10 * 60_000, checkMs: 60_000 },
     budget: { keyWindowMs: 6 * 3_600_000, keyWindowMaxMs: 3 * 3_600_000, graceMs: 10 * 60_000 },
     loop: { noticeMs: 45 * 60_000, renoticeMs: 2 * 3_600_000, noticeMax: 3, parkMs: 6 * 3_600_000 },
-    restart: { waitMs: 3_600_000, settleMs: 15_000, healthMs: 60_000, unit: "agent-relay@%p" },
+    restart: { waitMs: 3_600_000, settleMs: 15_000, healthMs: 60_000, spawnMs: 15_000, unit: "agent-relay@%p" },
   },
 };
 
