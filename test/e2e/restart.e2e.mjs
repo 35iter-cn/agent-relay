@@ -78,7 +78,7 @@ writeFileSync(
 );
 const status = await run(["restart", "status"]);
 check("E-4 status prints the pending slot", status.code === 0 && /slack: request 7 pending, 3 min waited, deadline /.test(status.out), status.out.trim());
-check("E-5 a platform with no slot says so", /feishu: nothing pending/.test(status.out), status.out.trim());
+check("E-4b status names the one platform it fans out to", status.out.trim().split("\n").length === 1 && !/feishu/.test(status.out), status.out.trim());
 
 // E-6 no daemon and no active unit: nothing is queued, nothing is restarted, and the
 // caller is told per platform instead of getting one opaque error
@@ -87,7 +87,7 @@ writeFileSync(join(binDir, "systemctl"), `#!/usr/bin/env bash\necho "$*" >> "${d
 chmodSync(join(binDir, "systemctl"), 0o755);
 const stranded = await run(["restart"]);
 const after = existsSync(join(dir, "skip.log")) ? readFileSync(join(dir, "skip.log"), "utf8") : "";
-check("E-6 a stopped relay is skipped per platform", stranded.code === 1 && /feishu: daemon not running; unit not active, skipped/.test(stranded.out) && /slack: daemon not running; unit not active, skipped/.test(stranded.out), `code=${stranded.code} out=${stranded.out.trim()}`);
+check("E-6 a stopped relay is skipped per platform", stranded.code === 1 && /slack: daemon not running; unit not active, skipped/.test(stranded.out) && stranded.out.trim().split("\n").length === 1, `code=${stranded.code} out=${stranded.out.trim()}`);
 check("E-7 nothing is restarted when no unit is active", !/ restart /.test(after) && before === before, after.trim());
 
 const failed = results.filter((item) => !item.ok);

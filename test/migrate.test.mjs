@@ -32,15 +32,6 @@ test("TC-13 slack legacy state maps dedup and threads", () => {
   assert.equal(existsSync(join(dir, "slackd.json.migrated")), true);
 });
 
-test("TC-13 feishu legacy state keeps seen and convs", () => {
-  const dir = seed({ "feishud.json": { convs: { "th-x": { session: "fs-th-x", rootText: "hi" } }, seen: { m1: "t" } } });
-  const result = migrate({ platform: "feishu", stateDir: dir });
-  assert.equal(result.migrated, true);
-  const state = JSON.parse(readFileSync(join(dir, "relay-feishu.json"), "utf8"));
-  assert.deepEqual(state.convs, { "th-x": { session: "fs-th-x", rootText: "hi" } });
-  assert.deepEqual(state.seen, { m1: "t" });
-});
-
 test("TC-13 migration is idempotent and never overwrites the target", () => {
   const dir = seed({ "slackd.json": { dedup: { e1: "t" }, threads: {} } });
   migrate({ platform: "slack", stateDir: dir });
@@ -52,10 +43,10 @@ test("TC-13 migration is idempotent and never overwrites the target", () => {
 });
 
 test("TC-13 corrupt legacy state throws and leaves the file untouched", () => {
-  const dir = seed({ "feishud.json": "{not json" });
-  assert.throws(() => migrate({ platform: "feishu", stateDir: dir }), /legacy state unreadable/);
-  assert.equal(readFileSync(join(dir, "feishud.json"), "utf8"), "{not json");
-  assert.equal(existsSync(join(dir, "relay-feishu.json")), false);
+  const dir = seed({ "slackd.json": "{not json" });
+  assert.throws(() => migrate({ platform: "slack", stateDir: dir }), /legacy state unreadable/);
+  assert.equal(readFileSync(join(dir, "slackd.json"), "utf8"), "{not json");
+  assert.equal(existsSync(join(dir, "relay-slack.json")), false);
 });
 
 test("TC-13 a missing legacy file seeds an empty relay state", () => {
@@ -66,11 +57,11 @@ test("TC-13 a missing legacy file seeds an empty relay state", () => {
 });
 
 test("TC-13 dry run inspects without writing", () => {
-  const dir = seed({ "feishud.json": { convs: { "th-x": {} }, seen: { m1: "t" } } });
-  const result = migrate({ platform: "feishu", stateDir: dir, dryRun: true });
+  const dir = seed({ "slackd.json": { dedup: ["e1", "e2"], threads: { "111.222": { session: "sl-111.222" } } } });
+  const result = migrate({ platform: "slack", stateDir: dir, dryRun: true });
   assert.equal(result.reason, "dry-run");
-  assert.deepEqual(result.payload.seen, { m1: "t" });
-  assert.equal(existsSync(join(dir, "relay-feishu.json")), false);
+  assert.deepEqual(result.payload.seen, { e1: true, e2: true });
+  assert.equal(existsSync(join(dir, "relay-slack.json")), false);
 });
 
 test("unknown platform is rejected", () => {

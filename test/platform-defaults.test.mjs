@@ -2,7 +2,6 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DEFAULTS } from "../src/config.mjs";
 import { createPlatform as slack } from "../src/platforms/slack.mjs";
-import { createPlatform as feishu } from "../src/platforms/feishu.mjs";
 
 const platform = "tc";
 const config = {
@@ -27,6 +26,5 @@ const config = {
 
 const factories = [
   ["slack", slack],
-  ["feishu", feishu],
 ];
 

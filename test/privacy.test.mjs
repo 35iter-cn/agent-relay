@@ -40,7 +40,7 @@ test("no platform id, tenant name or private host leaks into the sources", () =>
 
 test("the state file is written 0600 inside a 0700 directory", () => {
   const dir = join(mkdtempSync(join(tmpdir(), "relay-private-")), "nested");
-  const file = join(dir, "relay-feishu.json");
+  const file = join(dir, "relay-slack.json");
   writeJsonAtomic(file, { a: 1 });
   assert.equal(statSync(file).mode & 0o777, 0o600);
   assert.equal(statSync(dir).mode & 0o777, 0o700);

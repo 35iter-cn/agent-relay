@@ -31,7 +31,6 @@ test("TC-P1 the prompt tree is six numbered sections and the messages the relay 
   assert.deepEqual(sections, [
     "10-common.md",
     "20-platform-slack.md",
-    "21-platform-feishu.md",
     "30-entry-conversation.md",
     "31-entry-notice.md",
     "32-entry-loop.md",
@@ -57,7 +56,7 @@ test("TC-P1 the prompt tree is six numbered sections and the messages the relay 
 });
 
 test("TC-P2 every entry renders common, then the platform block, then its own task", () => {
-  for (const platform of ["slack", "feishu"]) {
+  for (const platform of ["slack"]) {
     for (const entry of ["conversation", "notice", "loop"]) {
       const text = render(platform, entry);
       const self = text.indexOf("你是我的个人助理");
@@ -80,18 +79,15 @@ test("TC-P3 the common block is platform neutral", () => {
   assert.doesNotMatch(common, /共用这个 session/);
 });
 
-test("TC-P4 platform blocks only appear on their own platform", () => {
+test("TC-P4 the platform block is the slack one", () => {
   const slack = render("slack", "conversation");
-  const feishu = render("feishu", "conversation");
   assert.match(slack, /!\[\]\(\/绝对路径\.png\)/);
-  assert.doesNotMatch(feishu, /!\[\]\(\/绝对路径\.png\)/);
   assert.doesNotMatch(slack, /飞书/);
-  assert.match(feishu, /飞书 MCP/);
   assert.equal(slack.split("## 回复规则").length - 1, 1);
 });
 
 test("TC-P5 the first turn still fits the budget", () => {
-  for (const platform of ["slack", "feishu"]) {
+  for (const platform of ["slack"]) {
     const text = render(platform, "conversation");
     assert.ok(text.length <= FIRST_TURN_PROMPT_BUDGET, `${platform} rendered ${text.length} characters`);
     assert.doesNotMatch(text, /## 处置卡住的 job/);
@@ -123,7 +119,7 @@ test("TC-P8 the quiet-word rule lives in the common block and the loop entry car
   assert.doesNotMatch(entry, /relay>>>|marker|NOOP/, "the entry says what this turn is, not how it is delivered");
   const common = readFileSync(join(PROMPTS, "sections", "10-common.md"), "utf8");
   assert.match(common, /只允许出现 NOOP 四个字符/);
-  for (const platform of ["slack", "feishu"]) {
+  for (const platform of ["slack"]) {
     for (const kind of ["conversation", "notice", "loop"]) {
       const text = render(platform, kind);
       assert.match(text, /只允许出现 NOOP 四个字符/, `${platform}/${kind} carries the quiet-word rule`);
@@ -181,7 +177,7 @@ test("TC-P12 a user prompt directory overrides the built-in file", () => {
   const userDir = join(root, "user");
   mkdirSync(join(dir, "sections"), { recursive: true });
   mkdirSync(join(userDir, "sections"), { recursive: true });
-  for (const name of ["10-common.md", "20-platform-slack.md", "21-platform-feishu.md", "30-entry-conversation.md", "31-entry-notice.md", "32-entry-loop.md"]) {
+  for (const name of ["10-common.md", "20-platform-slack.md", "30-entry-conversation.md", "31-entry-notice.md", "32-entry-loop.md"]) {
     writeFileSync(join(dir, "sections", name), `BUILTIN-${name}`);
   }
   writeFileSync(join(userDir, "sections", "10-common.md"), "USER-COMMON");
@@ -226,7 +222,7 @@ test("TC-P15 the restart entry says the command waits, not the model", () => {
   assert.match(common, /\{\{cli\}\} restart help/);
   assert.match(common, /不要先手动等 job 跑完/, "the waiting is the command's job, not a step for the model");
   assert.doesNotMatch(common, /安全重启.*（.*等/);
-  for (const platform of ["slack", "feishu"]) {
+  for (const platform of ["slack"]) {
     const text = render(platform, "conversation");
     assert.match(text, /restart help/);
     assert.doesNotMatch(text, /\{\{/);

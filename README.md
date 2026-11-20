@@ -4,7 +4,9 @@ Multi-platform IM relay daemon for coding agents.
 
 One long-running process per IM platform bridges conversations to agent sessions
 (pi today, other harnesses later): it queues work, streams chunked replies back,
-detects stalled runs, and posts **notices** that users can reply to.
+detects stalled runs, and posts **notices** that users can reply to. Slack is the
+one adapter that ships today; a second platform is a new file under
+`src/platforms/`, not a change in the runtime.
 
 ```
 user message ──▶ platform adapter ──▶ relay core ──▶ agent session (pi --print)
@@ -127,7 +129,7 @@ src/
 ├── runtime/                core loop, prompts, stall notice, instance lock
 ├── notices/                notice service (emit / match / prune)
 ├── prompts/                sections/ (common, platform, entry) + messages/
-└── platforms/              feishu | slack adapters + shared helpers
+└── platforms/              slack adapter + shared helpers
 ```
 
 Design rules:
@@ -200,7 +202,6 @@ Design rules:
 
 | platform | transport | reply identity |
 | --- | --- | --- |
-| feishu | Lark WS long connection | `parent_id` / `root_id` |
 | slack | Socket Mode | `thread_ts` |
 
 Adapter contract (`src/platforms/contract.mjs`): `name`, `start`, `reply`,
@@ -218,9 +219,9 @@ posting a duplicate. When every attempt fails the job ends `failed` / `reply-fai
 answer stays in the state, and `job redeliver` resends it: the parts already sent are
 skipped by their hash.
 
-Attachments: feishu downloads message resources through the SDK, slack downloads
-`url_private_download` with the bot token — that token needs the `files:read` scope,
-and a 200 `text/html` body means the scope is missing. All write into
+Attachments: slack downloads `url_private_download` with the bot token — that token
+needs the `files:read` scope, and a 200 `text/html` body means the scope is missing.
+All write into
 `uploads/<chat>/<yyyymmdd>/`, capped at 4 files per inbound message (20 MB each,
 7-day retention) by `src/platforms/shared/uploads.mjs`; the landed paths reach the
 worker inside the prompt. The Slack cookies in `config.json` are unrelated to this —
@@ -233,14 +234,13 @@ sends every text chunk first and the images after, and only the adapters that im
 `postMedia` upload anything — slack walks `files.getUploadURLExternal` → upload →
 `files.completeUploadExternal` into the same thread, so that token also needs the
 `files:write` scope; without it the image degrades into a text note plus one alert.
-Feishu keeps the reference as plain text.
 
 ## Run
 
 ```bash
 bun scripts/install.mjs            # link agent-relay into ~/.local/bin
 bun scripts/install.mjs --systemd  # also link the systemd template unit
-agent-relay serve feishu
+agent-relay serve slack
 ```
 
 Configuration lives in `~/.config/agent-relay/` (override the directory with
@@ -260,7 +260,6 @@ whole file; no other key is read.
 | top level | required | what it is |
 | --- | --- | --- |
 | `slack` | for the slack daemon | the Slack section below |
-| `feishu` | for the feishu daemon | the Feishu section below |
 | `relay` | no | tuning overrides, table below |
 
 `slack`:
@@ -275,15 +274,6 @@ whole file; no other key is read.
 | `defaultGroup` | no, `system` | the group a notice falls back to |
 | `groups.<name>` | at startup | group name → channel id; a notice's destination |
 | `listen.deny` | no, `[]` | channel ids the adapter ignores completely — including replies to a notice posted there |
-
-`feishu`:
-
-| key | required | what it is |
-| --- | --- | --- |
-| `appId` | at startup | `cli_…` |
-| `appSecret` | at startup | the app secret |
-| `chatId` | at startup | `oc_…`, the one chat it serves |
-| `allowedUser` | at startup | the one `ou_…` whose messages are accepted |
 
 Listening is not the group table. The adapter accepts a message from any channel the
 bot is in, as long as the author is `allowedUser` and the channel is not in
@@ -383,7 +373,7 @@ entry point, no shim.
 Everything identifying lives in `~/.config/agent-relay/`, never in the sources:
 
 - no platform ids, tenant names, channels or hosts are baked in — `AGENT_RELAY_ALLOWED_USER`
-  (feishu/slack) and `AGENT_RELAY_SLACK_CHANNEL` are required, a missing value fails
+  (slack) and `AGENT_RELAY_SLACK_CHANNEL` are required, a missing value fails
   the start instead of falling back to a default;
 - credentials live in `*.env` files, config dirs are `0700`, state/log/command files
   are `0600`;
