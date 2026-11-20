@@ -109,7 +109,7 @@ export const GROUP_PATTERN = /^[a-z][a-z0-9-]{0,15}$/;
 
 export function groupChannel(section, group) {
   const groups = section?.groups ?? {};
-  const fallbackName = section?.defaultGroup ?? "main";
+  const fallbackName = section?.defaultGroup ?? "system";
   const fallback = groups[fallbackName] ?? null;
   const name = String(group ?? "").trim();
   if (!name) return { chatId: fallback, group: fallbackName };

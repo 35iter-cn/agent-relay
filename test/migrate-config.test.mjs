@@ -70,20 +70,27 @@ function legacyDir({ slack = true, config = false } = {}) {
   return dir;
 }
 
-test("TC-MC1 the three legacy files map into one config with four groups", () => {
+test("TC-MC1 the three legacy files map into one config with three groups", () => {
   const config = buildConfig({
-    slackEnv: { SLACK_APP_TOKEN: "xapp-1", SLACK_BOT_TOKEN: "xoxb-1", SLACKD_ALLOWED_USER: "U-1", AGENT_RELAY_SLACK_CHANNEL: "C-main", SLACKD_BOT_USER: "U-bot" },
+    slackEnv: { SLACK_APP_TOKEN: "xapp-1", SLACK_BOT_TOKEN: "xoxb-1", SLACKD_ALLOWED_USER: "U-1", AGENT_RELAY_SLACK_CHANNEL: "C-system-legacy", SLACKD_BOT_USER: "U-bot" },
     feishuEnv: { FEISHU_APP_ID: "cli-1", FEISHU_APP_SECRET: "s", FEISHU_CHAT_ID: "oc-1", AGENT_RELAY_ALLOWED_USER: "ou-1" },
     cookies: { xoxc: "xoxc-1", xoxd: "xoxd-1" },
     groups: { loop: "C-loop", hours: "C-hours", system: "C-system" },
   });
-  assert.deepEqual(config.slack.groups, { loop: "C-loop", hours: "C-hours", system: "C-system", main: "C-main" });
-  assert.equal(config.slack.defaultGroup, "main");
+  assert.deepEqual(config.slack.groups, { loop: "C-loop", hours: "C-hours", system: "C-system" });
+  assert.equal(config.slack.defaultGroup, "system");
   assert.equal(config.slack.allowedUser, "U-1");
   assert.equal(config.slack.botUser, "U-bot");
   assert.deepEqual(config.slack.cookies, { xoxc: "xoxc-1", xoxd: "xoxd-1" });
   assert.equal(config.feishu.chatId, "oc-1");
   assert.equal(config.feishu.allowedUser, "ou-1");
+});
+
+test("TC-MC3 the legacy conversation channel fills an empty system group", () => {
+  const config = buildConfig({
+    slackEnv: { SLACK_APP_TOKEN: "xapp-1", SLACK_BOT_TOKEN: "xoxb-1", AGENT_RELAY_SLACK_CHANNEL: "C-legacy" },
+  });
+  assert.deepEqual(config.slack.groups, { system: "C-legacy" });
 });
 
 test("TC-MC2 an existing config.json is left alone, so a second run changes nothing", () => {

@@ -93,7 +93,7 @@ test("TC-CFG13 a missing or broken config.json is reported, not guessed at", () 
 });
 
 test("TC-CFG14 platform sections are read whole, credentials included", () => {
-  const dir = configDirWith({ slack: { botToken: "xoxb-1", groups: { main: "C1" }, defaultGroup: "main" } });
+  const dir = configDirWith({ slack: { botToken: "xoxb-1", groups: { system: "C1" }, defaultGroup: "system" } });
   const custom = createConfig({ env: { HOME: "/home/tester", AGENT_RELAY_CONFIG_DIR: dir } });
   assert.equal(custom.platform("slack").botToken, "xoxb-1");
   assert.equal(custom.platform("feishu"), null);

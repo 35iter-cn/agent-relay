@@ -8,7 +8,7 @@ import { writeJsonAtomic } from "../src/shared/json.mjs";
 import { ensurePrivateDir } from "../src/shared/fs.mjs";
 
 export const LEGACY_FILES = ["slack-app.env", "feishu.env", ".slack-xoxc.tmp"];
-export const DEFAULT_GROUPS = ["main"];
+export const DEFAULT_GROUPS = ["system"];
 
 function cookiesFrom(text) {
   const lines = String(text ?? "")
@@ -23,14 +23,14 @@ export function buildConfig({ slackEnv = {}, feishuEnv = {}, cookies = null, gro
   const config = {};
   if (slackEnv.SLACK_APP_TOKEN || slackEnv.SLACK_BOT_TOKEN || slackEnv.AGENT_RELAY_SLACK_CHANNEL) {
     const channels = { ...groups };
-    if (slackEnv.AGENT_RELAY_SLACK_CHANNEL) channels.main = slackEnv.AGENT_RELAY_SLACK_CHANNEL;
+    if (slackEnv.AGENT_RELAY_SLACK_CHANNEL && !channels.system) channels.system = slackEnv.AGENT_RELAY_SLACK_CHANNEL;
     config.slack = {
       appToken: slackEnv.SLACK_APP_TOKEN ?? "",
       botToken: slackEnv.SLACK_BOT_TOKEN ?? "",
       allowedUser: slackEnv.SLACKD_ALLOWED_USER ?? slackEnv.AGENT_RELAY_ALLOWED_USER ?? "",
       botUser: slackEnv.SLACKD_BOT_USER ?? "",
       cookies: cookies ?? { xoxc: "", xoxd: "" },
-      defaultGroup: "main",
+      defaultGroup: "system",
       groups: channels,
     };
   }

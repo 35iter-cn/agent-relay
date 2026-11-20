@@ -626,7 +626,7 @@ export function createPlatform({ config, log: baseLog }) {
         process.exit(1);
       }
       if (!appToken || !botToken || !channel || !allowedUser) {
-        log("error", "missing-config", config.configFile, !appToken ? "slack.appToken" : !botToken ? "slack.botToken" : !channel ? `slack.groups.${section.defaultGroup ?? "main"}` : "slack.allowedUser");
+        log("error", "missing-config", config.configFile, !appToken ? "slack.appToken" : !botToken ? "slack.botToken" : !channel ? `slack.groups.${section.defaultGroup ?? "system"}` : "slack.allowedUser");
         process.exit(1);
       }
       const denyProblemText = denyProblem(section.listen?.deny);
