@@ -1865,6 +1865,49 @@ test("TC-RPC21 two answer segments are both delivered, in order", async () => {
   assert.deepEqual(replies.map((reply) => reply.text), ["第一段", "第二段"]);
 });
 
+test("TC-RPC28 a trailing NOOP segment is not a message in a conversation", async () => {
+  const child = fakeRpcChild({ frames: [{ text: "说完的话", stopReason: "stop" }, { text: "NOOP", stopReason: "stop" }] });
+  const { core, replies } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await core.handle(inbound({ text: "一个问题" }));
+  await tick();
+  assert.deepEqual(replies.map((reply) => reply.text), ["说完的话"], "the quiet word is not a message of its own");
+});
+
+test("TC-RPC29 a conversation answered only NOOP posts nothing at all", async () => {
+  const child = fakeRpcChild({ frames: [{ text: "NOOP", stopReason: "stop" }] });
+  const { core, replies } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await core.handle(inbound({ text: "一个问题" }));
+  await tick();
+  assert.equal(replies.length, 0, "no empty bubble, and no emptyRunReply either");
+  const job = core.state.jobs[core.state.seen.m1];
+  assert.equal(job.status, "done", "a quiet turn is a healthy turn");
+  assert.equal(job.noop, true);
+});
+
+test("TC-RPC30 a quiet word the model dressed up is quiet in a conversation too", async () => {
+  const child = fakeRpcChild({ frames: [{ text: "  `noop`  ", stopReason: "stop" }] });
+  const { core, replies } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await core.handle(inbound({ text: "一个问题" }));
+  await tick();
+  assert.equal(replies.length, 0);
+});
+
+test("TC-RPC31 a NOOP line after a body is content, so the body still posts", async () => {
+  const child = fakeRpcChild({ frames: [{ text: "今天有 2 个 PR 挂了\nNOOP", stopReason: "stop" }] });
+  const { core, replies } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await core.handle(inbound({ text: "一个问题" }));
+  await tick();
+  assert.deepEqual(replies.map((reply) => reply.text), ["今天有 2 个 PR 挂了\nNOOP"]);
+});
+
+test("TC-RPC32 a run that produced nothing still reaches a conversation as a receipt", async () => {
+  const child = fakeRpcChild({ frames: [] });
+  const { core, replies } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await core.handle(inbound({ text: "一个问题" }));
+  await tick();
+  assert.match(replies.map((reply) => reply.text).join(""), /did not finish/, "the kernel's own empty-run marker is not the quiet word");
+});
+
 test("TC-RPC22 the text riding on a toolUse frame is not delivered", async () => {
   const child = fakeRpcChild({ frames: [{ text: "我先查一下", stopReason: "toolUse" }, { text: "查完了", stopReason: "stop" }] });
   const { core, replies } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
