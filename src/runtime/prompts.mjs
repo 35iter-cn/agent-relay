@@ -79,6 +79,30 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
     return render([rules, task].filter(Boolean).join("\n\n"), values({ platform, adapter, inbound }), "scheduled");
   }
 
+  function restartQueued({ request = 0, active = 0, queued = 0, deadlineLine = "" } = {}) {
+    return render(message("restart-queued.md"), { request: String(request), active: String(active), queued: String(queued), deadline_line: deadlineLine }, "restart-queued").trim();
+  }
+
+  function restartSuperseded({ request = 0, replaced = 0, deadlineLine = "" } = {}) {
+    return render(message("restart-superseded.md"), { request: String(request), replaced: String(replaced), deadline_line: deadlineLine }, "restart-superseded").trim();
+  }
+
+  function restartStopping({ request = 0, waited = 0, finished = 0 } = {}) {
+    return render(message("restart-stopping.md"), { request: String(request), waited: String(waited), finished: String(finished) }, "restart-stopping").trim();
+  }
+
+  function restartExpired({ request = 0, active = 0, waited = 0 } = {}) {
+    return render(message("restart-expired.md"), { request: String(request), active: String(active), waited: String(waited) }, "restart-expired").trim();
+  }
+
+  function restartCancelled({ request = 0, by = "" } = {}) {
+    return render(message("restart-cancelled.md"), { request: String(request), by_suffix: by ? ` by ${by}` : "" }, "restart-cancelled").trim();
+  }
+
+  function restartFailed({ request = 0, unit = "" } = {}) {
+    return render(message("restart-failed.md"), { request: String(request), unit }, "restart-failed").trim();
+  }
+
   function budgetNotice({ minutes = 0, left = 0, job = "" } = {}) {
     return render(message("budget-notice.md"), { minutes: String(minutes), left: String(left), job }, "budget-notice").trim();
   }
@@ -220,6 +244,12 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
     loopRunning,
     loopParked,
     terminated,
+    restartQueued,
+    restartSuperseded,
+    restartStopping,
+    restartExpired,
+    restartCancelled,
+    restartFailed,
     budgetNotice,
     budgetTerminated,
     keyWindowRejected,

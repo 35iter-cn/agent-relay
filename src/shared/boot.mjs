@@ -15,6 +15,7 @@ export function shouldAnnounceBoot(previousId, currentId) {
   return previousId !== currentId;
 }
 
-export function bootNoticeText(date, format) {
-  return `relay is up; the agent is ready for work\nonline since: ${format(date)}`;
+export function bootNoticeText(date, format, { restartLine = "" } = {}) {
+  const head = `relay is up; the agent is ready for work\nonline since: ${format(date)}`;
+  return restartLine ? `${head}\n${restartLine}` : head;
 }

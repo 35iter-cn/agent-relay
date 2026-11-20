@@ -103,6 +103,7 @@ export function createCore({ adapter, config, deps = {} }) {
   const keyWindowMaxMs = opts.budget.keyWindowMaxMs;
   const budgetGraceMs = opts.budget.graceMs;
   const stallCheckMs = opts.stall.checkMs;
+  const restartOpts = { ...(DEFAULTS.relay.restart ?? {}), ...(opts.restart ?? {}) };
   const deliveryBackoff = Number.isFinite(deps.deliveryRetryMs)
     ? DELIVERY_BACKOFF_MS.map(() => deps.deliveryRetryMs)
     : Array.isArray(deps.deliveryBackoffMs)
@@ -525,6 +526,164 @@ export function createCore({ adapter, config, deps = {} }) {
     return state.jobs?.[String(id ?? "")] ?? null;
   }
 
+  // A restart is a request the platform records, not a shell command: the daemon
+  // knows when its own rounds are done, and the new instance closes the loop.
+  function restartUnit(platform) {
+    return String(restartOpts.unit ?? "agent-relay@%p").replace("%p", platform);
+  }
+
+  function busyCounts() {
+    let running = 0;
+    let queued = 0;
+    let fresh = 0;
+    for (const job of Object.values(state.jobs ?? {})) {
+      if (!job) continue;
+      if (job.status === "running") running += 1;
+      else if (job.status === "queued") queued += 1;
+      else if (isFinished(job)) {
+        const at = Date.parse(job.updatedAt ?? "");
+        if (Number.isFinite(at) && now() - at < restartOpts.settleMs) fresh += 1;
+      }
+    }
+    return { running, queued, fresh, active: running + queued };
+  }
+
+  function finishedSince(requestedAt) {
+    const since = Date.parse(requestedAt ?? "");
+    if (!Number.isFinite(since)) return 0;
+    return Object.values(state.jobs ?? {}).filter((job) => job && isFinished(job) && Date.parse(job.updatedAt ?? "") >= since).length;
+  }
+
+  async function noticeRestart(text, event, fields = {}) {
+    appendLog({ event, ...fields });
+    try {
+      await notices.emit({ title: NOTICE_TITLES.restart, group: SYSTEM_GROUP, text });
+    } catch (error) {
+      log("warn", "restart-notice", String(error?.message ?? error));
+    }
+  }
+
+  // One slot, seq always grows: a newer request replaces the older one outright.
+  function requestRestart({ waitMs = restartOpts.waitMs, reason = "", by = "" } = {}) {
+    const previous = state.restart ?? null;
+    const seq = Number(previous?.seq ?? 0) + 1;
+    const at = now();
+    const asked = Number(waitMs);
+    const wait = Number.isFinite(asked) && asked > 0 ? asked : 0;
+    const deadlineAt = wait > 0 ? isoAt(at + wait) : null;
+    state.restart = {
+      seq,
+      status: "pending",
+      requestedAt: isoAt(at),
+      by: String(by ?? ""),
+      reason: String(reason ?? ""),
+      waitMs: wait,
+      deadlineAt,
+      startedAt: null,
+      completedAt: null,
+      waitedMs: 0,
+      finishedJobs: 0,
+      error: null,
+    };
+    save();
+    const busy = busyCounts();
+    const deadlineLine = deadlineAt ? `deadline ${localStamp(at + wait)}` : "no deadline";
+    const replaced = previous?.seq ?? null;
+    const text = replaced
+      ? prompts.restartSuperseded({ request: seq, replaced, deadlineLine })
+      : prompts.restartQueued({ request: seq, active: busy.active, queued: busy.queued, deadlineLine });
+    void noticeRestart(text, "restart-request", { request: seq, replaced, waitMs: wait });
+    return { request: seq, status: "pending", active: busy.active, queued: busy.queued, superseded: replaced, deadlineAt };
+  }
+
+  function cancelRestart({ by = "" } = {}) {
+    const req = state.restart;
+    if (!req) return { rejected: "nothing-pending" };
+    if (req.status === "stopping") return { rejected: "already-stopping" };
+    if (req.status !== "pending") return { rejected: "nothing-pending" };
+    req.status = "cancelled";
+    req.cancelledAt = isoNow();
+    req.cancelledBy = String(by ?? "");
+    save();
+    void noticeRestart(prompts.restartCancelled({ request: req.seq, by: String(by ?? "") }), "restart-cancel", { request: req.seq });
+    return { request: req.seq, outcome: "cancelled" };
+  }
+
+  function spawnRestartUnit(request) {
+    const platform = adapter.name;
+    const unit = restartUnit(platform);
+    const args = [
+      "--user",
+      "--collect",
+      `--unit=relay-restart-${platform}`,
+      "--description",
+      `relay restart ${platform}`,
+      "--setenv",
+      `HOME=${process.env.HOME ?? ""}`,
+      "--setenv",
+      `PATH=${process.env.PATH ?? ""}`,
+      config.cli ?? "agent-relay",
+      "restart",
+      "--execute",
+      "--platform",
+      platform,
+      "--unit",
+      unit,
+      "--request",
+      String(request),
+    ];
+    try {
+      const child = spawn("systemd-run", args, { detached: true, stdio: "ignore" });
+      if (typeof child?.on === "function") child.on("error", (error) => log("warn", "restart-systemd-run", String(error?.message ?? error)));
+      child?.unref?.();
+      return true;
+    } catch (error) {
+      log("warn", "restart-systemd-run", String(error?.message ?? error));
+      return false;
+    }
+  }
+
+  async function checkRestart() {
+    const req = state.restart;
+    if (!req || req.status !== "pending") return null;
+    const at = now();
+    if (req.deadlineAt && at >= Date.parse(req.deadlineAt)) {
+      const busy = busyCounts();
+      req.status = "expired";
+      req.waitedMs = at - Date.parse(req.requestedAt);
+      save();
+      await noticeRestart(prompts.restartExpired({ request: req.seq, active: busy.active, waited: Math.round(req.waitedMs / 60_000) }), "restart-expired", {
+        request: req.seq,
+        waitedMs: req.waitedMs,
+      });
+      return "expired";
+    }
+    const busy = busyCounts();
+    if (busy.active > 0 || busy.fresh > 0) return null;
+    req.status = "stopping";
+    req.startedAt = isoAt(at);
+    req.waitedMs = at - Date.parse(req.requestedAt);
+    req.finishedJobs = finishedSince(req.requestedAt);
+    save();
+    await noticeRestart(
+      prompts.restartStopping({ request: req.seq, waited: Math.round(req.waitedMs / 60_000), finished: req.finishedJobs }),
+      "restart-stopping",
+      { request: req.seq, waitedMs: req.waitedMs, finished: req.finishedJobs },
+    );
+    if (!spawnRestartUnit(req.seq)) {
+      // No systemd-run: restart anyway, but nothing is left to report the health check.
+      appendLog({ event: "restart-fallback", request: req.seq });
+      try {
+        const child = spawn("systemctl", ["--user", "restart", restartUnit(adapter.name)], { detached: true, stdio: "ignore" });
+        if (typeof child?.on === "function") child.on("error", (error) => log("warn", "restart-fallback", String(error?.message ?? error)));
+        child?.unref?.();
+      } catch (error) {
+        log("warn", "restart-fallback", String(error?.message ?? error));
+      }
+    }
+    return "stopping";
+  }
+
   async function cancelJob({ job: jobId } = {}) {
     const job = jobById(jobId);
     if (!job) return { rejected: "unknown" };
@@ -595,6 +754,12 @@ export function createCore({ adapter, config, deps = {} }) {
         } else if (command.op === "restart-job") {
           const outcome = await restartJob(command);
           appendLog({ event: "command-restart-job", ...outcome, job: String(command.job ?? "") });
+          result = outcome.rejected ? { ok: false, refused: outcome.rejected } : { ok: true, ...outcome };
+        } else if (command.op === "restart") {
+          const outcome = requestRestart(command);
+          result = { ok: true, ...outcome };
+        } else if (command.op === "restart-cancel") {
+          const outcome = cancelRestart(command);
           result = outcome.rejected ? { ok: false, refused: outcome.rejected } : { ok: true, ...outcome };
         } else if (command.op === "redeliver") {
           const outcome = await redeliver(command);
@@ -1481,8 +1646,16 @@ export function createCore({ adapter, config, deps = {} }) {
     }
     if (!shouldAnnounceBoot(state.meta.bootNotice?.bootId, bootId)) return false;
     const at = new Date(now());
+    const pending = state.restart?.status === "stopping" ? state.restart : null;
+    const restartLine = pending
+      ? `restart of request ${pending.seq} completed (waited ${Math.max(0, Math.round((Number(pending.waitedMs) || 0) / 60_000))} min, ${Number(pending.finishedJobs) || 0} round(s) finished)`
+      : "";
     try {
-      const notice = await notices.emit({ text: bootNoticeText(at, localStamp), title: NOTICE_TITLES.boot, group: SYSTEM_GROUP });
+      const notice = await notices.emit({ text: bootNoticeText(at, localStamp, { restartLine }), title: NOTICE_TITLES.boot, group: SYSTEM_GROUP });
+      if (pending) {
+        pending.status = "done";
+        pending.completedAt = isoNow();
+      }
       state.meta.bootNotice = { bootId, at: at.toISOString(), noticeId: notice.id };
       save();
       log("info", "boot-notice", bootId, notice.id);
@@ -2213,6 +2386,7 @@ export function createCore({ adapter, config, deps = {} }) {
     cancel,
     cancelJob,
     restartJob,
+    checkRestart,
     drainCommands,
     checkStall,
     checkLoopHealth,
