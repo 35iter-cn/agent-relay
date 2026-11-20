@@ -199,6 +199,18 @@ test("TC-RS8 a request that arrives during a restart becomes the next one", asyn
   assert.equal(core.state.restart.status, "pending");
 });
 
+test("TC-RS9b a service restart closes the slot even when no boot notice is posted", async () => {
+  // The boot id survives a service restart, so the boot notice usually does not fire;
+  // the slot still has to close, or `restart status` says "stopping" forever.
+  const { core, logEvents, send } = harness({ state: { meta: { schemaVersion: 5, jobSeq: 0, noticeSeq: 0, loopRoundStamps: [], bootNotice: { bootId: "b1", at: "2026-11-20T01:00:00.000Z" } } } });
+  await send({ op: "restart", waitMs: 3_600_000 });
+  await core.checkRestart();
+  assert.equal(core.state.restart.status, "stopping");
+  assert.equal(await core.onReady(), false, "no boot notice: the boot id did not change");
+  assert.equal(core.state.restart.status, "done");
+  assert.equal(logEvents().filter((event) => event.event === "restart-done").length, 1);
+});
+
 test("TC-RS9 the boot notice closes a requested restart", async () => {
   const { core, notices, send } = harness();
   await send({ op: "restart", waitMs: 3_600_000 });
@@ -270,33 +282,43 @@ test("TC-RS12 a refused wait value never reaches a daemon", async () => {
   assert.equal(sent.length, 0);
 });
 
-test("TC-RS13 a daemon that predates the verb is restarted directly, and a refusal stays a refusal", async () => {
+test("TC-RS13 a daemon that predates the verb is restarted detached, and a refusal stays a refusal", async () => {
   const { config } = harness({ restart: { healthMs: 50 } });
-  const pids = new Map([["agent-relay@feishu", "7000"], ["agent-relay@slack", "8000"]]);
-  const systemctl = async (...args) => {
-    const unit = args[1];
-    if (args[0] === "is-active") return unit === "agent-relay@slack" ? "active" : "inactive";
-    if (args[0] === "restart") {
-      pids.set(unit, String(Number(pids.get(unit) ?? "0") + 1));
-      return "";
-    }
-    return pids.get(unit) ?? "0";
-  };
+  const systemctl = async (...args) => (args[0] === "is-active" && args[1] === "agent-relay@slack" ? "active" : "inactive");
+  const spawned = [];
   const dispatch = async (cfg, platform) => {
     if (platform === "slack") return { delivered: true, result: { ok: false, refused: "unknown-command" } };
     return { delivered: false };
   };
-  const old = await runCli([], config, { sendCommand: dispatch, systemctl, PLATFORMS: ["feishu", "slack"], sleep: () => {} });
+  const old = await runCli([], config, {
+    sendCommand: dispatch,
+    systemctl,
+    PLATFORMS: ["feishu", "slack"],
+    spawn: (bin, args) => (spawned.push({ bin, args }), { on: () => {}, unref: () => {} }),
+  });
   assert.equal(old.code, 1);
   assert.match(old.out, /feishu: daemon not running; unit not active, skipped/);
-  assert.match(old.out, /slack: daemon not running; restarted directly \(pid 8000 -> 8001\)/);
-
+  assert.match(old.out, /slack: daemon not running; restarted directly \(detached\)/);
+  assert.equal(spawned.length, 1, "only the active unit is restarted");
+  assert.equal(spawned[0].bin, "systemd-run");
+  assert.ok(spawned[0].args.includes("--unit=relay-restart-slack"));
+  assert.deepEqual(spawned[0].args.slice(-8), ["restart", "--execute", "--platform", "slack", "--unit", "agent-relay@slack", "--request", "0"]);
   const refused = await runCli([], config, {
     sendCommand: async () => ({ delivered: true, result: { ok: false, refused: "already-stopping" } }),
     PLATFORMS: ["slack"],
   });
   assert.equal(refused.code, 3);
   assert.match(refused.out, /slack: refused: already-stopping/);
+});
+
+test("TC-RS13b cancelling nothing is a no-op, not a refusal", async () => {
+  const { config } = harness();
+  const result = await runCli(["cancel"], config, {
+    sendCommand: async () => ({ delivered: true, result: { ok: false, refused: "nothing-pending" } }),
+    PLATFORMS: ["slack"],
+  });
+  assert.equal(result.code, 0);
+  assert.match(result.out, /slack: nothing pending/);
 });
 
 test("TC-RS14 status reads each platform's slot, and cancel goes through the daemon", async () => {

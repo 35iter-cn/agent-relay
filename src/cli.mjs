@@ -18,7 +18,7 @@ import { jobHelp, scheduleHelp } from "./jobs/help.mjs";
 import { findRound, listRounds } from "./loops/history.mjs";
 import { withTitle } from "./notices/title.mjs";
 import { restartHelp } from "./restart/help.mjs";
-import { createSystemctl, executeRestart } from "./restart/execute.mjs";
+import { createSystemctl, executeRestart, spawnDetachedRestart } from "./restart/execute.mjs";
 
 export const LOOP_ACTIONS = new Set(["create", "list", "show", "update", "pause", "resume", "delete", "run", "log", "show-run", "doctor"]);
 export const JOB_ACTIONS = new Set(["cancel", "list", "redeliver", "restart"]);
@@ -367,21 +367,22 @@ export async function requestRestartAll(config, flags, deps = {}) {
   return { lines };
 }
 
-// No daemon answered: nothing is running that we could wait for, so restart the unit
-// ourselves — unless the unit is not even up, in which case there is nothing to do.
+// No daemon answered: nothing is running that we could wait for, so restart the unit —
+// detached, through the same executor, because this is exactly the first upgrade and the
+// unit we restart may be the one this command is running on.
 async function restartDirectOrSkip(config, platform, deps = {}) {
   const systemctl = deps.systemctl ?? createSystemctl();
   const unit = restartUnitFor(config, platform);
   const active = await systemctl("is-active", unit).catch(() => "");
   if (active !== "active") return "daemon not running; unit not active, skipped";
-  const result = await executeRestart({
+  const spawned = spawnDetachedRestart({
+    platform,
     unit,
     request: 0,
-    systemctl,
-    healthMs: config.options?.relay?.restart?.healthMs ?? 60_000,
-    sleep: deps.sleep,
-  }).catch(() => ({ code: 1 }));
-  return result.code === 0 ? `daemon not running; restarted directly (pid ${result.before} -> ${result.pid})` : "daemon not running; restart check failed";
+    spawn: deps.spawn,
+    log: deps.log ?? (() => {}),
+  });
+  return spawned ? "daemon not running; restarted directly (detached)" : "daemon not running; could not start the restart unit";
 }
 
 export async function handleRestartCommand(rest, config, log, deps = {}) {
@@ -402,7 +403,7 @@ export async function handleRestartCommand(rest, config, log, deps = {}) {
   }
   if (flags.execute) {
     const platform = typeof flags.platform === "string" ? flags.platform : "";
-    const unit = typeof flags.unit === "string" && flags.unit ? flags.unit : restartUnitFor(config, platform);
+    const unit = typeof flags.unit === "string" && flags.unit ? flags.unit : "";
     const request = Number(flags.request ?? 0) || 0;
     if (!unit) {
       process.stderr.write("refused: no-unit\n");
@@ -441,7 +442,7 @@ export async function handleRestartCommand(rest, config, log, deps = {}) {
         continue;
       }
       const waited = slot.requestedAt ? Math.max(0, Math.round((Date.now() - Date.parse(slot.requestedAt)) / 60_000)) : 0;
-      const deadline = slot.deadlineAt ? `deadline ${new Date(slot.deadlineAt).toISOString()}` : "no deadline";
+      const deadline = slot.deadlineAt ? `deadline ${localStamp(Date.parse(slot.deadlineAt))}` : "no deadline";
       if (slot.status === "pending") lines.push(`${platform}: request ${slot.seq} pending, ${waited} min waited, ${deadline}`);
       else if (slot.status === "stopping") lines.push(`${platform}: request ${slot.seq} stopping, ${Math.round((Number(slot.waitedMs) || 0) / 60_000)} min waited`);
       else if (slot.status === "done") lines.push(`${platform}: request ${slot.seq} done, ${Math.round((Number(slot.waitedMs) || 0) / 60_000)} min waited, ${Number(slot.finishedJobs) || 0} round(s) finished`);
@@ -465,6 +466,8 @@ export async function handleRestartCommand(rest, config, log, deps = {}) {
       if (sent?.result?.refused === "unknown-command") {
         lines.push(`${platform}: old daemon; nothing to cancel`);
         code = Math.max(code, 1);
+      } else if (sent?.result?.refused === "nothing-pending") {
+        lines.push(`${platform}: nothing pending`);
       } else if (sent?.result?.refused) {
         lines.push(`${platform}: refused: ${sent.result.refused}`);
         code = Math.max(code, 3);

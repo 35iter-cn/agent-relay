@@ -1,4 +1,8 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn as spawnProcess } from "node:child_process";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const CLI_PATH = join(dirname(fileURLToPath(import.meta.url)), "..", "cli.mjs");
 
 // The executor is the same CLI in a detached systemd unit, because the restart it
 // performs kills the daemon that asked for it. It reads no daemon state: systemctl
@@ -12,6 +16,44 @@ export function createSystemctl({ run = execFile } = {}) {
       });
     });
   };
+}
+
+export function detachedArgs({ platform, unit, request, cliPath = CLI_PATH, execPath = process.execPath, env = process.env }) {
+  return [
+    "--user",
+    "--collect",
+    `--unit=relay-restart-${platform}`,
+    "--description",
+    `relay restart ${platform}`,
+    "--setenv",
+    `HOME=${env.HOME ?? ""}`,
+    "--setenv",
+    `PATH=${env.PATH ?? ""}`,
+    execPath,
+    cliPath,
+    "restart",
+    "--execute",
+    "--platform",
+    platform,
+    "--unit",
+    unit,
+    "--request",
+    String(request),
+  ];
+}
+
+// systemd keeps the unit alive past the daemon it is restarting; a plain spawn would
+// die with it and take the health check — and the caller's receipt — with it.
+export function spawnDetachedRestart({ platform, unit, request, spawn = spawnProcess, log = () => {}, cliPath, execPath, env } = {}) {
+  try {
+    const child = spawn("systemd-run", detachedArgs({ platform, unit, request, cliPath, execPath, env }), { detached: true, stdio: "ignore" });
+    if (typeof child?.on === "function") child.on("error", (error) => log("warn", "restart-systemd-run", String(error?.message ?? error)));
+    child?.unref?.();
+    return true;
+  } catch (error) {
+    log("warn", "restart-systemd-run", String(error?.message ?? error));
+    return false;
+  }
 }
 
 // Returns 0 when the unit came back with a new MainPID, 1 when it did not.

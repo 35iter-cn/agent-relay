@@ -57,11 +57,10 @@ git -C ~/code/agent-relay pull --ff-only
 agent-relay restart
 ```
 
-`agent-relay restart` sends one request to every platform; each daemon restarts once
-it has nothing queued or running, and the new instance's boot notice closes the
-request. `--wait 0` waits with no deadline, and a second request replaces the first.
-Restarting kills the sessions running on that platform — expected, so make sure the
-reply goes out first, or let the daemon wait for the turn to end.
+`agent-relay restart` sends one request to every platform; each daemon waits until it
+has nothing queued or running, so the turn that asked for the restart finishes first.
+`--wait 0` waits with no deadline; a second request replaces the first. The restart
+itself kills that platform's sessions, new messages included, until it is back.
 
 ## Where things live
 

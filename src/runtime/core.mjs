@@ -10,6 +10,7 @@ import { pruneOldFiles } from "../shared/retention.mjs";
 import { ensurePrivateDir } from "../shared/fs.mjs";
 import { pruneState } from "../state/prune.mjs";
 import { bootNoticeText, readBootId, shouldAnnounceBoot } from "../shared/boot.mjs";
+import { spawnDetachedRestart } from "../restart/execute.mjs";
 import { createJob, ctxOf, isFinished, kindOf } from "../jobs/model.mjs";
 import { readProcStartTicks } from "../jobs/lease.mjs";
 import { DELIVERY_RETRY_INTERVAL_MS, DELIVERY_RETRY_WINDOW_MS, deliveryError, hashOf, isRetryable, planParts } from "../jobs/delivery.mjs";
@@ -606,37 +607,13 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   function spawnRestartUnit(request) {
-    const platform = adapter.name;
-    const unit = restartUnit(platform);
-    const args = [
-      "--user",
-      "--collect",
-      `--unit=relay-restart-${platform}`,
-      "--description",
-      `relay restart ${platform}`,
-      "--setenv",
-      `HOME=${process.env.HOME ?? ""}`,
-      "--setenv",
-      `PATH=${process.env.PATH ?? ""}`,
-      config.cli ?? "agent-relay",
-      "restart",
-      "--execute",
-      "--platform",
-      platform,
-      "--unit",
-      unit,
-      "--request",
-      String(request),
-    ];
-    try {
-      const child = spawn("systemd-run", args, { detached: true, stdio: "ignore" });
-      if (typeof child?.on === "function") child.on("error", (error) => log("warn", "restart-systemd-run", String(error?.message ?? error)));
-      child?.unref?.();
-      return true;
-    } catch (error) {
-      log("warn", "restart-systemd-run", String(error?.message ?? error));
-      return false;
-    }
+    return spawnDetachedRestart({
+      platform: adapter.name,
+      unit: restartUnit(adapter.name),
+      request,
+      spawn,
+      log,
+    });
   }
 
   async function checkRestart() {
@@ -1629,7 +1606,27 @@ export function createCore({ adapter, config, deps = {} }) {
     return legacy.length;
   }
 
+  // A restart that was asked for and never denied ends here, on the next start — even
+  // when no boot notice is posted (the boot id survives a service restart, so the
+  // notice only fires after a reboot; the slot must close either way).
+  function closeRestartSlot() {
+    const req = state.restart;
+    if (!req || req.status !== "stopping") return null;
+    req.status = "done";
+    req.completedAt = isoNow();
+    appendLog({ event: "restart-done", request: req.seq, waitedMs: req.waitedMs ?? 0, finished: req.finishedJobs ?? 0 });
+    save();
+    return req;
+  }
+
+  function restartLineFor(req) {
+    if (!req) return "";
+    const waited = Math.max(0, Math.round((Number(req.waitedMs) || 0) / 60_000));
+    return `restart of request ${req.seq} completed (waited ${waited} min, ${Number(req.finishedJobs) || 0} round(s) finished)`;
+  }
+
   async function onReady() {
+    const pending = closeRestartSlot();
     if (adapter.bootNotice === false) return false;
     const bootId = readBootIdImpl();
     if (!bootId) {
@@ -1638,16 +1635,8 @@ export function createCore({ adapter, config, deps = {} }) {
     }
     if (!shouldAnnounceBoot(state.meta.bootNotice?.bootId, bootId)) return false;
     const at = new Date(now());
-    const pending = state.restart?.status === "stopping" ? state.restart : null;
-    const restartLine = pending
-      ? `restart of request ${pending.seq} completed (waited ${Math.max(0, Math.round((Number(pending.waitedMs) || 0) / 60_000))} min, ${Number(pending.finishedJobs) || 0} round(s) finished)`
-      : "";
     try {
-      const notice = await notices.emit({ text: bootNoticeText(at, localStamp, { restartLine }), title: NOTICE_TITLES.boot, group: SYSTEM_GROUP });
-      if (pending) {
-        pending.status = "done";
-        pending.completedAt = isoNow();
-      }
+      const notice = await notices.emit({ text: bootNoticeText(at, localStamp, { restartLine: restartLineFor(pending) }), title: NOTICE_TITLES.boot, group: SYSTEM_GROUP });
       state.meta.bootNotice = { bootId, at: at.toISOString(), noticeId: notice.id };
       save();
       log("info", "boot-notice", bootId, notice.id);
