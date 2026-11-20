@@ -162,7 +162,8 @@ Design rules:
   message id is the reply target: replying to it is how a person reaches a round
   that is stuck, and the reply carries the notice id only when the notice itself
   is the thread root. Threaded, the reply would land on the busy conversation
-  key and queue behind the very round it is meant to stop.
+  key instead — interjecting, or queueing behind, the very round it is meant to
+  stop, rather than opening a session that can stop it.
 - **A stall notice is a question, not a fuse.** Silence earns a notice at the
   channel top, and the relay does nothing else until a person answers it: the
   round is never terminated because the notice went unanswered. Replying is the

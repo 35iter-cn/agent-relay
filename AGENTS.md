@@ -19,7 +19,7 @@ is not repeated here.
 - **`bun test` green before a push.** `bun run e2e` green when the change touches
   stall handling or termination.
 
-- **Anything the relay says on its own initiative goes through the notice entry**, and the notice says how a reply is handled: `reply: { mode: "conversation", key }` continues that conversation's session, everything else (`mode: "prompt"`, or no binding at all) keeps the `notice-<id>` behaviour. A loop round is a bound notice — delivering it any other way either loses the reply binding or hands the reply to the wrong session.
+- **Anything the relay says on its own initiative goes through the notice entry**, and the notice says how a reply is handled: `reply: { mode: "conversation", key }` continues that conversation's session, everything else (`mode: "prompt"`, or no binding at all) keeps the `notice-<id>` behaviour. A loop round is a bound notice — delivering it any other way either loses the reply binding or hands the reply to the wrong session. A reply that arrives while that session's turn is still running interjects it: the bound reply steers, with a receipt, instead of queueing a second job behind the turn it is meant to interrupt.
 - **A notice names its group.** The group table is configuration (`config.json`),
   never a constant in the sources; a group that is not configured falls back to
   `defaultGroup` with one warning instead of dropping the notice.
