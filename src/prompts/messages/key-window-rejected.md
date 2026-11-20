@@ -1,1 +1,1 @@
-这一轮没有开始：{{window}} 小时内这个会话已累计跑满 {{spent}} 分钟，超过 {{minutes}} 分钟上限。等窗口滑过去再发，或换一个会话。
+This round did not start: the conversation used {{spent}} of its {{minutes}} min within the last {{window}} h. Wait for the window to pass, or use another conversation.

@@ -1,14 +1,14 @@
-任务：{{task}}
-这一轮：{{round}}
-loop：{{loop}}
-轮次：{{round_label}}
-job：{{job}}
-key：{{key}}
-session：{{session}}
-开始：{{started}}（已运行 {{elapsed_minutes}} 分钟）
-卡在：{{stuck}}
-最后进展：{{last_progress}}（静默 {{silence_minutes}} 分钟）
+Task: {{task}}
+This round: {{round}}
+Loop: {{loop}}
+Round: {{round_label}}
+Job: {{job}}
+Key: {{key}}
+Session: {{session}}
+Started: {{started}} ({{elapsed_minutes}} min ago)
+Stuck: {{stuck}}
+Last progress: {{last_progress}} ({{silence_minutes}} min silent)
 
-回复本消息会新开一个会话处理它：说「杀掉」只终止，卡住的那段按最后一次进展截止入账；说「继续 <补充要求>」则先终止入账，再用这条会话重启。
+Replying does not resume this round: it stops the job from a separate handling turn. Reply "kill" to stop only, or "continue <what to change>" to stop and start a new round in the same agent session.
 {{disposition}}
-重启默认提示词：「{{restart_prompt}}」
+Default restart prompt: "{{restart_prompt}}"

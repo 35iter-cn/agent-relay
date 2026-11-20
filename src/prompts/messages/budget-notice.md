@@ -1,1 +1,1 @@
-这一轮已经跑到单轮上限 {{minutes}} 分钟的 75%，还剩约 {{left}} 分钟。到点会终止本轮并归档进度；job：{{job}}。
+This round is at 75% of its {{minutes}} min cap, about {{left}} min left. At the cap the round is stopped and its progress kept. Job {{job}}.

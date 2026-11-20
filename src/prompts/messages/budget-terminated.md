@@ -1,1 +1,1 @@
-已终止：本轮超过 {{minutes}} 分钟的单轮上限。前面的改动都还在，回复「继续」可以接着做。
+⏹ Stopped at the {{minutes}} min round cap ({{job}}). Changes so far are kept; the answer in flight was dropped. The session is kept, so a reply continues it.

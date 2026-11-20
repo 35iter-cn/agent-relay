@@ -1,10 +1,10 @@
 export const NOTICE_TITLES = {
-  boot: "启动",
-  stall: "卡住",
-  round: "播报",
-  pause: "自动暂停",
-  throttle: "限流",
-  notice: "通知",
+  boot: "boot",
+  stall: "stalled",
+  round: "round",
+  pause: "auto-paused",
+  throttle: "throttled",
+  notice: "notice",
 };
 
 export const TITLE_MARK = "📣📣📣";
