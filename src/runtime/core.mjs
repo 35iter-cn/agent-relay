@@ -587,12 +587,8 @@ export function createCore({ adapter, config, deps = {} }) {
     };
     save();
     const busy = busyCounts();
-    const deadlineLine = deadlineAt ? `deadline ${localStamp(at + wait)}` : "no deadline";
     const replaced = previous?.seq ?? null;
-    const text = replaced
-      ? prompts.restartSuperseded({ request: seq, replaced, deadlineLine })
-      : prompts.restartQueued({ request: seq, active: busy.active, queued: busy.queued, deadlineLine });
-    void noticeRestart(text, "restart-request", { request: seq, replaced, waitMs: wait });
+    appendLog({ event: "restart-request", request: seq, replaced, waitMs: wait, active: busy.active, queued: busy.queued, deadlineAt });
     return { request: seq, status: "pending", active: busy.active, queued: busy.queued, superseded: replaced, deadlineAt };
   }
 
@@ -605,7 +601,7 @@ export function createCore({ adapter, config, deps = {} }) {
     req.cancelledAt = isoNow();
     req.cancelledBy = String(by ?? "");
     save();
-    void noticeRestart(prompts.restartCancelled({ request: req.seq, by: String(by ?? "") }), "restart-cancel", { request: req.seq });
+    appendLog({ event: "restart-cancel", request: req.seq, by: String(by ?? "") });
     return { request: req.seq, outcome: "cancelled" };
   }
 
@@ -665,11 +661,7 @@ export function createCore({ adapter, config, deps = {} }) {
     req.waitedMs = at - Date.parse(req.requestedAt);
     req.finishedJobs = finishedSince(req.requestedAt);
     save();
-    await noticeRestart(
-      prompts.restartStopping({ request: req.seq, waited: Math.round(req.waitedMs / 60_000), finished: req.finishedJobs }),
-      "restart-stopping",
-      { request: req.seq, waitedMs: req.waitedMs, finished: req.finishedJobs },
-    );
+    appendLog({ event: "restart-stopping", request: req.seq, waitedMs: req.waitedMs, finished: req.finishedJobs });
     if (!spawnRestartUnit(req.seq)) {
       // No systemd-run: restart anyway, but nothing is left to report the health check.
       appendLog({ event: "restart-fallback", request: req.seq });

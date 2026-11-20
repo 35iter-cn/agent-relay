@@ -63,6 +63,18 @@ function harness({ state = {}, restart = {}, deps = {} } = {}) {
       ...deps,
     },
   });
+  function logEvents() {
+    const dir = join(config.logDir, "fake");
+    try {
+      return readdirSync(dir)
+        .flatMap((name) => readFileSync(join(dir, name), "utf8").trim().split("\n"))
+        .filter(Boolean)
+        .map((line) => JSON.parse(line));
+    } catch {
+      return [];
+    }
+  }
+
   async function send(command) {
     const dir = config.commandDir("fake");
     mkdirSync(dir, { recursive: true });
@@ -71,7 +83,7 @@ function harness({ state = {}, restart = {}, deps = {} } = {}) {
     await core.drainCommands();
     return JSON.parse(readFileSync(`${file}.result`, "utf8"));
   }
-  return { core, config, clock, notices, spawned, dir, adapter, send };
+  return { core, config, clock, notices, spawned, dir, adapter, send, logEvents };
 }
 
 function emptyStateLike() {
@@ -85,7 +97,7 @@ function runningJob(id = "job-1") {
 const noticeText = (notices) => notices.filter((item) => item.key === "notice").map((item) => item.text).join("\n");
 
 test("TC-RS1 a running round keeps the request pending and restarts nothing", async () => {
-  const { core, notices, spawned, send } = harness({ state: { jobs: { "job-1": runningJob() } } });
+  const { core, notices, spawned, send, logEvents } = harness({ state: { jobs: { "job-1": runningJob() } } });
   const outcome = core.state.restart;
   assert.equal(outcome, undefined);
   const sent = await send({ op: "restart", waitMs: 3_600_000 });
@@ -93,15 +105,20 @@ test("TC-RS1 a running round keeps the request pending and restarts nothing", as
   assert.equal(core.state.restart.status, "pending");
   assert.equal(await core.checkRestart(), null);
   assert.equal(spawned.length, 0, "nothing is restarted while a round runs");
-  assert.match(noticeText(notices), /Restart queued \(request 1\): 1 running, 0 queued/);
+  const request = logEvents().find((event) => event.event === "restart-request");
+  assert.equal(request.request, 1);
+  assert.equal(request.replaced, null);
+  assert.equal(request.active, 1);
+  assert.equal(noticeText(notices), "", "a queued request is not pushed to the user");
 });
 
-test("TC-RS2 an idle platform posts the restart and spawns the one-shot unit", async () => {
-  const { core, notices, spawned, send } = harness();
+test("TC-RS2 an idle platform logs the restart and spawns the one-shot unit", async () => {
+  const { core, notices, spawned, send, logEvents } = harness();
   await send({ op: "restart", waitMs: 3_600_000 });
   assert.equal(await core.checkRestart(), "stopping");
   assert.equal(core.state.restart.status, "stopping");
-  assert.match(noticeText(notices), /Restarting \(request 1\): nothing running, waited 0 min/);
+  assert.equal(logEvents().filter((event) => event.event === "restart-stopping").length, 1);
+  assert.equal(noticeText(notices), "", "the new instance's boot notice is the receipt, not a second message");
   assert.equal(spawned.length, 1);
   assert.equal(spawned[0].bin, "systemd-run");
   assert.ok(spawned[0].args.includes("--unit=relay-restart-fake"));
@@ -109,7 +126,7 @@ test("TC-RS2 an idle platform posts the restart and spawns the one-shot unit", a
 });
 
 test("TC-RS3 a newer request replaces the older one: one slot, seq grows, deadline resets", async () => {
-  const { core, clock, notices, send } = harness();
+  const { core, clock, logEvents, send } = harness();
   await send({ op: "restart", waitMs: 3_600_000 });
   const first = core.state.restart;
   clock.now += 5 * 60_000;
@@ -119,9 +136,8 @@ test("TC-RS3 a newer request replaces the older one: one slot, seq grows, deadli
   assert.equal(core.state.restart.seq, 2);
   assert.notEqual(core.state.restart.deadlineAt, first.deadlineAt);
   assert.equal(core.state.restart.deadlineAt, "2026-11-20T02:35:00.000Z");
-  assert.match(noticeText(notices), /Restart request 2 replaced 1/);
-  assert.equal(notices.filter((item) => /Restart queued/.test(item.text)).length, 1, "only the first request is announced as queued");
-  assert.equal(notices.filter((item) => /replaced 1/.test(item.text)).length, 1);
+  const requests = logEvents().filter((event) => event.event === "restart-request");
+  assert.deepEqual(requests.map((event) => [event.request, event.replaced]), [[1, null], [2, 1]]);
 });
 
 test("TC-RS4 --wait 0 has no deadline and never expires", async () => {
@@ -140,6 +156,7 @@ test("TC-RS5 a request that never finds an idle platform expires and restarts no
   assert.equal(await core.checkRestart(), "expired");
   assert.equal(core.state.restart.status, "expired");
   assert.match(noticeText(notices), /Restart dropped \(request 1\): 1 round\(s\) still running after 61 min/);
+  assert.ok(notices.some((item) => item.group === "system"), "expiry goes to the system group");
   assert.equal(spawned.length, 0);
 });
 
@@ -155,14 +172,15 @@ test("TC-RS6 a round that finished inside the settle window still blocks the res
 });
 
 test("TC-RS7 cancel drops a pending request and refuses one already stopping", async () => {
-  const { core, notices, send } = harness();
+  const { core, notices, send, logEvents } = harness();
   const pending = await send({ op: "restart", waitMs: 3_600_000 });
   assert.equal(pending.request, 1);
   const cancelled = await send({ op: "restart-cancel" });
   assert.equal(cancelled.outcome, "cancelled");
   assert.equal(core.state.restart.status, "cancelled");
   assert.equal(await core.checkRestart(), null);
-  assert.match(noticeText(notices), /Restart cancelled \(request 1\)/);
+  assert.equal(logEvents().filter((event) => event.event === "restart-cancel").length, 1);
+  assert.equal(noticeText(notices), "", "cancelling is the caller's own action");
 
   await send({ op: "restart", waitMs: 3_600_000 });
   await core.checkRestart();
@@ -296,18 +314,17 @@ test("TC-RS14 status reads each platform's slot, and cancel goes through the dae
   assert.match(cancelled.out, /slack: daemon not running; nothing to cancel/);
 });
 
-test("TC-RS15 the restart notices live in the system group and are English", async () => {
+test("TC-RS15 the restart shows a human two messages, both in the system group and in English", async () => {
   const { core, notices, send } = harness();
   await send({ op: "restart", waitMs: 3_600_000 });
   await core.checkRestart();
   await core.onReady();
   const rows = notices.filter((item) => item.key === "notice");
-  assert.ok(rows.length >= 3);
+  assert.equal(rows.length, 1, "only the boot notice is posted here");
   for (const row of rows) assert.equal(row.group, "system");
   for (const row of rows) assert.doesNotMatch(row.text, /[\u4e00-\u9fff]/);
+
   const templates = readdirSync(join(PROMPTS, "messages")).filter((name) => name.startsWith("restart-"));
-  assert.deepEqual(templates.sort(), ["restart-cancelled.md", "restart-expired.md", "restart-failed.md", "restart-queued.md", "restart-stopping.md", "restart-superseded.md"]);
-  for (const name of templates) {
-    assert.doesNotMatch(readFileSync(join(PROMPTS, "messages", name), "utf8"), /[\u4e00-\u9fff]/, `${name} is English`);
-  }
+  assert.deepEqual(templates.sort(), ["restart-expired.md", "restart-failed.md"], "only what needs a human is a template");
+  for (const name of templates) assert.doesNotMatch(readFileSync(join(PROMPTS, "messages", name), "utf8"), /[\u4e00-\u9fff]/, `${name} is English`);
 });
