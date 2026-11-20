@@ -32,7 +32,7 @@ for (const [name, body] of [
 const messagesDir = join(promptsDir, "messages");
 mkdirSync(messagesDir, { recursive: true });
 for (const [name, body] of [
-  ["stall-notice.md", "任务：{{task}}\njob：{{job}}\n最后进展：{{last_progress}}"],
+  ["stall-notice.md", "Task: {{task}}\nJob: {{job}}\nLast progress: {{last_progress}}"],
   ["restart.md", "RESTART"],
   ["interrupt.md", "INTERRUPTED"],
   ["empty-prompt.md", "EMPTY {{prompts_dir}}"],

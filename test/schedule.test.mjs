@@ -253,7 +253,7 @@ test("TC-SJ9 a scheduled turn that exits non-zero posts one line", async () => {
   const job = await core.scheduleJob({ ...brief({ name: "boom" }), dueAt: null });
   await tick();
   assert.equal(replies.length, 1);
-  assert.match(replies[0].text, /中途退出/);
+  assert.match(replies[0].text, /exited on its own/);
   assert.equal(core.state.jobs[job.job].status, "failed");
 });
 

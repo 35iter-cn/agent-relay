@@ -47,6 +47,10 @@ test("TC-P1 the prompt tree is six numbered sections and the messages the relay 
     "loop-running.md",
     "restart.md",
     "stall-notice.md",
+    "terminated-cancel.md",
+    "terminated-loop.md",
+    "terminated-restart.md",
+    "terminated-stalled.md",
   ]);
 });
 
@@ -153,18 +157,19 @@ test("TC-P9 a scheduled round sends only the origin line when the session exists
 test("TC-P10 the stall notice carries the job and drops empty label lines", () => {
   const prompts = builtin();
   const text = prompts.stallNotice({ task: "VPS 报告", job: "job-2300（name `vps-renew`）", lastProgress: "11-14 23:00" });
-  assert.match(text, /^任务：VPS 报告$/m);
-  assert.match(text, /^job：job-2300（name `vps-renew`）$/m);
-  assert.doesNotMatch(text, /^这一轮：$/m);
-  assert.doesNotMatch(text, /^卡在：$/m);
-  assert.match(text, /重启默认提示词：「上一轮似乎卡住了，继续，不要犯相同错误」/);
+  assert.match(text, /^Task: VPS 报告$/m);
+  assert.match(text, /^Job: job-2300（name `vps-renew`）$/m);
+  assert.doesNotMatch(text, /^This round:\s*$/m);
+  assert.doesNotMatch(text, /^Stuck:\s*$/m);
+  assert.match(text, /Default restart prompt: "The previous round was terminated\./);
+  assert.doesNotMatch(text, /计入|入账|billed/);
 });
 
 test("TC-P11 messages render without leftovers and carry their own text", () => {
   const prompts = builtin("/srv/relay-config");
-  assert.equal(prompts.restartPrompt(), "上一轮似乎卡住了，继续，不要犯相同错误");
-  assert.match(prompts.interrupt(), /被 relay 重启打断/);
-  assert.match(prompts.emptyPrompt(), /\/srv\/relay-config\/src\/prompts|sections\/ 与 messages\//);
+  assert.match(prompts.restartPrompt(), /^The previous round was terminated\./);
+  assert.match(prompts.interrupt(), /relay restarted this round/);
+  assert.match(prompts.emptyPrompt(), /\/srv\/relay-config\/src\/prompts|sections\/ and messages\//);
   assert.doesNotMatch(prompts.emptyPrompt(), /\{\{/);
 });
 
@@ -182,4 +187,34 @@ test("TC-P12 a user prompt directory overrides the built-in file", () => {
   const text = prompts.conversation({ platform: "slack", adapter, inbound });
   assert.match(text, /USER-COMMON/);
   assert.match(text, /BUILTIN-20-platform-slack\.md/);
+});
+
+test("TC-P13 a terminated receipt carries facts only: no stall claim, no billing", () => {
+  const prompts = builtin();
+  const idle = prompts.terminated({ action: "cancel", kind: "conversation", stalled: false, job: "job-7", elapsedMinutes: 1, from: "20:39:15", to: "20:40:34" });
+  assert.match(idle, /^⏹ Terminated on request \(job-7\)\. Ran 1 min, 20:39:15 → 20:40:34\./);
+  assert.doesNotMatch(idle, /stall|billed|计入/);
+  assert.match(idle, /answer in flight was dropped/);
+
+  const stalled = prompts.terminated({ action: "cancel", kind: "conversation", stalled: true, job: "job-8", elapsedMinutes: 8, from: "19:50:05", to: "19:58:12", lastProgress: "19:58:12" });
+  assert.match(stalled, /^⏹ Terminated after a stall notice \(job-8\)\. Last progress 19:58:12; ran 8 min/);
+  assert.doesNotMatch(stalled, /billed|计入/);
+
+  const restarted = prompts.terminated({ action: "restart", kind: "conversation", stalled: false, job: "job-9", elapsedMinutes: 12, from: "20:28:40", to: "20:40:34" });
+  assert.match(restarted, /^🔄 Terminated the previous round \(job-9\); a new round runs in the same session\./);
+
+  const loopRound = prompts.terminated({ action: "cancel", kind: "loop", stalled: false, job: "job-10", elapsedMinutes: 5, from: "21:55:02", to: "22:00:11" });
+  assert.match(loopRound, /The next tick still fires; this round counts as failed/);
+
+  for (const text of [idle, stalled, restarted, loopRound]) assert.doesNotMatch(text, /\{\{/);
+});
+
+test("TC-P14 an empty override falls back to the built-in message", () => {
+  const root = mkdtempSync(join(tmpdir(), "relay-prompts-empty-"));
+  const userDir = join(root, "user", "messages");
+  mkdirSync(userDir, { recursive: true });
+  writeFileSync(join(userDir, "terminated-cancel.md"), "   \n");
+  const prompts = createPrompts({ dir: PROMPTS, userDir: join(root, "user") });
+  const text = prompts.terminated({ action: "cancel", kind: "conversation", stalled: false, job: "job-11", elapsedMinutes: 0, from: "20:40:00", to: "20:40:00" });
+  assert.match(text, /^⏹ Terminated on request \(job-11\)\./);
 });

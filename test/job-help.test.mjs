@@ -47,7 +47,8 @@ test("TC-JH1 the job overview lists every verb and the timing rules", async () =
   assert.match(out, /limits:/);
   assert.match(out, /RUNAWAY_PER_HOUR/);
   assert.match(out, /exit:/);
-  assert.match(out, /只做处置，不要接着做原任务/);
+  assert.match(out, /handle the notice, don.t carry on with the task/);
+  assert.doesNotMatch(out, /[\u4e00-\u9fff]/);
 });
 
 test("TC-JH2 a single verb prints only its own block", async () => {
@@ -124,9 +125,10 @@ test("TC-JH4 the job help table and the dispatch table hold the same verbs", () 
   assert.deepEqual([...JOB_ACTIONS].sort(), helpVerbs.sort());
   for (const verb of ["help", ...helpVerbs]) assert.ok(jobHelp(verb), `${verb} renders`);
   assert.equal(jobHelp("nope"), null);
-  assert.match(jobHelp(), /三个词/);
-  assert.match(jobHelp(), /按 id 寻址/);
-  assert.doesNotMatch(jobHelp("cancel"), /三个词/);
+  assert.match(jobHelp(), /`schedule` queues a round/);
+  assert.match(jobHelp(), /addressed by id/);
+  assert.doesNotMatch(jobHelp("cancel"), /`schedule` queues a round/);
+  assert.doesNotMatch(jobHelp(), /[\u4e00-\u9fff]/);
 });
 
 function stateWith(jobs) {

@@ -35,7 +35,7 @@ test("TC-NT3 a conversation binding keeps no text or prompt, a prompt notice kee
     now: () => now(),
   });
   const bound = await service.emit({ text: "本轮检查完成", reply: { mode: "conversation", key: "loop-fake-1-r3" } });
-  assert.equal(posted[0], "📣📣📣 通知\n本轮检查完成");
+  assert.equal(posted[0], "📣📣📣 notice\n本轮检查完成");
   assert.equal(bound.messageId, "m-1");
   assert.deepEqual(bound.reply, { mode: "conversation", key: "loop-fake-1-r3" });
   assert.equal(bound.text, undefined);
@@ -62,9 +62,9 @@ test("TC-NT5 notices are never pruned on their own", () => {
   assert.equal(typeof createNoticeService({ state: emptyState(), save: () => {}, adapter: { name: "fake", postNotice: async () => ({}) } }).prune, "undefined");
 });
 
-test("TC-NT6 the title is the first line, defaults to 通知 and survives a bound notice", async () => {
+test("TC-NT6 the title is the first line, defaults to notice and survives a bound notice", async () => {
   assert.equal(withTitle("工时", "今日累计 8.8 小时"), "📣📣📣 工时\n今日累计 8.8 小时");
-  assert.equal(withTitle("", "x"), "📣📣📣 通知\nx");
+  assert.equal(withTitle("", "x"), "📣📣📣 notice\nx");
   assert.equal(withTitle("播报", "  "), "📣📣📣 播报");
   const posted = [];
   const service = createNoticeService({

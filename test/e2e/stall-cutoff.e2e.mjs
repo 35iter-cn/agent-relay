@@ -36,10 +36,14 @@ for (const [name, body] of [
 const messagesDir = join(promptsDir, "messages");
 mkdirSync(messagesDir, { recursive: true });
 for (const [name, body] of [
-  ["stall-notice.md", "任务：{{task}}\njob：{{job}}\n最后进展：{{last_progress}}"],
+  ["stall-notice.md", "Task: {{task}}\nJob: {{job}}\nLast progress: {{last_progress}}"],
   ["restart.md", "RESTART"],
   ["interrupt.md", "INTERRUPTED"],
   ["empty-prompt.md", "EMPTY {{prompts_dir}}"],
+  ["terminated-cancel.md", "TERMINATED-ON-REQUEST ({{job}}) {{elapsed_minutes}} min, {{from}} -> {{to}}"],
+  ["terminated-stalled.md", "TERMINATED-AFTER-STALL ({{job}}) last progress {{last_progress}}; {{elapsed_minutes}} min, {{from}} -> {{to}}"],
+  ["terminated-restart.md", "RESTARTED ({{job}}) {{elapsed_minutes}} min, {{from}} -> {{to}}"],
+  ["terminated-loop.md", "TERMINATED-LOOP ({{job}}) {{elapsed_minutes}} min, {{from}} -> {{to}}"],
 ]) writeFileSync(join(messagesDir, name), `${body}\n`);
 
 const repliesPath = join(dir, "replies.jsonl");
@@ -186,7 +190,15 @@ const events = readEvents();
 const usageRows = events.filter((event) => event.event === "usage");
 const doneEvent = events.find((event) => event.event === "done" && event.job === job?.id);
 
-check("E-1 the reply stamps the last progress, not the notice", replyText.includes(`到 ${localStamp(toolAt)}`) && !replyText.includes(`到 ${localStamp(Date.parse(stalled.stallNotifiedAt))}`), replyText.trim());
+check(
+  "E-1 the reply stamps the last progress, not the notice",
+  replyText.includes("TERMINATED-AFTER-STALL") &&
+    replyText.includes(`last progress ${localStamp(toolAt)}`) &&
+    !replyText.includes(localStamp(Date.parse(stalled.stallNotifiedAt))) &&
+    !/billed|计入/.test(replyText),
+  replyText.trim(),
+);
+check("E-1b the receipt reports the stop basis as progress", job?.cutoffBasis === "progress", `cutoffBasis=${job?.cutoffBasis}`);
 check("E-2 the job carries the cutoff equal to the last progress", job?.cutoffAt === isoAt(toolAt), `cutoffAt=${job?.cutoffAt} expected=${isoAt(toolAt)}`);
 check("E-3 no usage row is written for a cancelled run", usageRows.length === 0, JSON.stringify(usageRows));
 check(
