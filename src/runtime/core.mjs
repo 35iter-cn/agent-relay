@@ -53,11 +53,11 @@ export function oneLine(value, limit = STALL_SUBJECT_CHARS) {
 
 export function stallStuckText({ silenceMs = 0, reason = "silent", tool = null } = {}) {
   const minutes = Math.max(1, Math.round(Number(silenceMs) / 60_000));
-  if (reason !== "tool" || !tool) return `${minutes} 分钟没有进展`;
+  if (reason !== "tool" || !tool) return `${minutes} min without progress`;
   const detail = tool.head ? `：${oneLine(tool.head, STALL_COMMAND_CHARS)}` : "";
-  return `工具 ${tool.name ?? "未知"} 已运行 ${minutes} 分钟没有返回${detail}`;
+  return `tool ${tool.name ?? "unknown"} has been running ${minutes} min without returning${detail}`;
 }
-const STATUS_TEXT = { done: "完成", failed: "失败", retrying: "重试中", cancelled: "取消", interrupted: "被打断", queued: "排队", scheduled: "排定中" };
+const STATUS_TEXT = { done: "finished", failed: "failed", retrying: "retrying", cancelled: "cancelled", interrupted: "interrupted", queued: "queued", scheduled: "scheduled" };
 const PROMPT_MAX_BYTES = 8 * 1024;
 const DEFAULT_GRACE_MS = 6 * 3_600_000;
 const REAP_POLL_MS = 50;
@@ -226,7 +226,7 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   function jobLabel(job) {
-    return `${job.id}（name \`${job.inbound?.name ?? "-"}\`）`;
+    return `${job.id} (name \`${job.inbound?.name ?? "-"}\`)`;
   }
 
   function identityLines(job) {
@@ -236,7 +236,7 @@ export function createCore({ adapter, config, deps = {} }) {
     const elapsedMinutes = Math.max(1, Math.round((now() - started) / 60_000));
     return {
       loop: loop ? `${loop.title || loopId}（${loopId}）` : "",
-      round: job.loop ? `第 ${job.loop.round} 轮` : "",
+      round: job.loop ? String(job.loop.round) : "",
       key: job.key ?? "",
       session: job.session ?? "",
       started: localStamp(started),
@@ -345,7 +345,7 @@ export function createCore({ adapter, config, deps = {} }) {
     job.cutoffAt = isoAt(now());
     save();
     appendLog({ event: "budget-timeout", job: job.id, key: job.key, session: job.session, elapsedMs: elapsed, budgetMs: budget });
-    await terminate(job.key, prompts.budgetTerminated({ minutes: Math.round(budget / 60_000) }));
+    await terminate(job.key, prompts.budgetTerminated({ minutes: Math.round(budget / 60_000), job: job.id }));
     return "terminated";
   }
 
@@ -406,9 +406,8 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   function notRunningText(action, job) {
-    const status = STATUS_TEXT[job?.status] ?? "结束";
-    const verb = action === "cancel" ? "取消" : "重启";
-    return `当前没有在跑的任务：最近一条 job（${job.id}）已经${status}，不需要${verb}。`;
+    const status = STATUS_TEXT[job?.status] ?? "finished";
+    return `Nothing is running: the latest job (${job.id}) already ${status}. Nothing to ${action}.`;
   }
 
   async function finishStalled({ key, action, text }) {
@@ -425,7 +424,7 @@ export function createCore({ adapter, config, deps = {} }) {
       }
       appendLog({ event: "action", action, key, job: dropped.join(","), note: "dequeued" });
       if (action !== "restart") {
-        await replyToJob(active ?? latestJobFor(key), `已取消排队中的 ${dropped.length} 个任务（还没开始跑）。`);
+        await replyToJob(active ?? latestJobFor(key), `Dropped ${dropped.length} queued round(s) that had not started.`);
         return true;
       }
     }
@@ -434,13 +433,25 @@ export function createCore({ adapter, config, deps = {} }) {
     if (job) {
       const lastAt = Date.parse(job.lastActivityAt ?? "");
       const notifiedAt = Date.parse(job.stallNotifiedAt ?? "");
-      const at = [lastAt, notifiedAt].find(Number.isFinite) ?? now();
-      const startedAt = job.lease?.startedAt ?? Date.parse(job.createdAt);
-      const minutes = Math.max(0, Math.round((at - startedAt) / 60_000));
+      const stalled = [lastAt, notifiedAt].some(Number.isFinite);
+      const at = stalled ? [lastAt, notifiedAt].find(Number.isFinite) : now();
+      const from = roundStartedAt(job);
+      const minutes = Math.max(0, Math.round((at - from) / 60_000));
       job.stallCancelled = true;
       job.cutoffAt = isoAt(at);
+      job.cutoffBasis = stalled ? "progress" : "stop";
       save();
-      outcome = await terminate(key, `已终止：这一轮卡住了。工时按最后一次进展截止，计入 ${minutes} 分钟（到 ${localStamp(at)}）。`);
+      const note = prompts.terminated({
+        action,
+        kind: kindOf(job),
+        stalled,
+        job: job.id,
+        elapsedMinutes: minutes,
+        from: localStamp(from),
+        to: localStamp(at),
+        lastProgress: localStamp(at),
+      });
+      outcome = await terminate(key, note);
       job.updatedAt = isoNow();
       save();
       appendLog({ event: "action", action, key, job: job.id, outcome });
@@ -524,7 +535,7 @@ export function createCore({ adapter, config, deps = {} }) {
       job.error = "cancelled";
       job.updatedAt = isoNow();
       save();
-      await replyToJob(job, "已取消排队中的这一轮（还没开始跑）。");
+      await replyToJob(job, "Dropped this queued round; it had not started.");
       return { job: job.id, outcome: "cancelled" };
     }
     if (isFinished(job)) return { outcome: "nothing-to-cancel", job: job.id };
@@ -817,9 +828,9 @@ export function createCore({ adapter, config, deps = {} }) {
     const code = codeFor(text);
     if (code === "worker-exit") {
       const exit = /exit=([^\s]+)/.exec(body)?.[1] ?? "unknown";
-      return `这一轮中途退出了（退出码 ${exit}）。已完成的改动都在，回复「继续」接着做。`;
+      return `The round exited on its own (exit ${exit}). Finished work is kept; reply to continue.`;
     }
-    if (code === "worker-down") return "这一轮没能启动会话进程。已经记下，再发一次就会重试。";
+    if (code === "worker-down") return "The worker did not start. It is recorded; send the message again to retry.";
     if (code === "busy") return prompts.busyReply();
     if (kindOf(job) === "conversation") return prompts.emptyRunReply();
     return null;

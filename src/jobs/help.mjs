@@ -4,56 +4,58 @@ export const JOB_VERBS = [
   {
     verb: "list",
     usage: "job list --platform <p> [--key <k>]",
-    detail: ["列出在跑与刚结束的轮次：状态、job id、会话 key、name、到期时间、prompt 文件。", "还没跑的轮次在 `agent-relay schedule list` 里。"],
+    detail: ["rounds running now and just finished: status, job id, key, name, deadline, prompt file", "a round that has not started yet is `agent-relay schedule list`"],
   },
   {
     verb: "cancel",
     usage: "job cancel --platform <p> <job-id>",
     detail: [
-      "终止正在跑的那一轮：对整个进程组发 SIGTERM，宽限 5 秒后仍存活就 SIGKILL。",
-      "卡住的那段时间按最后一次进展截止入账。还没跑的会被拒（not-running），用 `agent-relay schedule cancel <name>`。",
+      "stops the running round: SIGTERM to the process group, SIGKILL after 5s",
+      "the record is cut at the last progress if a stall notice was sent, at the stop time otherwise",
+      "a round that has not started is refused (not-running): drop it with `agent-relay schedule cancel <name>`",
     ],
   },
   {
     verb: "restart",
-    usage: "job restart --platform <p> <job-id> [补充要求]",
+    usage: "job restart --platform <p> <job-id> [what to change]",
     detail: [
-      "先终止，再用原 session 派新一轮继续；默认提示词是「上一轮似乎卡住了，继续，不要犯相同错误」，带补充要求就接在后面。",
-      "只对在跑或卡住的那一轮成立；已结束的被拒（not-running）。答案回到原会话。",
+      "stops the round, then starts a new one in the same agent session",
+      "default prompt: `The previous round was terminated. Continue from where it stopped: don't redo finished work, don't repeat what failed.`, your words appended",
+      "only a running round; a finished one is refused (not-running). The reply lands in the original thread",
     ],
   },
   {
     verb: "redeliver",
     usage: "job redeliver --platform <p> <job-id|key>",
-    detail: ["把一条投递失败、内容还在的回复再发一次；已发出去的分片会跳过。", "内容已被回收会报 refused:nothing-to-redeliver。"],
+    detail: ["re-sends a reply whose delivery failed while its body is still in state", "a body already reclaimed is refused: nothing-to-redeliver"],
   },
-  { verb: "help", usage: "job help [<verb>]", detail: ["不带 <verb> 时列全部子命令；带时只看那一条。"] },
+  { verb: "help", usage: "job help [<verb>]", detail: ["every verb, or the one you name"] },
 ];
 
 const SECTIONS = [
   {
-    heading: "卡住的通知",
+    heading: "stall notices",
     lines: [
-      "收到卡住通知时只做处置，不要接着做原任务：说「杀掉」就 cancel，说「继续 <补充要求>」就 restart。",
-      "job id 写在通知正文里，照抄即可，不要猜。",
-      "不要自己 kill 进程，也不要手改账本：那样工时那一行就补不上了。",
+      "handle the notice, don't carry on with the task: \"kill\" → job cancel, \"continue <what to change>\" → job restart",
+      "the job id is in the notice body; copy it, don't guess",
+      "never kill the process yourself and never edit the ledger: relay then loses the stop time and the record",
     ],
   },
   {
     heading: "limits",
     lines: [
-      "同一个 key 每小时最多 12 次自发轮次（RUNAWAY_PER_HOUR），超了 rejected:runaway",
-      "一个会话同一时刻只跑一个 job；到期的 job 排在线程空闲之后，不插队",
-      "命令信封 10 分钟内有效，过期的命令文件被丢弃",
+      "12 self-started rounds per key per hour (RUNAWAY_PER_HOUR); over that, rejected:runaway",
+      "one job per conversation at a time; a due job queues behind the thread",
+      "a command envelope is valid for 10 minutes; stale command files are dropped",
     ],
   },
-  { heading: "exit", lines: ["0 已受理；1 daemon 没在跑；3 refused:<reason>"] },
+  { heading: "exit", lines: ["0 accepted | 1 daemon not running | 3 refused:<reason>"] },
 ];
 
 const SUMMARY = [
-  "三个词：`schedule` 排未来，`job` 管在跑与刚结束的，`loop` 管定期",
-  "job 一律按 id 寻址；name 只是别名",
-  "参数、闸、退出码见下面的表",
+  "`schedule` queues a round, `job` manages the running and the just-finished one",
+  "a job is addressed by id; the name is an alias",
+  "flags, gates and exit codes below",
 ];
 
 const SCHEDULE_VERBS = [
@@ -96,7 +98,7 @@ const SCHEDULE_SUMMARY = [
 ];
 
 export function jobHelp(verb = "") {
-  return renderHelp({ title: "agent-relay job — 在跑与刚结束的轮次", summary: SUMMARY, verbs: JOB_VERBS, sections: SECTIONS, verb });
+  return renderHelp({ title: "agent-relay job — running and just-finished rounds", summary: SUMMARY, verbs: JOB_VERBS, sections: SECTIONS, verb });
 }
 
 export function scheduleHelp(verb = "") {

@@ -1,12 +1,12 @@
-这一轮还在跑，已经 {{elapsed_minutes}} 分钟了（第 {{notice_count}} 次提醒）。
+Still running after {{elapsed_minutes}} min (reminder {{notice_count}}).
 
-loop：{{loop}}
-轮次：{{round_label}}
-job：{{job}}
-key：{{key}}
-session：{{session}}
-开始：{{started}}
+Loop: {{loop}}
+Round: {{round_label}}
+Job: {{job}}
+Key: {{key}}
+Session: {{session}}
+Started: {{started}}
 
-回复本消息会新开一个会话处理它：说「杀掉」就终止，说「继续 <补充要求>」就重启这一轮。
+Replying stops the job from a separate handling turn; it does not resume this round. Reply "kill" to stop, or "continue <what to change>" to stop and start a new round in the same agent session.
 {{park_line}}
-重启默认提示词：「{{restart_prompt}}」
+Default restart prompt: "{{restart_prompt}}"

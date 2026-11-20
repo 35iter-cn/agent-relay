@@ -1,1 +1,1 @@
-prompt 模板为空，本轮没有启动：检查 {{prompts_dir}} 下的 sections/ 与 messages/。
+The prompt template is empty, so the round did not start: check sections/ and messages/ under {{prompts_dir}}.

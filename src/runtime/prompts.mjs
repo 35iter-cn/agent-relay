@@ -15,7 +15,7 @@ export const ENTRY_FILE = {
 
 
 
-const EMPTY_LABEL_LINE = /^[^：:]+：\s*$/;
+const EMPTY_LABEL_LINE = /^[^：:]+[：:]\s*$/;
 
 export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agent-relay", configDir = "~/.config/agent-relay" }) {
   const cache = new Map();
@@ -26,7 +26,10 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
     const bases = userDir ? [userDir, dir] : [dir];
     for (const base of bases) {
       try {
-        text = readFileSync(join(base, name), "utf8");
+        const candidate = readFileSync(join(base, name), "utf8");
+        // An empty override is not an answer: fall through to the built-in file.
+        if (!candidate.trim()) continue;
+        text = candidate;
         break;
       } catch {}
     }
@@ -80,8 +83,26 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
     return render(message("budget-notice.md"), { minutes: String(minutes), left: String(left), job }, "budget-notice").trim();
   }
 
-  function budgetTerminated({ minutes = 0 } = {}) {
-    return render(message("budget-terminated.md"), { minutes: String(minutes) }, "budget-terminated").trim();
+  function budgetTerminated({ minutes = 0, job = "" } = {}) {
+    return render(message("budget-terminated.md"), { minutes: String(minutes), job }, "budget-terminated").trim();
+  }
+
+  // The receipt for a terminated round. Facts only: which round, how long it ran,
+  // and whether the stop was cut at the last progress or at the stop itself.
+  function terminated({ action = "cancel", kind = "conversation", stalled = false, job = "", elapsedMinutes = 0, from = "", to = "", lastProgress = "" } = {}) {
+    const name = action === "restart" ? "terminated-restart.md" : kind === "loop" ? "terminated-loop.md" : stalled ? "terminated-stalled.md" : "terminated-cancel.md";
+    const text = render(
+      message(name),
+      {
+        job,
+        elapsed_minutes: String(elapsedMinutes),
+        from,
+        to,
+        last_progress: lastProgress,
+      },
+      name,
+    );
+    return text.trim();
   }
 
   function keyWindowRejected({ minutes = 0, spent = 0, window = 0 } = {}) {
@@ -118,9 +139,9 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
 
   function stallDisposition({ kind = "conversation", roundCapMinutes = 0, parkMinutes = 0 } = {}) {
     if (kind === "loop") {
-      return `不会因这条通知自动终止：这一轮会一直挂着，到 ${parkMinutes} 分钟时自动停下并保留会话，那时另发一条可以恢复的通知。`;
+      return `This notice does not stop the round: it runs until ${parkMinutes} min, then it is stopped and the session kept, and a resumable notice follows.`;
     }
-    return `不会因这条通知自动终止：交互轮仍受 ${roundCapMinutes} 分钟单轮上限约束，到点按最后一次进展入账。`;
+    return `This notice does not stop the round: a user round still has its ${roundCapMinutes} min cap, which stops it and records the stop time.`;
   }
 
   function loopRunning({ job = "", identity = {}, elapsedMinutes = "", parkMinutes = "", count = "" } = {}) {
@@ -135,7 +156,7 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
         started: identity.started ?? "",
         elapsed_minutes: elapsedMinutes,
         park_minutes: parkMinutes,
-        park_line: parkMinutes > 0 ? `${parkMinutes} 分钟没人管就会自动停下并保留会话，那时另发一条可以恢复的通知。` : "没人在管就一直挂着。",
+        park_line: parkMinutes > 0 ? `${parkMinutes} min without a handler stops it and keeps the session, with a resumable notice.` : "Unhandled, it keeps running.",
         notice_count: count,
         restart_prompt: restartPrompt(),
       },
@@ -173,11 +194,11 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
   }
 
   function emptyRunReply() {
-    return "这条没处理完，回复「继续」，我接着做。";
+    return "That reply did not finish. Reply again and I will pick it up.";
   }
 
   function busyReply() {
-    return "这条没排上：会话一直在忙。已经停止重试，稍后再发一次，或回复「继续」。";
+    return "Not queued: the conversation stayed busy. Retries stopped; send it again later, or reply to continue.";
   }
 
   function interrupt() {
@@ -198,6 +219,7 @@ export function createPrompts({ dir, userDir = null, log = () => {}, cli = "agen
     stallNotice,
     loopRunning,
     loopParked,
+    terminated,
     budgetNotice,
     budgetTerminated,
     keyWindowRejected,

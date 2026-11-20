@@ -1,1 +1,1 @@
-⏸ 这一轮被 relay 重启打断：还在跑的进程已终止，会话与已完成的改动都保留，被打断那轮没发出来的输出不补发。直接回复这条消息就会接着之前的会话继续。
+⏸ relay restarted this round: the running process was stopped, the session and the finished work are kept, and the interrupted round's output is not re-sent. Reply to this message to carry on in the same session.

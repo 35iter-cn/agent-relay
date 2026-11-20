@@ -59,16 +59,19 @@ function harness({ spawn, replies = [], adapterOverrides = {}, state = emptyStat
   writeFileSync(join(sectionsDir, "32-entry-loop.md"), "LOOP {{loop_prompt}}");
   const messagesDir = join(promptsDir, "messages");
   mkdirSync(messagesDir, { recursive: true });
-  writeFileSync(join(messagesDir, "stall-notice.md"), "任务：{{task}}\n卡在：{{stuck}}\njob：{{job}}\nloop：{{loop}}\n轮次：{{round_label}}\nkey：{{key}}\nsession：{{session}}\n开始：{{started}}\n已运行：{{elapsed_minutes}}\n最后进展：{{last_progress}}\n静默：{{silence_minutes}}\n{{disposition}}\n重启默认提示词：「{{restart_prompt}}」");
-  writeFileSync(join(messagesDir, "restart.md"), "上一轮似乎卡住了，继续，不要犯相同错误");
-  writeFileSync(join(messagesDir, "interrupt.md"), "INTERRUPTED 直接回复这条消息就会接着之前的会话继续。");
+  writeFileSync(join(messagesDir, "stall-notice.md"), "Task: {{task}}\nStuck: {{stuck}}\nJob: {{job}}\nLoop: {{loop}}\nRound: {{round_label}}\nKey: {{key}}\nSession: {{session}}\nStarted: {{started}}\nElapsed: {{elapsed_minutes}}\nLast progress: {{last_progress}}\nSilent: {{silence_minutes}}\n{{disposition}}\nDefault restart prompt: \"{{restart_prompt}}\"");
+  writeFileSync(join(messagesDir, "restart.md"), "The previous round was terminated. Continue from where it stopped: don't redo finished work, don't repeat what failed.");
+  writeFileSync(join(messagesDir, "interrupt.md"), "INTERRUPTED reply to this message to carry on in the same session.");
   writeFileSync(join(messagesDir, "empty-prompt.md"), "EMPTY {{prompts_dir}}");
-  writeFileSync(join(messagesDir, "auto-terminated.md"), "已按默认处置终止：最后进展 {{last_progress}}，计入 {{minutes}} 分钟。");
-  writeFileSync(join(messagesDir, "budget-notice.md"), "本轮已用到上限 {{minutes}} 分钟的 75%，还剩约 {{left}} 分钟。");
-  writeFileSync(join(messagesDir, "budget-terminated.md"), "已终止：本轮超过 {{minutes}} 分钟的单轮上限。");
-  writeFileSync(join(messagesDir, "key-window-rejected.md"), "{{window}} 小时内这个会话已累计跑满 {{spent}} 分钟，超过 {{minutes}} 分钟上限。");
-  writeFileSync(join(messagesDir, "loop-running.md"), "还在跑：已 {{elapsed_minutes}} 分钟（第 {{notice_count}} 次提醒）\nloop：{{loop}}\n轮次：{{round_label}}\njob：{{job}}\nkey：{{key}}\nsession：{{session}}\n开始：{{started}}\n{{park_line}}");
-  writeFileSync(join(messagesDir, "loop-parked.md"), "已停下：跑了 {{elapsed_minutes}} 分钟\nloop：{{loop}}\n轮次：{{round_label}}\njob：{{job}}\nkey：{{key}}\nsession：{{session}}\n开始：{{started}}\n计入 {{billed_minutes}} 分钟（{{last_progress}}）\n回复本消息，说「继续 <补充要求>」就用这条会话接着跑。会话保留着。");
+  writeFileSync(join(messagesDir, "budget-notice.md"), "This round is at 75% of its {{minutes}} min cap, about {{left}} min left.");
+  writeFileSync(join(messagesDir, "budget-terminated.md"), "STOPPED-AT-CAP {{minutes}} ({{job}})");
+  writeFileSync(join(messagesDir, "key-window-rejected.md"), "KEY-WINDOW {{window}} {{spent}} {{minutes}}");
+  writeFileSync(join(messagesDir, "loop-running.md"), "Still running: {{elapsed_minutes}} (reminder {{notice_count}})\nLoop: {{loop}}\nRound: {{round_label}}\nJob: {{job}}\nKey: {{key}}\nSession: {{session}}\nStarted: {{started}}\n{{park_line}}");
+  writeFileSync(join(messagesDir, "loop-parked.md"), "Stopped: ran {{elapsed_minutes}} min\nLoop: {{loop}}\nRound: {{round_label}}\nJob: {{job}}\nKey: {{key}}\nSession: {{session}}\nStarted: {{started}}\nRan {{billed_minutes}} min (last progress {{last_progress}})\nReply \"continue <what to change>\" to carry on in this session; the session is kept.");
+  writeFileSync(join(messagesDir, "terminated-cancel.md"), "TERMINATED-ON-REQUEST ({{job}}) {{elapsed_minutes}} min, {{from}} → {{to}}; answer in flight was dropped");
+  writeFileSync(join(messagesDir, "terminated-stalled.md"), "TERMINATED-AFTER-STALL ({{job}}) last progress {{last_progress}}; {{elapsed_minutes}} min, {{from}} → {{to}}; answer in flight was dropped");
+  writeFileSync(join(messagesDir, "terminated-restart.md"), "RESTARTED ({{job}}) {{elapsed_minutes}} min, {{from}} → {{to}}; a new round runs in the same session");
+  writeFileSync(join(messagesDir, "terminated-loop.md"), "TERMINATED-LOOP ({{job}}) {{elapsed_minutes}} min, {{from}} → {{to}}; the next tick still fires");
   const configDir = join(dir, ".config/agent-relay");
   const config = {
     home: dir,
@@ -815,9 +818,8 @@ test("TC-21 a restart reports an interrupted run instead of rerunning it", async
   assert.equal(await core.recover(), 1);
   assert.equal(spawned, 0, "an interrupted run is never rerun automatically");
   assert.equal(replies.length, 1);
-  assert.match(replies[0].text, /INTERRUPTED|已终止/);
-  assert.match(replies[0].text, /已终止|INTERRUPTED/);
-  assert.match(replies[0].text, /直接回复/);
+  assert.match(replies[0].text, /^INTERRUPTED/);
+  assert.match(replies[0].text, /reply to this message to carry on/);
   assert.doesNotMatch(replies[0].text, /\/重跑/);
   const job = core.state.jobs["job-1"];
   assert.equal(job.status, "interrupted");
@@ -1074,7 +1076,7 @@ test("TC-ST15 a stall cancel drops a queued turn and says so", async () => {
   assert.equal(outcome.outcome, "cancelled");
   assert.equal(core.state.jobs["job-2"].status, "cancelled");
   assert.deepEqual(core.state.inbox, []);
-  assert.match(replies[0].text, /已取消排队中的这一轮/);
+  assert.match(replies[0].text, /Dropped this queued round/);
 });
 
 test("TC-40 attachments become @refs ahead of the prompt", async () => {
@@ -1100,10 +1102,10 @@ test("TC-BOOT a new boot id posts one boot notice and records it", async () => {
   assert.equal(await core.onReady(), true);
   assert.equal(await core.onReady(), false);
   assert.equal(replies.filter((item) => item.key === "notice").length, 1);
-  assert.match(replies[0].text, /系统已启动/);
+  assert.match(replies[0].text, /relay is up/);
   assert.equal(core.state.meta.bootNotice.bootId, "b1");
   const boot = core.state.notices[core.state.meta.bootNotice.noticeId];
-  assert.match(boot.text, /^📣📣📣 启动\n系统已启动/);
+  assert.match(boot.text, /^📣📣📣 boot\nrelay is up/);
   assert.equal(boot.prompt, "");
 });
 
@@ -1143,14 +1145,13 @@ test("TC-ST1 stall notice opens with the task and this round instead of ids", ()
     silenceMs: 12 * 60_000,
     local: "2026-10-26 15:20:12",
   });
-  assert.match(text, /^任务：实施 owner portal 门户可见性 specs 01$/m);
-  assert.match(text, /^这一轮：按计划，我授权你 op 可以一次将所有任务都执行完。$/m);
-  assert.match(text, /12 分钟没有进展/);
-  assert.doesNotMatch(text, /会话：|key：|pid：|th-abc|fs-th-abc/);
-  assert.match(text, /上一轮似乎卡住了，继续，不要犯相同错误/);
-  assert.match(text, /回复本消息/);
-  assert.match(text, /按最后一次进展截止入账/);
-  assert.doesNotMatch(text, /已用时间/);
+  assert.match(text, /^Task: 实施 owner portal 门户可见性 specs 01$/m);
+  assert.match(text, /^This round: 按计划，我授权你 op 可以一次将所有任务都执行完。$/m);
+  assert.match(text, /12 min without progress/);
+  assert.doesNotMatch(text, /^Session: \S|^Key: \S|pid:|th-abc|fs-th-abc/m);
+  assert.match(text, /The previous round was terminated\./);
+  assert.match(text, /Replying does not resume this round/);
+  assert.doesNotMatch(text, /入账|billed|计入/);
 });
 
 test("TC-ST22 the notice body stays readable: one line per subject, capped", () => {
@@ -1160,15 +1161,15 @@ test("TC-ST22 the notice body stays readable: one line per subject, capped", () 
     silenceMs: 3 * 60_000,
     local: "2026-10-26 15:20:12",
   });
-  const task = text.split("\n").find((line) => line.startsWith("任务："));
-  assert.equal(task.length, "任务：".length + 80 + 1);
+  const task = text.split("\n").find((line) => line.startsWith("Task:"));
+  assert.equal(task.length, "Task: ".length + 80 + 1);
   assert.match(task, /…$/);
-  assert.match(text, /^这一轮：first line$/m);
-  assert.equal(text.split("\n").filter((line) => line.startsWith("这一轮：")).length, 1);
+  assert.match(text, /^This round: first line$/m);
+  assert.equal(text.split("\n").filter((line) => line.startsWith("This round:")).length, 1);
 
   const same = stallText({ task: "同一个根", round: "同一个根", silenceMs: 60_000, local: "t" });
-  assert.equal(same.split("\n").filter((line) => line.startsWith("任务：")).length, 1);
-  assert.doesNotMatch(same, /这一轮：/);
+  assert.equal(same.split("\n").filter((line) => line.startsWith("Task:")).length, 1);
+  assert.doesNotMatch(same, /This round:/);
 });
 
 test("TC-ST2 a graceful terminate lets the plugin write the row and only posts the note", async () => {
@@ -1197,7 +1198,7 @@ test("TC-ST2 a graceful terminate lets the plugin write the row and only posts t
   writeFileSync(join(cmdDir, "1-cancel.json"), JSON.stringify({ op: "cancel-job", job: jobIdOf(core), at: new Date().toISOString() }));
   assert.equal(await core.drainCommands(), 1);
   await new Promise((resolve) => setTimeout(resolve, 10));
-  assert.match(replies.map((reply) => reply.text).join(""), /已终止|INTERRUPTED/);
+  assert.match(replies.map((reply) => reply.text).join(""), /TERMINATED-ON-REQUEST|INTERRUPTED/);
   const rows = readFileSync(join(ledger, `${sessionId}.jsonl`), "utf8").trim().split("\n").map((line) => JSON.parse(line));
   assert.equal(rows.filter((row) => row.salvaged).length, 0);
   void first;
@@ -1228,7 +1229,7 @@ test("TC-ST3 restart command kills the stuck run and dispatches the session agai
   assert.equal(await core.drainCommands(), 1);
   const restarted = Object.values(core.state.jobs).find((job) => job.auto === "stall-restart");
   assert.ok(restarted, "a restarted job is queued");
-  assert.match(restarted.inbound.text, /上一轮似乎卡住了，继续，不要犯相同错误/);
+  assert.match(restarted.inbound.text, /^The previous round was terminated\./);
   assert.match(restarted.inbound.text, /先换掉那条命令/);
   assert.equal(restarted.session, "fs-th-abc");
 });
@@ -1333,7 +1334,7 @@ test("TC-ST6 an unclosed tool call over the threshold notifies once with the too
   writeSession(sessionsDir, "fs-th-abc", [sessionAssistant(clock.now - 12 * 60_000, [{ id: "c1", arguments: { command: "dotnet build\n--no-restore" } }])]);
   await core.checkStall(job);
   const text = replies.map((reply) => reply.text).join("\n");
-  assert.match(text, /工具 bash 已运行 12 分钟没有返回/);
+  assert.match(text, /tool bash has been running 12 min without returning/);
   assert.match(text, /：dotnet build/);
   assert.equal(job.stallReason, "tool");
   assert.equal(job.stallTool, "bash");
@@ -1368,7 +1369,7 @@ test("TC-ST7 a tool argument no longer buys patience: the relay tells no tool fr
   assert.equal(replies.length, 1);
   assert.equal(job.stallReason, "tool");
   assert.equal(job.stallRunningMs, 12 * 60_000);
-  assert.match(replies[0].text, /工具 bash 已运行 12 分钟没有返回/);
+  assert.match(replies[0].text, /tool bash has been running 12 min without returning/);
 });
 
 test("TC-ST8 a silent session notifies from the session signal alone", async () => {
@@ -1378,7 +1379,7 @@ test("TC-ST8 a silent session notifies from the session signal alone", async () 
   await core.checkStall(job);
   assert.equal(replies.length, 1);
   assert.equal(job.stallReason, "silent");
-  assert.match(replies[0].text, /11 分钟没有进展/);
+  assert.match(replies[0].text, /11 min without progress/);
   assert.doesNotMatch(replies[0].text, /工具：/);
 });
 
@@ -1453,9 +1454,11 @@ test("TC-ST16 a stall cancel bills to the last progress, not to the notice", asy
   await core.drainCommands();
   await tick();
   const text = replies.map((reply) => reply.text).join("\n");
-  assert.match(text, /计入 8 分钟/);
-  assert.match(text, /到 2026-10-26 21:08:00/);
+  assert.match(text, /TERMINATED-AFTER-STALL/);
+  assert.match(text, /last progress 2026-10-26 21:08:00; 8 min, /);
+  assert.doesNotMatch(text, /billed|计入|stall cancel/);
   assert.equal(job.cutoffAt, isoAt(toolAt));
+  assert.equal(job.cutoffBasis, "progress");
   assert.equal(job.stallCancelled, true);
   const logDir = join(dir, "logs", "fake");
   const events = readdirSync(logDir).flatMap((name) => readFileSync(join(logDir, name), "utf8").trim().split("\n")).map((line) => JSON.parse(line));
@@ -1478,9 +1481,10 @@ test("TC-ST17 a silent stall cancel bills to the last session entry", async () =
   await core.drainCommands();
   await tick();
   const text = replies.map((reply) => reply.text).join("\n");
-  assert.match(text, /计入 9 分钟/);
-  assert.match(text, /到 2026-10-26 21:09:00/);
+  assert.match(text, /TERMINATED-AFTER-STALL/);
+  assert.match(text, /last progress 2026-10-26 21:09:00; 9 min, /);
   assert.equal(job.cutoffAt, isoAt(finishedAt));
+  assert.equal(job.cutoffBasis, "progress");
 });
 
 test("TC-ST18 a cancel without a stall record falls back to now", async () => {
@@ -1489,8 +1493,11 @@ test("TC-ST18 a cancel without a stall record falls back to now", async () => {
   assert.equal((await core.cancelJob({ job: jobIdOf(core) })).outcome, "cancelled");
   await tick();
   const text = replies.map((reply) => reply.text).join("\n");
-  assert.match(text, /计入 10 分钟/);
+  assert.match(text.replace(/\n/g, ""), /TERMINATED-ON-REQUEST/);
+  assert.match(text, /10 min, /);
+  assert.doesNotMatch(text, /last progress|stall|billed|计入/);
   assert.equal(job.cutoffAt, isoAt(clock.now));
+  assert.equal(job.cutoffBasis, "stop");
 });
 
 test("TC-ST19 a restart cuts the old job at its last progress and leaves the new one uncut", async () => {
@@ -1505,10 +1512,12 @@ test("TC-ST19 a restart cuts the old job at its last progress and leaves the new
   writeFileSync(join(cmdDir, "1-restart.json"), JSON.stringify({ op: "restart-job", job: jobIdOf(core), at: isoAt(clock.now) }));
   await core.drainCommands();
   assert.equal(job.cutoffAt, isoAt(toolAt));
+  assert.equal(job.cutoffBasis, "progress");
   assert.equal(job.stallCancelled, true);
   const restarted = Object.values(core.state.jobs).find((item) => item.auto === "stall-restart");
   assert.ok(restarted, "a restarted job is queued");
   assert.equal(restarted.cutoffAt, undefined);
+  assert.equal(restarted.cutoffBasis, undefined);
   assert.equal(restarted.stallCancelled, undefined);
 });
 
@@ -1782,7 +1791,7 @@ test("TC-ST23 an rpc worker's open tool carries the command head, so the notice 
   const job = core.state.jobs[core.state.seen.m1];
   assert.equal(job.activity.open.head, "md run --stack hao-local-debug");
   const text = stallText({ reason: "tool", tool: job.activity.open, silenceMs: 11 * 60_000, local: "2026-11-13 17:15:46" });
-  assert.match(text, /^卡在：.*md run --stack hao-local-debug/m);
+  assert.match(text, /^Stuck: .*md run --stack hao-local-debug/m);
   child.settle();
   await tick();
 });
@@ -1890,7 +1899,7 @@ test("TC-RPC8 an empty run reports the stop reason and an aborted run fails", as
   const first = harness({ spawn: () => empty, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
   await first.core.handle(inbound({ text: "做点事" }));
   await tick();
-  assert.equal(first.replies.at(-1).text, "这条没处理完，回复「继续」，我接着做。");
+  assert.match(first.replies.map((reply) => reply.text).join(""), /did not finish/);
 
   const aborted = fakeRpcChild({ answer: "一半", aborted: true });
   const second = harness({ spawn: () => aborted, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
@@ -2017,7 +2026,7 @@ test("TC-ST23 a notice stays at the channel top so its reply can reach the stuck
   await built.core.checkStall(job);
   const notice = built.replies.find((reply) => reply.key === "notice");
   assert.equal(notice.thread, null);
-  const stored = Object.values(built.core.state.notices).find((item) => item.text?.includes("卡"));
+  const stored = Object.values(built.core.state.notices).find((item) => item.text?.includes("stalled") || item.text?.includes("Stuck:"));
   assert.equal(stored?.thread, undefined);
   const reply = await built.core.handle({
     ...inbound({ text: "杀掉", dedupeId: "m-reply", replyIds: [stored.messageId] }),
@@ -2033,7 +2042,7 @@ test("TC-ST27 the round budget warns at three quarters and terminates at the cap
   await core.checkBudget(job);
   const warned = replies.filter((reply) => reply.key === "notice").map((reply) => reply.text).join("\n");
   assert.match(warned, /75%/);
-  assert.match(warned, /还剩约 22 分钟/);
+  assert.match(warned, /about 22 min left/);
   clock.now = startedAt + 69 * 60_000;
   await core.checkBudget(job);
   assert.equal(replies.filter((reply) => reply.key === "notice").length, 1);
@@ -2041,7 +2050,7 @@ test("TC-ST27 the round budget warns at three quarters and terminates at the cap
   writeSession(sessionsDir, "fs-th-abc", [sessionAssistant(clock.now - 60_000, [{ id: "c1" }]), sessionToolResult(clock.now - 30_000, "c1")]);
   await core.checkBudget(job);
   await tick();
-  assert.match(replies.map((reply) => reply.text).join("\n"), /已终止：本轮超过 90 分钟的单轮上限/);
+  assert.match(replies.map((reply) => reply.text).join(""), /STOPPED-AT-CAP 90 \(/);
   assert.ok(job.budgetEndedAt);
 });
 
@@ -2079,7 +2088,7 @@ test("TC-ST29 a key that already spent the six-hour window is refused before it 
   const rejected = Object.values(built.core.state.jobs).find((item) => item.key === "th-abc" && item.id !== "job-old");
   assert.equal(rejected.status, "failed");
   assert.equal(rejected.error, "key-budget");
-  assert.match(built.replies.map((reply) => reply.text).join("\n"), /6 小时内这个会话已累计跑满 181 分钟/);
+  assert.match(built.replies.map((reply) => reply.text).join("\n"), /KEY-WINDOW 6 181/);
 });
 
 async function loopRoundJob() {
@@ -2112,14 +2121,14 @@ test("TC-ST31 the stall notice names the loop, the round, the job, the key and h
   clock.now = job.startedAt + 12 * 60_000;
   await core.checkStall(job);
   const text = noticesOf(replies).at(-1);
-  assert.match(text, /loop：每日简报（daily-briefing-slack）/);
-  assert.match(text, /轮次：第 8 轮/);
-  assert.match(text, new RegExp(`job：${job.id}`));
-  assert.match(text, /key：th-abc/);
-  assert.match(text, /session：fs-th-abc/);
-  assert.match(text, /已运行：12/);
-  assert.match(text, /静默：12/);
-  assert.match(text, /到 360 分钟时自动停下并保留会话/);
+  assert.match(text, /Loop: 每日简报（daily-briefing-slack）/);
+  assert.match(text, /Round: 8/);
+  assert.match(text, new RegExp(`Job: ${job.id}`));
+  assert.match(text, /Key: th-abc/);
+  assert.match(text, /Session: fs-th-abc/);
+  assert.match(text, /Elapsed: 12/);
+  assert.match(text, /Silent: 12/);
+  assert.match(text, /does not stop the round: it runs until 360 min/);
 });
 
 test("TC-ST32 a loop round earns its first notice at 45 minutes, then one every two hours, three times at most", async () => {
@@ -2136,7 +2145,7 @@ test("TC-ST32 a loop round earns its first notice at 45 minutes, then one every 
   assert.equal(await at(284), null);
   assert.equal(await at(285), "noticed");
   assert.equal(job.loopNoticeCount, 3);
-  assert.equal(noticesOf(replies).filter((text) => text.includes("还在跑")).length, 3);
+  assert.equal(noticesOf(replies).filter((text) => text.includes("Still running")).length, 3);
   assert.equal(job.status, "running");
 });
 
@@ -2149,10 +2158,10 @@ test("TC-ST33 six hours in, a stuck loop round is parked with its session kept, 
   assert.ok(job.loopParkedAt);
   assert.notEqual(job.status, "running");
   const parked = noticesOf(replies).at(-1);
-  assert.match(parked, /已停下：跑了 360 分钟/);
-  assert.match(parked, /计入 300 分钟/);
-  assert.match(parked, /回复本消息|继续/);
-  assert.match(replies.map((reply) => reply.text).join("\n"), /会话保留着/);
+  assert.match(parked, /Stopped: ran 360 min/);
+  assert.match(parked, /Ran 300 min \(last progress /);
+  assert.match(parked, /Reply "continue/);
+  assert.match(replies.map((reply) => reply.text).join(""), /the session is kept/);
   const resumed = await core.restartJob({ job: job.id, text: "先只看 Slack" });
   assert.equal(resumed.outcome, "restarted");
   const next = core.state.jobs[resumed.next];
