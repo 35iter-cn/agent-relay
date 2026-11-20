@@ -271,7 +271,8 @@ whole file; no other key is read.
 | `botUser` | no | the bot's own user id, so its messages are dropped |
 | `cookies.xoxc` / `cookies.xoxd` | for thread reads and file downloads | the web session pair: `xoxc`, and the `d` cookie as `xoxd` |
 | `defaultGroup` | no, `main` | the group a notice falls back to |
-| `groups.<name>` | at startup | group name → channel id; the values are also the only channels listened to |
+| `groups.<name>` | at startup | group name → channel id; a notice's destination |
+| `listen.deny` | no, `[]` | channel ids the adapter ignores completely — including replies to a notice posted there |
 
 `feishu`:
 
@@ -281,6 +282,13 @@ whole file; no other key is read.
 | `appSecret` | at startup | the app secret |
 | `chatId` | at startup | `oc_…`, the one chat it serves |
 | `allowedUser` | at startup | the one `ou_…` whose messages are accepted |
+
+Listening is not the group table. The adapter accepts a message from any channel the
+bot is in, as long as the author is `allowedUser` and the channel is not in
+`listen.deny` — inviting the bot is what makes a channel usable, and a typo in `deny`
+(a value that is not a channel id) stops the daemon at startup instead of muting the
+wrong thing. A deny entry is all-or-nothing: nothing from that channel is read, not
+even a reply to a notice posted there.
 
 A group name matches `[a-z][a-z0-9-]{0,15}`. Every group is a peer: `main` is the
 conversation channel and the fallback named by `defaultGroup`; `system`, `loop` and
