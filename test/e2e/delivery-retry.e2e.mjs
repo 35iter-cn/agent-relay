@@ -210,7 +210,7 @@ check(
 
 mode = "outage";
 clock.now += 1_000;
-const toldBefore = readReplies().filter((item) => item.text.includes("没送出去")).length;
+const toldBefore = readReplies().filter((item) => item.text.includes("was not delivered")).length;
 await core.handle({ key: KEY, session: SESSION, dedupeId: "m5", authorId: "u-1", text: "e2e delivery gives up", chatId: "c1" });
 await tick(600);
 clock.now += 5 * 60_000 + 1;
@@ -218,7 +218,7 @@ await core.startDueDeliveries();
 await tick(200);
 
 const gaveUp = jobFor(KEY);
-const told = readReplies().filter((item) => item.text.includes("没送出去")).slice(toldBefore);
+const told = readReplies().filter((item) => item.text.includes("was not delivered")).slice(toldBefore);
 check(
   "E-9 past the five-minute window the job fails and the owner is told once, with the redeliver command",
   gaveUp?.status === "failed" && gaveUp?.error === "reply-failed" && told.length === 1 && told[0].text.includes("job redeliver"),

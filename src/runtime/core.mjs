@@ -13,7 +13,7 @@ import { bootNoticeText, readBootId, shouldAnnounceBoot } from "../shared/boot.m
 import { spawnDetachedRestart } from "../restart/execute.mjs";
 import { createJob, ctxOf, isFinished, kindOf } from "../jobs/model.mjs";
 import { readProcStartTicks } from "../jobs/lease.mjs";
-import { DELIVERY_RETRY_INTERVAL_MS, DELIVERY_RETRY_WINDOW_MS, deliveryError, hashOf, isRetryable, planParts } from "../jobs/delivery.mjs";
+import { DELIVERY_RETRY_INTERVAL_MS, DELIVERY_RETRY_WINDOW_MS, MEDIA_RETRY_INTERVAL_MS, MEDIA_RETRY_WINDOW_MS, deliveryError, hashOf, isRetryable, planParts } from "../jobs/delivery.mjs";
 import { extractMedia } from "../jobs/media.mjs";
 import { declaredTimeoutMs, headOfArgs, readSessionSignal, TOOL_GRACE_MS } from "../jobs/signals.mjs";
 import { nextAction } from "../jobs/next-action.mjs";
@@ -1374,7 +1374,7 @@ export function createCore({ adapter, config, deps = {} }) {
       const windowLeft = deliveryRetryWindowLeft(job);
       if (isRetryable(failure) && windowLeft > 0) {
         job.status = "retrying";
-        job.deliveryRetryAt = isoAt(now() + Math.min(DELIVERY_RETRY_INTERVAL_MS, windowLeft));
+        job.deliveryRetryAt = isoAt(now() + Math.min(retryPolicy(job).intervalMs, windowLeft));
         appendLog({ event: "delivery-retry-scheduled", job: job.id, key: job.key, at: job.deliveryRetryAt });
       } else {
         job.status = "failed";
@@ -1395,20 +1395,67 @@ export function createCore({ adapter, config, deps = {} }) {
     return uncertain.length ? Math.max(...uncertain.map((part) => part.i)) : null;
   }
 
+  // What is still missing: the reply body, its attachments, or both. Read from the same
+  // plan the delivery runs, so the notice can never disagree with the attempt.
+  function missingParts(job) {
+    if (job.answer == null) return [];
+    const media = mediaFor(job);
+    // The same input deliverParts uses: with an attachment the text is the stripped body,
+    // otherwise the chunk hashes would never match and every part would look missing.
+    const steps = planParts({
+      answer: media ? media.text : job.answer,
+      parts: job.parts ?? [],
+      chunkLimit: adapter.chunkLimit,
+      canEdit: typeof adapter.edit === "function",
+      media,
+    });
+    const kinds = new Set();
+    for (const step of steps) {
+      if (step.action === "skip") continue;
+      kinds.add(step.kind === "media" ? "media" : "text");
+    }
+    return [...kinds];
+  }
+
+  // An attachment that fails is an upload that failed, not a connection that blipped: give
+  // it a longer, slower window than the body, which is cheap to re-send.
+  function retryPolicy(job) {
+    const missing = missingParts(job);
+    const mediaOnly = missing.length === 1 && missing[0] === "media";
+    return mediaOnly
+      ? { windowMs: MEDIA_RETRY_WINDOW_MS, intervalMs: MEDIA_RETRY_INTERVAL_MS }
+      : { windowMs: DELIVERY_RETRY_WINDOW_MS, intervalMs: DELIVERY_RETRY_INTERVAL_MS };
+  }
+
   function deliveryRetryWindowLeft(job) {
     const firstFailedAt = Date.parse(job.deliveryFailedAt ?? "");
     if (!Number.isFinite(firstFailedAt)) return 0;
-    return DELIVERY_RETRY_WINDOW_MS - (now() - firstFailedAt);
+    return retryPolicy(job).windowMs - (now() - firstFailedAt);
+  }
+
+  function undeliveredText(job) {
+    const missing = missingParts(job);
+    const what =
+      missing.length === 0
+        ? ""
+        : missing.includes("media") && missing.includes("text")
+          ? "the reply and its image attachment"
+          : missing.includes("media")
+            ? "the image attachment"
+            : "the reply";
+    if (!what) return "";
+    return `Previous turn was not delivered: ${what} (${job.deliveryError ?? "platform connection failed"}). The body is kept; \`agent-relay job redeliver ${job.key}\` sends it again.`;
   }
 
   async function announceUndelivered(job) {
+    const text = undeliveredText(job);
+    if (!text) {
+      appendLog({ event: "delivery-gave-up", job: job.id, key: job.key, notified: false, note: "nothing-missing" });
+      return;
+    }
     try {
-      await notices.emit({
-        text: `上一轮的回复没送出去（${job.deliveryError ?? "平台连接失败"}）。内容还在，\`agent-relay job redeliver ${job.key}\` 可以补发。`,
-        group: SYSTEM_GROUP,
-        reply: { mode: "conversation", key: job.key },
-      });
-      appendLog({ event: "delivery-gave-up", job: job.id, key: job.key, notified: true });
+      await notices.emit({ text, group: SYSTEM_GROUP, reply: { mode: "conversation", key: job.key } });
+      appendLog({ event: "delivery-gave-up", job: job.id, key: job.key, notified: true, missing: missingParts(job).join(",") });
     } catch (error) {
       appendLog({ event: "delivery-notice-failed", job: job.id, key: job.key, error: String(error?.message ?? error) });
     }
