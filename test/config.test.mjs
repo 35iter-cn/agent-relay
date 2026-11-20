@@ -54,6 +54,7 @@ test("TC-CFG10 an empty relay section resolves to the shipped defaults", () => {
     stall: { silenceMs: 600_000, toolMs: 600_000, checkMs: 60_000 },
     budget: { keyWindowMs: 21_600_000, keyWindowMaxMs: 10_800_000, graceMs: 600_000 },
     loop: { noticeMs: 2_700_000, renoticeMs: 7_200_000, noticeMax: 3, parkMs: 21_600_000 },
+    restart: { waitMs: 3_600_000, settleMs: 15_000, healthMs: 60_000, unit: "agent-relay@%p" },
   });
 });
 
