@@ -20,6 +20,10 @@ export function isRetryable(error) {
 export const DELIVERY_RETRY_WINDOW_MS = 5 * 60_000;
 export const DELIVERY_RETRY_INTERVAL_MS = 30_000;
 
+// An upload that failed is not a connection that blipped: slower retries, longer window.
+export const MEDIA_RETRY_WINDOW_MS = 15 * 60_000;
+export const MEDIA_RETRY_INTERVAL_MS = 60_000;
+
 export function planParts({ answer, parts = [], chunkLimit, canEdit = false, media = null }) {
   if (answer == null) return [];
   const files = media?.files ?? [];

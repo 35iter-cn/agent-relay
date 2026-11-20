@@ -655,7 +655,7 @@ test("TC-RT2 the window closes after five minutes and the owner is told once", a
     deps: { deliveryRetryMs: 0, now: () => clock.now },
     adapterOverrides: {
       reply: async (ctx, text) => {
-        if (text.includes("没送出去")) return { messageId: "m-notice" };
+        if (text.includes("was not delivered")) return { messageId: "m-notice" };
         return null;
       },
       postNotice: async (text) => (replies.push({ key: "notice", text }), { messageId: "notice-1" }),
@@ -671,9 +671,70 @@ test("TC-RT2 the window closes after five minutes and the owner is told once", a
 
   assert.equal(job.status, "failed");
   assert.equal(job.error, "reply-failed");
-  const told = replies.filter((reply) => reply.text.includes("没送出去"));
+  const told = replies.filter((reply) => reply.text.includes("was not delivered"));
   assert.equal(told.length, 1, "只告知一次");
+  assert.match(told[0].text, /Previous turn was not delivered: the reply \(/);
   assert.match(told[0].text, /job redeliver th-abc/);
+});
+
+test("TC-MS1 a failed attachment gets its own window and names itself", async () => {
+  const clock = { now: Date.parse("2026-11-13T10:00:00.000Z") };
+  let shot = null;
+  const { core, replies, dir } = harness({
+    spawn: () => fakeChild({ stdout: `结论\n![](${shot})` }),
+    deps: { deliveryRetryMs: 0, now: () => clock.now },
+    adapterOverrides: {
+      reply: async (ctx, text) => {
+        if (text.includes("was not delivered")) return { messageId: "m-notice" };
+        return { messageId: "m-text" };
+      },
+      postMedia: async () => {
+        throw new Error("ECONNRESET");
+      },
+    },
+  });
+  shot = join(dir, "shot.png");
+  writeFileSync(shot, "png");
+  await core.handle(inbound());
+  await tick();
+  const job = core.state.jobs[core.state.seen.m1];
+  assert.equal(job.status, "retrying", "the text landed, the attachment did not");
+
+  clock.now += 5 * 60_000 + 1;
+  await core.startDueDeliveries();
+  assert.equal(job.status, "retrying", "an upload failure keeps 15 minutes, not 5");
+
+  clock.now = Date.parse(job.deliveryFailedAt) + 15 * 60_000 + 1;
+  await core.startDueDeliveries();
+  assert.equal(job.status, "failed");
+  const told = replies.filter((reply) => String(reply.text ?? "").includes("was not delivered"));
+  assert.equal(told.length, 1);
+  assert.match(told[0].text, /Previous turn was not delivered: the image attachment \(ECONNRESET\)/);
+  assert.doesNotMatch(told[0].text, /the reply \(/);
+});
+
+test("TC-MS2 a reply that never arrived and its attachment are both named", async () => {
+  const clock = { now: Date.parse("2026-11-13T10:00:00.000Z") };
+  let shot = null;
+  const { core, replies, dir } = harness({
+    spawn: () => fakeChild({ stdout: `结论\n![](${shot})` }),
+    deps: { deliveryRetryMs: 0, now: () => clock.now },
+    adapterOverrides: {
+      reply: async () => null,
+      postMedia: async () => ({ messageId: null }),
+    },
+  });
+  shot = join(dir, "shot.png");
+  writeFileSync(shot, "png");
+  await core.handle(inbound());
+  await tick();
+  const job = core.state.jobs[core.state.seen.m1];
+  clock.now += 5 * 60_000 + 1;
+  await core.startDueDeliveries();
+  // the bound notice itself needs a working reply path to be seen
+  assert.equal(job.status, "failed");
+  const logged = core.state.jobs[core.state.seen.m1];
+  assert.equal(logged.error, "reply-failed");
 });
 
 test("TC-RT3 a delivery waits while the same key is busy", async () => {
