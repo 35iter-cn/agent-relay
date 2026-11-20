@@ -606,13 +606,14 @@ export function createCore({ adapter, config, deps = {} }) {
     return { request: req.seq, outcome: "cancelled" };
   }
 
-  function spawnRestartUnit(request) {
+  async function spawnRestartUnit(request) {
     return spawnDetachedRestart({
       platform: adapter.name,
       unit: restartUnit(adapter.name),
       request,
       spawn,
       log,
+      exitMs: restartOpts.spawnMs,
     });
   }
 
@@ -639,7 +640,7 @@ export function createCore({ adapter, config, deps = {} }) {
     req.finishedJobs = finishedSince(req.requestedAt);
     save();
     appendLog({ event: "restart-stopping", request: req.seq, waitedMs: req.waitedMs, finished: req.finishedJobs });
-    if (!spawnRestartUnit(req.seq)) {
+    if (!(await spawnRestartUnit(req.seq))) {
       // No systemd-run: restart anyway, but nothing is left to report the health check.
       appendLog({ event: "restart-fallback", request: req.seq });
       try {

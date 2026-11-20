@@ -375,12 +375,13 @@ async function restartDirectOrSkip(config, platform, deps = {}, reason = "daemon
   const unit = restartUnitFor(config, platform);
   const active = await systemctl("is-active", unit).catch(() => "");
   if (active !== "active") return `${reason}; unit not active, skipped`;
-  const spawned = spawnDetachedRestart({
+  const spawned = await spawnDetachedRestart({
     platform,
     unit,
     request: 0,
     spawn: deps.spawn,
     log: deps.log ?? (() => {}),
+    exitMs: config.options?.relay?.restart?.spawnMs,
   });
   return spawned ? `${reason}; restarted directly (detached)` : `${reason}; could not start the restart unit`;
 }

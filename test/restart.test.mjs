@@ -7,7 +7,7 @@ import { fileURLToPath } from "node:url";
 import { createCore } from "../src/runtime/core.mjs";
 import { DEFAULTS } from "../src/config.mjs";
 import { handleRestartCommand } from "../src/cli.mjs";
-import { executeRestart } from "../src/restart/execute.mjs";
+import { executeRestart, spawnDetachedRestart } from "../src/restart/execute.mjs";
 import { restartHelp } from "../src/restart/help.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -59,7 +59,7 @@ function harness({ state = {}, restart = {}, deps = {} } = {}) {
       log: () => {},
       spawn: (bin, args) => {
         spawned.push({ bin, args });
-        return { on: () => {}, unref: () => {} };
+        return fakeChild();
       },
       ...deps,
     },
@@ -93,6 +93,20 @@ function emptyStateLike() {
 
 function runningJob(id = "job-1") {
   return { id, status: "running", createdAt: "2026-11-20T01:50:00.000Z", updatedAt: "2026-11-20T01:59:00.000Z", kind: "conversation", key: "th-1" };
+}
+
+// systemd-run exits as soon as systemd owns the job; a double that never reports its
+// exit would leave the caller waiting for a process that already succeeded.
+function fakeChild({ code = 0, signal = null, silent = false } = {}) {
+  const child = {
+    on(event, callback) {
+      if (!silent && event === "close") setImmediate(() => callback(code, signal));
+      return child;
+    },
+    unref: () => child,
+    kill: () => true,
+  };
+  return child;
 }
 
 const noticeText = (notices) => notices.filter((item) => item.key === "notice").map((item) => item.text).join("\n");
@@ -295,7 +309,7 @@ test("TC-RS13 a daemon that predates the verb is restarted detached, and a refus
     sendCommand: dispatch,
     systemctl,
     PLATFORMS: ["feishu", "slack"],
-    spawn: (bin, args) => (spawned.push({ bin, args }), { on: () => {}, unref: () => {} }),
+    spawn: (bin, args) => (spawned.push({ bin, args }), fakeChild()),
   });
   assert.equal(old.code, 1);
   assert.match(old.out, /feishu: daemon not running; unit not active, skipped/);
@@ -356,4 +370,73 @@ test("TC-RS16 the help says the command returns before the restart happens", () 
   const text = restartHelp("restart");
   assert.match(text, /returns as soon as the request is queued; the waiting happens in the daemon/);
   assert.doesNotMatch(text, /[\u4e00-\u9fff]/);
+});
+
+test("TC-RS17 a detached restart settles on systemd-run's exit, not on the spawn call", async () => {
+  const calls = [];
+  const logged = [];
+  const ok = await spawnDetachedRestart({
+    platform: "fake",
+    unit: "agent-relay@fake",
+    request: 1,
+    spawn: (bin, args) => (calls.push({ bin, args }), fakeChild({ code: 0 })),
+    log: (level, tag, message) => logged.push({ level, tag, message }),
+  });
+  assert.equal(ok, true);
+  assert.ok(calls[0].args.includes("--no-block"), "systemd-run hands the job over instead of running it in the caller");
+
+  const failed = await spawnDetachedRestart({
+    platform: "fake",
+    unit: "agent-relay@fake",
+    request: 1,
+    spawn: () => fakeChild({ code: 1 }),
+    log: (level, tag, message) => logged.push({ level, tag, message }),
+  });
+  assert.equal(failed, false, "a systemd-run that failed is a restart that did not happen");
+  assert.match(logged.at(-1).message, /systemd-run exited with 1/);
+
+  const silent = await spawnDetachedRestart({
+    platform: "fake",
+    unit: "agent-relay@fake",
+    request: 1,
+    spawn: () => fakeChild({ silent: true }),
+    exitMs: 5,
+  });
+  assert.equal(silent, false, "a systemd-run that never returns is not a success either");
+
+  const threw = await spawnDetachedRestart({
+    platform: "fake",
+    unit: "agent-relay@fake",
+    request: 1,
+    spawn: () => {
+      throw new Error("ENOENT");
+    },
+  });
+  assert.equal(threw, false);
+});
+
+test("TC-RS18 a direct restart nobody registered is reported, not printed as done", async () => {
+  const { config } = harness({ restart: { spawnMs: 500 } });
+  const spawned = [];
+  const result = await runCli([], config, {
+    sendCommand: async () => ({ delivered: true, result: { ok: false, refused: "unknown-command" } }),
+    systemctl: async () => "active",
+    PLATFORMS: ["slack"],
+    spawn: (bin, args) => (spawned.push({ bin, args }), fakeChild({ code: 1 })),
+  });
+  assert.equal(result.code, 1);
+  assert.match(result.out, /slack: daemon too old for this verb; could not start the restart unit/);
+  assert.doesNotMatch(result.out, /restarted directly/);
+  assert.equal(spawned.length, 1);
+});
+
+test("TC-RS19 a restart unit that never got registered falls back to the unit itself", async () => {
+  const calls = [];
+  const { core, send, logEvents } = harness({
+    deps: { spawn: (bin, args) => (calls.push({ bin, args }), fakeChild({ code: 1 })) },
+  });
+  await send({ op: "restart", waitMs: 3_600_000 });
+  assert.equal(await core.checkRestart(), "stopping");
+  assert.equal(logEvents().filter((event) => event.event === "restart-fallback").length, 1);
+  assert.deepEqual(calls.map((call) => call.bin), ["systemd-run", "systemctl"], "the fallback restarts the unit itself");
 });
