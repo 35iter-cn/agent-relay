@@ -49,7 +49,9 @@ That means:
 
 The stall alert is the one notice the relay raises by itself; its text is
 `src/prompts/messages/stall-notice.md`, and it carries the job id so a reply can act
-on it directly.
+on it directly. The receipt that follows a `job cancel` or `job restart` is not a
+notice — it replaces that round's answer — and its four wordings live in
+`src/prompts/messages/terminated-*.md`.
 
 ## Scheduled turns
 
@@ -170,7 +172,8 @@ Design rules:
   only way to end it, and the reply reaches `restart`, which bills the stuck
   round to its last progress and reopens the same session.
 - **A user round has a wall-clock budget; a loop round has a backstop instead.**
-  A conversation round is capped at 90 minutes and billed to its last progress.
+  A conversation round is capped at 90 minutes and cut at the moment the budget
+  expires; its receipt records that stop time.
   A loop round is never cut for being slow: it earns a notice at 45 minutes, is
   reminded every two hours up to three times, and at six hours is parked —
   stopped with its session kept, so `job restart` resumes it rather than
