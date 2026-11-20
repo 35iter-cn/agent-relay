@@ -270,7 +270,7 @@ whole file; no other key is read.
 | `allowedUser` | at startup | the one Slack user id whose messages are accepted |
 | `botUser` | no | the bot's own user id, so its messages are dropped |
 | `cookies.xoxc` / `cookies.xoxd` | for thread reads and file downloads | the web session pair: `xoxc`, and the `d` cookie as `xoxd` |
-| `defaultGroup` | no, `main` | the group a notice falls back to |
+| `defaultGroup` | no, `system` | the group a notice falls back to |
 | `groups.<name>` | at startup | group name → channel id; a notice's destination |
 | `listen.deny` | no, `[]` | channel ids the adapter ignores completely — including replies to a notice posted there |
 
@@ -290,11 +290,12 @@ bot is in, as long as the author is `allowedUser` and the channel is not in
 wrong thing. A deny entry is all-or-nothing: nothing from that channel is read, not
 even a reply to a notice posted there.
 
-A group name matches `[a-z][a-z0-9-]{0,15}`. Every group is a peer: `main` is the
-conversation channel and the fallback named by `defaultGroup`; `system`, `loop` and
-`hours` each carry one kind of notice. A sender names its group (`--to system`), and a
-name that is missing from the table falls back to `defaultGroup` with one warning — a
-notice is never lost to a typo.
+A group name matches `[a-z][a-z0-9-]{0,15}`. The table holds notice destinations only:
+`system`, `loop` and `hours`, each carrying one kind of notice. A sender names its group
+(`--to system`), and a name that is missing from the table falls back to `defaultGroup`
+(`system` unless configured) with one warning — a notice is never lost to a typo. A
+conversation needs no group: a reply goes back to the thread the message came from, so
+no entry in the table is "the channel I talk in".
 
 Tuning values live in `src/config.mjs` as `DEFAULTS`; `config.json` carries only the keys
 you want to change, under `relay`:

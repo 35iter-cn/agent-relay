@@ -306,7 +306,7 @@ test("TC-SJ14 slack keeps the conversation key and says which keys are already m
       configFile: "/tmp/config.json",
       configProblem: null,
       options: DEFAULTS,
-      platform: (name) => (name === "slack" ? { appToken: "xapp", botToken: "xoxb", allowedUser: "U1", defaultGroup: "main", groups: { main: "C1" } } : null),
+      platform: (name) => (name === "slack" ? { appToken: "xapp", botToken: "xoxb", allowedUser: "U1", defaultGroup: "system", groups: { system: "C1" } } : null),
     },
     log: () => {},
   });

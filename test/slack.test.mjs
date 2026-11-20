@@ -422,7 +422,7 @@ test("slack refuses to start without a channel or an allowed user", async () => 
   }
   assert.deepEqual(exits, [1, 1]);
   assert.ok(logs.some((line) => line.includes("slack.allowedUser")));
-  assert.ok(logs.some((line) => line.includes("slack.groups.main")));
+  assert.ok(logs.some((line) => line.includes("slack.groups.system")));
 });
 
 function attachmentHarness({ files, response, info } = {}) {
@@ -572,8 +572,8 @@ export function slackConfig(section = {}) {
     allowedUser: "UTEST",
     botUser: "UBOT",
     cookies: { xoxc: "xoxc", xoxd: "xoxd" },
-    defaultGroup: "main",
-    groups: { main: "CTEST" },
+    defaultGroup: "system",
+    groups: { system: "CTEST" },
     ...section,
   };
   return {
