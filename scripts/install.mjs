@@ -2,6 +2,7 @@
 import { chmodSync, mkdirSync, lstatSync, symlinkSync, unlinkSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { PLATFORMS } from "../src/platforms/contract.mjs";
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 const HOME = process.env.HOME;
@@ -37,7 +38,11 @@ function main(argv) {
   if (exists(target)) unlinkSync(target);
   symlinkSync(join(ROOT, "systemd/agent-relay@.service"), target);
   process.stdout.write(`linked ${target}\n`);
-  process.stdout.write("next: systemctl --user daemon-reload && systemctl --user enable --now agent-relay@feishu\n");
+  process.stdout.write("next: systemctl --user daemon-reload && systemctl --user enable --now " + unitsToEnable() + "\n");
+}
+
+function unitsToEnable() {
+  return PLATFORMS.map((name) => `agent-relay@${name}`).join(" ");
 }
 
 main(process.argv.slice(2));

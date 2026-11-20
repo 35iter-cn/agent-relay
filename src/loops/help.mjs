@@ -24,7 +24,7 @@ export const LOOP_VERBS = [
       "a new --cron clears the last skipped point; a paused loop stays paused until loop resume",
       '--title "" clears the header name and falls back to the loop id',
     ],
-    example: 'agent-relay loop update media-archive-feishu --cron "0 13 * * *"',
+    example: 'agent-relay loop update media-archive-slack --cron "0 13 * * *"',
   },
   {
     verb: "list",

@@ -279,12 +279,14 @@ test("TC-RS11 one restart command fans out to every platform, one line each", as
   const sent = [];
   const dispatch = async (cfg, platform, command) => {
     sent.push({ platform, command });
-    return { delivered: true, result: { ok: true, request: platform === "feishu" ? 4 : 12, superseded: null } };
+    return { delivered: true, result: { ok: true, request: platform === "probe" ? 4 : 12, superseded: null } };
   };
-  const result = await runCli(["--wait", "30m"], config, { sendCommand: dispatch, PLATFORMS: ["feishu", "slack"] });
+  // The platform list is injectable, which is what keeps the fan-out covered now that
+  // only one adapter ships: the loop is unchanged, its length is not.
+  const result = await runCli(["--wait", "30m"], config, { sendCommand: dispatch, PLATFORMS: ["probe", "slack"] });
   assert.equal(result.code, 0);
-  assert.equal(result.out, "feishu: queued (request 4)\nslack: queued (request 12)\n");
-  assert.deepEqual(sent.map((item) => item.platform), ["feishu", "slack"]);
+  assert.equal(result.out, "probe: queued (request 4)\nslack: queued (request 12)\n");
+  assert.deepEqual(sent.map((item) => item.platform), ["probe", "slack"]);
   assert.equal(sent[0].command.waitMs, 30 * 60_000);
 });
 
@@ -308,11 +310,11 @@ test("TC-RS13 a daemon that predates the verb is restarted detached, and a refus
   const old = await runCli([], config, {
     sendCommand: dispatch,
     systemctl,
-    PLATFORMS: ["feishu", "slack"],
+    PLATFORMS: ["probe", "slack"],
     spawn: (bin, args) => (spawned.push({ bin, args }), fakeChild()),
   });
   assert.equal(old.code, 1);
-  assert.match(old.out, /feishu: daemon not running; unit not active, skipped/);
+  assert.match(old.out, /probe: daemon not running; unit not active, skipped/);
   assert.match(old.out, /slack: daemon too old for this verb; restarted directly \(detached\)/);
   assert.equal(spawned.length, 1, "only the active unit is restarted");
   assert.equal(spawned[0].bin, "systemd-run");

@@ -7,7 +7,7 @@ import { readEnvFile } from "../src/config.mjs";
 import { writeJsonAtomic } from "../src/shared/json.mjs";
 import { ensurePrivateDir } from "../src/shared/fs.mjs";
 
-export const LEGACY_FILES = ["slack-app.env", "feishu.env", ".slack-xoxc.tmp"];
+export const LEGACY_FILES = ["slack-app.env", ".slack-xoxc.tmp"];
 export const DEFAULT_GROUPS = ["system"];
 
 function cookiesFrom(text) {
@@ -19,7 +19,7 @@ function cookiesFrom(text) {
   return { xoxc: lines[0], xoxd: lines[1] };
 }
 
-export function buildConfig({ slackEnv = {}, feishuEnv = {}, cookies = null, groups = {} } = {}) {
+export function buildConfig({ slackEnv = {}, cookies = null, groups = {} } = {}) {
   const config = {};
   if (slackEnv.SLACK_APP_TOKEN || slackEnv.SLACK_BOT_TOKEN || slackEnv.AGENT_RELAY_SLACK_CHANNEL) {
     const channels = { ...groups };
@@ -34,14 +34,6 @@ export function buildConfig({ slackEnv = {}, feishuEnv = {}, cookies = null, gro
       groups: channels,
     };
   }
-  if (feishuEnv.FEISHU_APP_ID || feishuEnv.FEISHU_APP_SECRET || feishuEnv.FEISHU_CHAT_ID) {
-    config.feishu = {
-      appId: feishuEnv.FEISHU_APP_ID ?? "",
-      appSecret: feishuEnv.FEISHU_APP_SECRET ?? "",
-      chatId: feishuEnv.FEISHU_CHAT_ID ?? "",
-      allowedUser: feishuEnv.AGENT_RELAY_ALLOWED_USER ?? "",
-    };
-  }
   return config;
 }
 
@@ -52,10 +44,9 @@ export function planMigration({ configDir, groups = {}, force = false, exists = 
     return { write: false, reason: "config.json exists", target, present, retired: [] };
   }
   const slackEnv = readEnvFile(join(configDir, "slack-app.env"));
-  const feishuEnv = readEnvFile(join(configDir, "feishu.env"));
   const cookieFile = join(configDir, ".slack-xoxc.tmp");
   const cookies = exists(cookieFile) ? cookiesFrom(readFileSync(cookieFile, "utf8")) : null;
-  const config = buildConfig({ slackEnv, feishuEnv, cookies, groups });
+  const config = buildConfig({ slackEnv, cookies, groups });
   if (!Object.keys(config).length) {
     return { write: false, reason: "no legacy files to read", target, present, retired: [], config };
   }

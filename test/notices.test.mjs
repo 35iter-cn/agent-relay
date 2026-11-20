@@ -13,16 +13,16 @@ const iso = (ms) => new Date(ms).toISOString();
 
 test("matchNotice resolves a reply id to the newest matching notice only", () => {
   const notices = {
-    "ntc-1": { id: "ntc-1", platform: "feishu", messageId: "m-1", sentAt: iso(1) },
-    "ntc-2": { id: "ntc-2", platform: "feishu", messageId: "m-1", sentAt: iso(2) },
-    "ntc-3": { id: "ntc-3", platform: "slack", messageId: "m-9", sentAt: iso(3) },
-    "ntc-4": { id: "ntc-4", platform: "feishu", messageId: null, sentAt: iso(4) },
+    "ntc-1": { id: "ntc-1", platform: "slack", messageId: "m-1", sentAt: iso(1) },
+    "ntc-2": { id: "ntc-2", platform: "slack", messageId: "m-1", sentAt: iso(2) },
+    "ntc-3": { id: "ntc-3", platform: "feishu", messageId: "m-9", sentAt: iso(3) },
+    "ntc-4": { id: "ntc-4", platform: "slack", messageId: null, sentAt: iso(4) },
   };
-  assert.equal(matchNotice(notices, "feishu", ["m-1"]).id, "ntc-2");
-  assert.equal(matchNotice(notices, "feishu", ["m-2"]), null);
-  assert.equal(matchNotice(notices, "feishu", []), null);
-  assert.equal(matchNotice(notices, "feishu", ["m-9"]), null);
-  assert.equal(matchNotice(notices, "slack", ["m-9"]).id, "ntc-3");
+  assert.equal(matchNotice(notices, "slack", ["m-1"]).id, "ntc-2");
+  assert.equal(matchNotice(notices, "slack", ["m-2"]), null);
+  assert.equal(matchNotice(notices, "slack", []), null);
+  assert.equal(matchNotice(notices, "slack", ["m-9"]), null, "a notice from the retired channel and the reply id from the live one never match");
+  assert.equal(matchNotice(notices, "feishu", ["m-9"]).id, "ntc-3", "a stored notice keeps its own platform");
 });
 
 test("TC-NT3 a conversation binding keeps no text or prompt, a prompt notice keeps both", async () => {

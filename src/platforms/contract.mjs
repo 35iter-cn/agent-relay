@@ -1,4 +1,4 @@
-export const PLATFORMS = ["feishu", "slack"];
+export const PLATFORMS = ["slack"];
 
 const REQUIRED = { name: "string", start: "function", reply: "function", sessionFor: "function" };
 const OPTIONAL = ["postNotice", "postMedia", "edit", "onProgress", "onProgressDone", "addReceipt", "removeReceipt", "prune", "selfContext", "resolveThread", "locateReply"];

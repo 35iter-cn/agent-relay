@@ -16,7 +16,7 @@ function configDirWith(body) {
 const config = createConfig({ env: { HOME: "/home/tester" } });
 
 test("the built-in prompts directory is the one that ships with the sources", () => {
-  for (const file of ["sections/10-common.md", "sections/20-platform-slack.md", "sections/21-platform-feishu.md", "sections/30-entry-conversation.md", "sections/31-entry-notice.md", "sections/32-entry-loop.md"]) {
+  for (const file of ["sections/10-common.md", "sections/20-platform-slack.md", "sections/30-entry-conversation.md", "sections/31-entry-notice.md", "sections/32-entry-loop.md"]) {
     assert.equal(existsSync(join(config.promptsDir, file)), true, file);
   }
   for (const file of ["messages/stall-notice.md", "messages/restart.md", "messages/interrupt.md", "messages/empty-prompt.md"]) {
@@ -26,10 +26,10 @@ test("the built-in prompts directory is the one that ships with the sources", ()
 
 test("config paths default under ~/.config/agent-relay and stay overridable", () => {
   assert.equal(config.configDir, "/home/tester/.config/agent-relay");
-  assert.equal(config.stateFile("feishu"), "/home/tester/.config/agent-relay/relay-feishu.json");
+  assert.equal(config.stateFile("slack"), "/home/tester/.config/agent-relay/relay-slack.json");
   assert.equal(config.commandDir("slack"), "/home/tester/.config/agent-relay/relay-slack.cmd");
   const custom = createConfig({ env: { HOME: "/home/tester", AGENT_RELAY_CONFIG_DIR: "/srv/relay" } });
-  assert.equal(custom.stateFile("feishu"), "/srv/relay/relay-feishu.json");
+  assert.equal(custom.stateFile("slack"), "/srv/relay/relay-slack.json");
 });
 
 test("TC-CFG9 the worker binary comes from config.json and the env override is gone", () => {
@@ -97,7 +97,7 @@ test("TC-CFG14 platform sections are read whole, credentials included", () => {
   const dir = configDirWith({ slack: { botToken: "xoxb-1", groups: { system: "C1" }, defaultGroup: "system" } });
   const custom = createConfig({ env: { HOME: "/home/tester", AGENT_RELAY_CONFIG_DIR: dir } });
   assert.equal(custom.platform("slack").botToken, "xoxb-1");
-  assert.equal(custom.platform("feishu"), null);
+  assert.equal(custom.platform("matrix"), null);
   assert.equal(custom.configFile, join(dir, "config.json"));
 });
 

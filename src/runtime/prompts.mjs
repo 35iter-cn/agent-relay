@@ -6,7 +6,7 @@ export const SECTIONS_DIR = "sections";
 export const MESSAGES_DIR = "messages";
 
 export const COMMON_FILE = "10-common.md";
-export const PLATFORM_FILE = { slack: "20-platform-slack.md", feishu: "21-platform-feishu.md" };
+export const PLATFORM_FILE = { slack: "20-platform-slack.md" };
 export const ENTRY_FILE = {
   conversation: "30-entry-conversation.md",
   notice: "31-entry-notice.md",

@@ -8,13 +8,13 @@ import { readEnvFile } from "../src/config.mjs";
 
 test("readEnv parses KEY=value lines and ignores comments", () => {
   const dir = mkdtempSync(join(tmpdir(), "relay-env-"));
-  const file = join(dir, "feishu.env");
-  writeFileSync(file, "# comment\nFEISHU_APP_ID=cli_123\nFEISHU_APP_SECRET=spaced \ninvalid line\n FOO=  indented\nBAR=\n");
-  assert.deepEqual(readEnvFile(file), { FEISHU_APP_ID: "cli_123", FEISHU_APP_SECRET: "spaced", BAR: "" });
+  const file = join(dir, "slack-app.env");
+  writeFileSync(file, "# comment\nSLACK_APP_TOKEN=xapp-1\nSLACK_BOT_TOKEN=spaced \ninvalid line\n FOO=  indented\nBAR=\n");
+  assert.deepEqual(readEnvFile(file), { SLACK_APP_TOKEN: "xapp-1", SLACK_BOT_TOKEN: "spaced", BAR: "" });
 });
 
 test("readEnv returns an empty object for a missing file", () => {
-  assert.deepEqual(readEnvFile("/nonexistent/feishu.env"), {});
+  assert.deepEqual(readEnvFile("/nonexistent/slack-app.env"), {});
 });
 
 test("the job verbs are list, cancel, restart and redeliver", () => {
@@ -23,9 +23,9 @@ test("the job verbs are list, cancel, restart and redeliver", () => {
 });
 
 test("parseFlags splits flags from positional words", () => {
-  assert.deepEqual(parseFlags(["job-stall", "--platform", "feishu", "--text=hi there"]), {
+  assert.deepEqual(parseFlags(["job-stall", "--platform", "slack", "--text=hi there"]), {
     rest: ["job-stall"],
-    flags: { platform: "feishu", text: "hi there" },
+    flags: { platform: "slack", text: "hi there" },
   });
 });
 
@@ -56,28 +56,28 @@ test("sendCommand reports delivered only after the daemon wrote a result", async
   const dir = mkdtempSync(join(tmpdir(), "relay-cmd-"));
   const config = { commandDir: (platform) => join(dir, platform) };
   const answer = () => {
-    for (const name of readdirSync(join(dir, "feishu"))) {
-      if (name.endsWith(".json")) writeFileSync(join(dir, "feishu", `${name}.result`), JSON.stringify({ ok: true }));
+    for (const name of readdirSync(join(dir, "slack"))) {
+      if (name.endsWith(".json")) writeFileSync(join(dir, "slack", `${name}.result`), JSON.stringify({ ok: true }));
     }
   };
-  const delivered = await sendCommand(config, "feishu", { op: "cancel-job", job: "job-1" }, { sleep: async () => answer(), waitMs: 1_000 });
+  const delivered = await sendCommand(config, "slack", { op: "cancel-job", job: "job-1" }, { sleep: async () => answer(), waitMs: 1_000 });
   assert.equal(delivered.delivered, true);
   assert.equal(delivered.result.ok, true);
-  const refused = await sendCommand(config, "feishu", { op: "cancel-job", job: "job-2" }, { sleep: async () => {
-    for (const name of readdirSync(join(dir, "feishu"))) {
-      if (name.endsWith(".json")) writeFileSync(join(dir, "feishu", `${name}.result`), JSON.stringify({ ok: false, refused: "not-running" }));
+  const refused = await sendCommand(config, "slack", { op: "cancel-job", job: "job-2" }, { sleep: async () => {
+    for (const name of readdirSync(join(dir, "slack"))) {
+      if (name.endsWith(".json")) writeFileSync(join(dir, "slack", `${name}.result`), JSON.stringify({ ok: false, refused: "not-running" }));
     }
   }, waitMs: 1_000 });
   assert.equal(refused.result.refused, "not-running");
-  const pending = await sendCommand(config, "slack", { op: "cancel-job", job: "job-3" }, { waitMs: 0 });
+  const pending = await sendCommand(config, "quiet", { op: "cancel-job", job: "job-3" }, { waitMs: 0 });
   assert.equal(pending.delivered, false);
 });
 
 test("the command directory is private so other users cannot inject commands", async () => {
   const dir = mkdtempSync(join(tmpdir(), "relay-cmd-mode-"));
   const config = { commandDir: (platform) => join(dir, platform) };
-  await sendCommand(config, "feishu", { op: "action" }, { waitMs: 0 });
-  assert.equal(statSync(join(dir, "feishu")).mode & 0o777, 0o700);
+  await sendCommand(config, "slack", { op: "action" }, { waitMs: 0 });
+  assert.equal(statSync(join(dir, "slack")).mode & 0o777, 0o700);
 });
 
 test("textFlag reads a file before an inline value and trims both", () => {

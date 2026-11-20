@@ -5,7 +5,6 @@ import { writeJsonAtomic } from "../shared/json.mjs";
 import { emptyState } from "./schema.mjs";
 
 const LEGACY = {
-  feishu: { file: "feishud.json", migrate: migrateFeishu },
   slack: { file: "slackd.json", migrate: migrateSlack },
 };
 
@@ -24,16 +23,6 @@ function migrateSlack(legacy) {
     seen: seenMap(legacy.dedup),
     convs: legacy.threads ?? {},
     alerts: legacy.alerts ?? {},
-    meta: {},
-  };
-}
-
-function migrateFeishu(legacy) {
-  return {
-    cursor: null,
-    seen: legacy.seen ?? {},
-    convs: legacy.convs ?? {},
-    alerts: {},
     meta: {},
   };
 }

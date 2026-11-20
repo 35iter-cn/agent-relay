@@ -27,8 +27,8 @@ test("a live holder blocks a second instance", () => {
 
 test("a stale pid file is reclaimed", () => {
   const base = dir();
-  writeFileSync(lockFileFor(base, "feishu"), "999999\n");
-  const lock = acquireInstanceLock({ dir: base, platform: "feishu", pid: 5151, alive: () => false });
+  writeFileSync(lockFileFor(base, "probe"), "999999\n");
+  const lock = acquireInstanceLock({ dir: base, platform: "probe", pid: 5151, alive: () => false });
   assert.ok(lock);
   assert.equal(readFileSync(lock.file, "utf8"), "5151\n");
 });
@@ -36,8 +36,8 @@ test("a stale pid file is reclaimed", () => {
 test("locks are per platform and released cleanly", () => {
   const base = dir();
   const slack = acquireInstanceLock({ dir: base, platform: "slack", pid: 4242, alive: () => true });
-  const feishu = acquireInstanceLock({ dir: base, platform: "feishu", pid: 4242, alive: () => true });
-  assert.ok(slack && feishu);
+  const probe = acquireInstanceLock({ dir: base, platform: "probe", pid: 4242, alive: () => true });
+  assert.ok(slack && probe);
   slack.release();
   assert.equal(existsSync(slack.file), false);
   assert.ok(acquireInstanceLock({ dir: base, platform: "slack", pid: 7777, alive: () => true }));

@@ -52,7 +52,6 @@ function harness({ spawn, replies = [], adapterOverrides = {}, state = emptyStat
   mkdirSync(sectionsDir, { recursive: true });
   writeFileSync(join(sectionsDir, "10-common.md"), "COMMON user={{user_message}} surface={{surface}} cli={{cli}}");
   writeFileSync(join(sectionsDir, "20-platform-slack.md"), "REPLY slack");
-  writeFileSync(join(sectionsDir, "21-platform-feishu.md"), "REPLY feishu");
   writeFileSync(join(sectionsDir, "20-platform-fake.md"), "REPLY");
   writeFileSync(join(sectionsDir, "30-entry-conversation.md"), "CONV platform={{platform}}");
   writeFileSync(join(sectionsDir, "31-entry-notice.md"), "NOTICE id={{notice_id}} user={{user_message}}");
