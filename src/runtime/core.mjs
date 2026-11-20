@@ -911,6 +911,11 @@ export function createCore({ adapter, config, deps = {} }) {
   }
 
   async function sendAnswerSegment(job, segment, run) {
+    if (isQuietAnswer(segment.text)) {
+      segment.quiet = true;
+      appendLog({ event: "answer-quiet", job: job.id, key: job.key, index: segment.index, chars: segment.text.length });
+      return;
+    }
     const media = mediaFor({ answer: segment.text });
     const plan = planParts({ answer: media ? media.text : segment.text, parts: [], chunkLimit: adapter.chunkLimit, canEdit: false, media });
     try {
@@ -971,17 +976,19 @@ export function createCore({ adapter, config, deps = {} }) {
     return null;
   }
 
-  async function applyWorkerResult(job, entry, inbound, { text, status, started, mode = "print", exit = 0, killed = false, empty = false, delivered = false }) {
+  async function applyWorkerResult(job, entry, inbound, { text, status, started, mode = "print", exit = 0, killed = false, empty = false, delivered = false, quietBody = false }) {
     disarmStallTimer(inbound.key);
     children.delete(inbound.key);
     appendLog({ event: "done", job: job.id, key: inbound.key, session: entry.session, exit, killed, elapsedMs: now() - started, mode });
-    if (isScheduled(job) && (empty || (status === "answered" && isQuietBody(text)))) {
+    const quiet = kindOf(job) !== "loop" && status === "answered" && (quietBody || isQuietAnswer(text));
+    if (quiet || (isScheduled(job) && (empty || (status === "answered" && isQuietBody(text))))) {
       job.answer = null;
       job.status = "done";
       job.lease = null;
+      if (quiet) job.noop = true;
       job.updatedAt = isoNow();
       save();
-      appendLog({ event: "job-empty", job: job.id, key: inbound.key });
+      appendLog({ event: "job-empty", job: job.id, key: inbound.key, quiet });
       runtimeInbounds.delete(job.id);
       return;
     }
@@ -1159,6 +1166,7 @@ export function createCore({ adapter, config, deps = {} }) {
       }
       const pendingAnswer = run.undelivered.join("\n\n");
       const deliveredSegments = deliverSegments && run.segments.length > 0;
+      const quietSegments = deliveredSegments && run.segments.every((segment) => segment.quiet);
       if (outcome.aborted || run.stopReason === "error") {
         return applyWorkerResult(job, entry, inbound, {
           text: pendingAnswer || (deliveredSegments ? null : run.text || `[无输出] stop=${run.stopReason ?? "aborted"}`),
@@ -1169,7 +1177,7 @@ export function createCore({ adapter, config, deps = {} }) {
         });
       }
       if (pendingAnswer) return applyWorkerResult(job, entry, inbound, { text: pendingAnswer, status: "answered", started, mode: "rpc" });
-      if (deliveredSegments) return applyWorkerResult(job, entry, inbound, { text: null, status: "answered", started, mode: "rpc", delivered: true });
+      if (deliveredSegments) return applyWorkerResult(job, entry, inbound, { text: null, status: "answered", started, mode: "rpc", delivered: true, quietBody: quietSegments });
       if (!run.text) return applyWorkerResult(job, entry, inbound, { text: `[无输出] stop=${run.stopReason ?? "stop"}`, status: "answered", started, mode: "rpc", empty: true });
       return applyWorkerResult(job, entry, inbound, { text: run.text, status: "answered", started, mode: "rpc" });
     })();
@@ -1901,6 +1909,16 @@ export function createCore({ adapter, config, deps = {} }) {
     const body = String(text ?? "");
     if (!body.trim()) return true;
     if (body.trim().startsWith(EMPTY_RUN_PREFIX)) return true;
+    return isQuietAnswer(body);
+  }
+
+  // The quiet word on its own is not a message, wherever it is written: a loop
+  // round, a scheduled turn, or a reply in a conversation. A body that is blank
+  // or the kernel's own marker is not "quiet" here — those have their own
+  // fallbacks (`emptyRunReply`, the exit/busy receipts).
+  function isQuietAnswer(text) {
+    const body = String(text ?? "").trim();
+    if (!body || body.startsWith(EMPTY_RUN_PREFIX)) return false;
     return body.replace(QUIET_DECORATION, "").trim().toUpperCase() === QUIET_WORD;
   }
 
