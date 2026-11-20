@@ -343,7 +343,7 @@ export async function requestRestartAll(config, flags, deps = {}) {
     }
     if (sent?.result?.refused === "unknown-command") {
       // The daemon predates this verb (it is the one being upgraded): nothing to queue.
-      const line = await restartDirectOrSkip(config, platform, deps);
+      const line = await restartDirectOrSkip(config, platform, deps, "daemon too old for this verb");
       lines.push(`${platform}: ${line}`);
       code = Math.max(code, 1);
       continue;
@@ -370,11 +370,11 @@ export async function requestRestartAll(config, flags, deps = {}) {
 // No daemon answered: nothing is running that we could wait for, so restart the unit —
 // detached, through the same executor, because this is exactly the first upgrade and the
 // unit we restart may be the one this command is running on.
-async function restartDirectOrSkip(config, platform, deps = {}) {
+async function restartDirectOrSkip(config, platform, deps = {}, reason = "daemon not running") {
   const systemctl = deps.systemctl ?? createSystemctl();
   const unit = restartUnitFor(config, platform);
   const active = await systemctl("is-active", unit).catch(() => "");
-  if (active !== "active") return "daemon not running; unit not active, skipped";
+  if (active !== "active") return `${reason}; unit not active, skipped`;
   const spawned = spawnDetachedRestart({
     platform,
     unit,
@@ -382,7 +382,7 @@ async function restartDirectOrSkip(config, platform, deps = {}) {
     spawn: deps.spawn,
     log: deps.log ?? (() => {}),
   });
-  return spawned ? "daemon not running; restarted directly (detached)" : "daemon not running; could not start the restart unit";
+  return spawned ? `${reason}; restarted directly (detached)` : `${reason}; could not start the restart unit`;
 }
 
 export async function handleRestartCommand(rest, config, log, deps = {}) {

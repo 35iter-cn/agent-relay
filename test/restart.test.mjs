@@ -299,7 +299,7 @@ test("TC-RS13 a daemon that predates the verb is restarted detached, and a refus
   });
   assert.equal(old.code, 1);
   assert.match(old.out, /feishu: daemon not running; unit not active, skipped/);
-  assert.match(old.out, /slack: daemon not running; restarted directly \(detached\)/);
+  assert.match(old.out, /slack: daemon too old for this verb; restarted directly \(detached\)/);
   assert.equal(spawned.length, 1, "only the active unit is restarted");
   assert.equal(spawned[0].bin, "systemd-run");
   assert.ok(spawned[0].args.includes("--unit=relay-restart-slack"));
