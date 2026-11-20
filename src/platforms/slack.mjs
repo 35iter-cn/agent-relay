@@ -380,8 +380,7 @@ export function createPlatform({ config, log: baseLog }) {
   const allowedUser = section?.allowedUser ?? null;
   const botUser = section?.botUser ?? null;
   const botToken = section?.botToken ?? null;
-  const denyList = section?.listen?.deny ?? [];
-  const denied = new Set(denyList);
+  const denied = new Set(section?.listen?.deny ?? []);
   const progressEmoji = PROGRESS_EMOJI;
   const log = baseLog;
   const typing = { timer: null, cursor: 0, busy: false, keys: new Set() };
