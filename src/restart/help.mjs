@@ -6,6 +6,7 @@ export const RESTART_VERBS = [
     usage: "restart [--wait <dur>|0] [--reason <text>]",
     detail: [
       "every platform, no flag needed: one request per daemon",
+      "returns as soon as the request is queued; the waiting happens in the daemon",
       "a daemon restarts once it has nothing queued or running, plus a settle window",
       "<dur> is a number and a unit: 90s, 30m, 1.5h, 1d; 0 waits with no deadline; default 1h",
       "a second request replaces the first: one slot, seq grows, the deadline restarts",
@@ -31,7 +32,7 @@ const SECTIONS = [
 ];
 
 const SUMMARY = [
-  "restart the whole relay safely: every platform waits for its own rounds to finish",
+  "restart the whole relay with one call: each daemon waits for its own rounds to finish",
   "the daemon decides when it is idle; the new instance reports the restart",
   "no platform flag, no second entry point",
 ];

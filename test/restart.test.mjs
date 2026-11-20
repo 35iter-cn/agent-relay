@@ -8,6 +8,7 @@ import { createCore } from "../src/runtime/core.mjs";
 import { DEFAULTS } from "../src/config.mjs";
 import { handleRestartCommand } from "../src/cli.mjs";
 import { executeRestart } from "../src/restart/execute.mjs";
+import { restartHelp } from "../src/restart/help.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const PROMPTS = join(HERE, "..", "src", "prompts");
@@ -349,4 +350,10 @@ test("TC-RS15 the restart shows a human two messages, both in the system group a
   const templates = readdirSync(join(PROMPTS, "messages")).filter((name) => name.startsWith("restart-"));
   assert.deepEqual(templates.sort(), ["restart-expired.md", "restart-failed.md"], "only what needs a human is a template");
   for (const name of templates) assert.doesNotMatch(readFileSync(join(PROMPTS, "messages", name), "utf8"), /[\u4e00-\u9fff]/, `${name} is English`);
+});
+
+test("TC-RS16 the help says the command returns before the restart happens", () => {
+  const text = restartHelp("restart");
+  assert.match(text, /returns as soon as the request is queued; the waiting happens in the daemon/);
+  assert.doesNotMatch(text, /[\u4e00-\u9fff]/);
 });

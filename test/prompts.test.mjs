@@ -220,3 +220,15 @@ test("TC-P14 an empty override falls back to the built-in message", () => {
   const text = prompts.terminated({ action: "cancel", kind: "conversation", stalled: false, job: "job-11", elapsedMinutes: 0, from: "20:40:00", to: "20:40:00" });
   assert.match(text, /^⏹ Terminated on request \(job-11\)\./);
 });
+
+test("TC-P15 the restart entry says the command waits, not the model", () => {
+  const common = readFileSync(join(PROMPTS, "sections", "10-common.md"), "utf8");
+  assert.match(common, /\{\{cli\}\} restart help/);
+  assert.match(common, /不要先手动等 job 跑完/, "the waiting is the command's job, not a step for the model");
+  assert.doesNotMatch(common, /安全重启.*（.*等/);
+  for (const platform of ["slack", "feishu"]) {
+    const text = render(platform, "conversation");
+    assert.match(text, /restart help/);
+    assert.doesNotMatch(text, /\{\{/);
+  }
+});
