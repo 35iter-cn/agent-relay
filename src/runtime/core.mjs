@@ -1773,8 +1773,14 @@ export function createCore({ adapter, config, deps = {} }) {
     save();
   }
 
-  function handleBoundReply(inbound, key) {
+  async function handleBoundReply(inbound, key) {
     const keyed = { ...inbound, key, session: adapter.sessionFor(key), rootText: state.convs[key]?.rootText ?? inbound.text };
+    // A reply in a notice's thread is still a word to the turn that thread belongs to:
+    // while that turn runs it interjects, instead of queueing a second job behind it.
+    if (await deliveredAsSteer(keyed)) {
+      appendLog({ event: "bound-steer", job: state.seen[inbound.dedupeId] ?? null, key });
+      return "steered";
+    }
     const job = acceptJob(keyed);
     if (running.size >= adapter.maxWorkers && state.inbox.length > adapter.queueDepth) {
       state.inbox = state.inbox.filter((id) => id !== job.id);

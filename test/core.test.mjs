@@ -1914,6 +1914,33 @@ test("TC-RPC9 a second message lands as a steer on the running job instead of a 
   assert.equal(replies.length, 1);
 });
 
+test("TC-RPC14 a reply in a notice's thread interjects the running turn instead of queueing a second job", async () => {
+  const child = fakeRpcChild({ answer: "答案", hold: true });
+  const { core } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  await core.handle(inbound({ text: "第一句" }));
+  await tick();
+  const notice = await core.notices.emit({ text: "第 1 轮", reply: { mode: "conversation", key: "th-abc" } });
+  await core.handle(inbound({ key: "th-root", text: "插一句", dedupeId: "m2", messageId: "m-2", replyIds: [notice.messageId] }));
+  await tick();
+  const jobs = Object.values(core.state.jobs);
+  assert.equal(jobs.length, 1, "interjecting must not queue a second job");
+  assert.equal(jobs[0].steers.length, 1);
+  assert.equal(jobs[0].steers[0].text, "插一句");
+  assert.equal(child.written.filter((record) => record.type === "steer").length, 1);
+});
+
+test("TC-RPC15 a reply in a notice's thread with nothing running still lands on that conversation's key", async () => {
+  const child = fakeRpcChild({ answer: "答案" });
+  const { core } = harness({ spawn: () => child, adapterOverrides: { worker: "pi", workerMode: "rpc" } });
+  const notice = await core.notices.emit({ text: "第 1 轮", reply: { mode: "conversation", key: "th-abc" } });
+  await core.handle(inbound({ key: "th-root", text: "继续问", dedupeId: "m2", messageId: "m-2", replyIds: [notice.messageId] }));
+  await tick();
+  const jobs = Object.values(core.state.jobs);
+  assert.equal(jobs.length, 1);
+  assert.equal(jobs[0].key, "th-abc");
+  assert.equal(jobs[0].steers?.length ?? 0, 0);
+});
+
 test("TC-RPC10 the same key reuses one rpc child across turns", async () => {
   let spawned = 0;
   const { core } = harness({
