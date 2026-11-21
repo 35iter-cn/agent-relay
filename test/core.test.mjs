@@ -889,6 +889,27 @@ test("TC-21 a restart reports an interrupted run instead of rerunning it", async
   assert.equal(replies.length, 1);
 });
 
+test("TC-21g a job that finished in a crash window still loses its progress mark and receipts", async () => {
+  const state = jobState({ status: "done" });
+  state.jobs["job-1"].progress = { mode: "reaction", messageId: "om_1", name: "thinking_face" };
+  state.jobs["job-1"].receipts = [{ messageId: "om_9", chatId: "c1", name: "inbox_tray" }];
+  const marks = [];
+  const removed = [];
+  const { core } = harness({
+    state,
+    adapterOverrides: {
+      onProgressDone: async ({ progress }) => marks.push(progress.messageId),
+      removeReceipt: async ({ messageId, chatId }) => removed.push([messageId, chatId]),
+    },
+  });
+  await core.recover();
+  assert.deepEqual(marks, ["om_1"], "the mark the finished job never cleared comes off on the next start");
+  assert.deepEqual(removed, [["om_9", "c1"]], "and so do the receipts it was holding");
+  assert.equal(core.state.jobs["job-1"].progress, null);
+  assert.deepEqual(core.state.jobs["job-1"].receipts, []);
+  assert.equal(await core.recover(), 0, "the second start has nothing left to clean");
+});
+
 test("TC-21b recover leaves a job this process just dispatched alone", async () => {
   const state = jobState({ lease: { pid: null, startTicks: null, startedAt: 0 } });
   state.jobs["job-1"].instanceId = "inst-1";

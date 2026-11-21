@@ -1603,6 +1603,20 @@ export function createCore({ adapter, config, deps = {} }) {
       try {
         if (isFinished(job) || job.status === "interrupted") {
           if (state.inbox.includes(job.id)) state.inbox = state.inbox.filter((id) => id !== job.id);
+          // A job finished in a crash window leaves its progress mark and its steer receipts on
+          // messages no later turn touches; this start is the last chance to take them off.
+          if (job.progress || (job.receipts ?? []).length) {
+            if (job.progress) {
+              try {
+                await adapter.onProgressDone?.(ctxOf(job));
+              } catch (error) {
+                log("warn", "progress-done", String(error?.message ?? error));
+              }
+              job.progress = null;
+            }
+            await dropReceipts(job);
+            touched += 1;
+          }
           continue;
         }
         if (job.instanceId === instanceId) continue;
