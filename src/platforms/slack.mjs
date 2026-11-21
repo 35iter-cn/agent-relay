@@ -178,13 +178,15 @@ export function createRuntime({ api, log, channel, emoji = PROGRESS_EMOJI }) {
         log("warn", "receipt-add", res.error);
         return null;
       }
-      return { messageId: ctx.messageId, name: RECEIPT_EMOJI };
+      // The receipt remembers where it was put: it is removed long after the inbound
+      // context is gone, and the fallback channel is the default group, not this message's.
+      return { messageId: ctx.messageId, name: RECEIPT_EMOJI, chatId: ctx?.chatId ?? channel };
     },
 
     async removeReceipt(ctx) {
       const receipt = ctx.receipt;
       if (!api || !receipt?.messageId) return;
-      const res = await api("reactions.remove", { channel: ctx?.chatId ?? channel, timestamp: receipt.messageId, name: receipt.name ?? RECEIPT_EMOJI });
+      const res = await api("reactions.remove", { channel: ctx?.chatId ?? receipt.chatId ?? channel, timestamp: receipt.messageId, name: receipt.name ?? RECEIPT_EMOJI });
       if (!res.ok && !ALREADY_CLEANED.has(res.error)) log("warn", "receipt-remove", res.error);
     },
 
