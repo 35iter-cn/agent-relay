@@ -2268,7 +2268,9 @@ export function createCore({ adapter, config, deps = {} }) {
     if (!receipts.length) return;
     for (const receipt of receipts) {
       try {
-        await adapter.removeReceipt?.({ messageId: receipt.messageId ?? null, receipt });
+        // The channel travels with the receipt: by now the job's inbound context is gone,
+        // and a platform's fallback channel is its default group, not this message's.
+        await adapter.removeReceipt?.({ messageId: receipt.messageId ?? null, chatId: receipt.chatId ?? job.inbound?.chatId ?? null, receipt });
       } catch (error) {
         log("warn", "receipt-remove", String(error?.message ?? error));
       }

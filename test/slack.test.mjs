@@ -204,6 +204,14 @@ test("AC-2 an already removed reaction is not an error", async () => {
   assert.deepEqual(logs, []);
 });
 
+test("TC-RC1 a receipt remembers the channel it was put in, and is removed there", async () => {
+  const { runtime, calls } = harness({ handlers: { "reactions.add": { ok: true }, "reactions.remove": { ok: true } } });
+  const receipt = await runtime.addReceipt({ messageId: "1792558469.808939", chatId: "COWNCHANNEL", threadId: null });
+  assert.equal(receipt.chatId, "COWNCHANNEL");
+  await runtime.removeReceipt({ messageId: receipt.messageId, receipt });
+  assert.deepEqual(calls.at(-1), ["reactions.remove", { channel: "COWNCHANNEL", timestamp: "1792558469.808939", name: "inbox_tray" }]);
+});
+
 test("AC-3 a missing scope falls back to a placeholder the answer replaces", async () => {
   const { runtime, calls } = harness({
     handlers: {

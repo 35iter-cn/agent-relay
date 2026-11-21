@@ -2093,6 +2093,27 @@ test("TC-RPC12 a steer gets a receipt on the steered message and the receipt is 
   assert.equal(job.steers[0].messageId, "m-2");
 });
 
+test("TC-RPC42 the receipt is removed in the channel the steer arrived in, not the default group", async () => {
+  const child = fakeRpcChild({ answer: "答案", hold: true });
+  const removed = [];
+  const { core } = harness({
+    spawn: () => child,
+    adapterOverrides: {
+      worker: "pi",
+      workerMode: "rpc",
+      addReceipt: async ({ messageId, chatId }) => ({ messageId, chatId, name: "mark" }),
+      removeReceipt: async ({ messageId, chatId, receipt }) => removed.push({ messageId, chatId, receiptChatId: receipt.chatId }),
+    },
+  });
+  await core.handle(inbound({ text: "第一句", messageId: "m-1", chatId: "c-channel" }));
+  await tick();
+  await core.handle(inbound({ text: "插一句", dedupeId: "m2", messageId: "m-2", chatId: "c-channel" }));
+  await tick();
+  child.settle();
+  await tick();
+  assert.deepEqual(removed, [{ messageId: "m-2", chatId: "c-channel", receiptChatId: "c-channel" }]);
+});
+
 test("TC-RPC13 an unconsumed steer drops its receipt and re-sends on the steered message", async () => {
   const child = fakeRpcChild({ answer: "答案", pendingMessageCount: 1, hold: true });
   child.pendingMessageCount = 1;
